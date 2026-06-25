@@ -224,8 +224,8 @@ No external key storage
 INSTALLATION & SETUP
 
 Step 1. Clone Repo
-git clone https://github.com/201Thunder/alpha-AI.git
-cd alpha-AI
+git clone https://github.com/XCyberThunder/Alpha-agent.git
+cd Alpha-agent
 
 Step 2. Environment Setup
 cp .env.example .env
@@ -325,8 +325,8 @@ ARCHITECT
 Thunder Pandey
 AI Systems Engineer
 
-Instagram: @201Thunders (https://www.instagram.com/201thunders/)
-GitHub: @201Thunder (https://github.com/201Thunder)
+Instagram: @XCyberThunder (https://www.instagram.com/XCyberThunder/)
+GitHub: @XCyberThunder (https://github.com/XCyberThunder)
 
 LICENSE
 
@@ -339,6 +339,6 @@ alpha is not a chatbot. It is a neural extension of your operating system.
 "System Online."
 
 
-Made with ❤️ by Thunder Pandey
+Made with ❤️ by  XCyberThunder
 
 ================================================================================
