@@ -234,8 +234,8 @@ alpha is forged using a high-performance stack combining web technologies with d
 ### 1. Clone Repo
 
 ```bash
-git clone https://github.com/201Thunder/alpha-AI.git
-cd alpha-AI
+git clone https://github.com/XCyberThunder/Alpha-agent.git
+cd Alpha-agent
 ```
 
 ### 2. Install Dependencies
