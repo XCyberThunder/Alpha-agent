@@ -5,17 +5,17 @@
 ## The Autonomous Neural OS Agent
 
 <div style="display: flex; justify-center; gap: 10px; margin-bottom: 20px;">
-  <a href="https://github.com/XCyberThunder/alpha-agent/stargazers">
+  <a href="https://github.com/XCyberThunder/Alpha-agent/stargazers">
     <img src="https://img.shields.io/github/stars/XCyberThunder/Alpha-agent?style=for-the-badge&color=10b981&logo=github&logoColor=white" alt="GitHub stars">
   </a>
   <a href="https://github.com/XCyberThunder/alpha-agent/network/members">
-    <img src="https://img.shields.io/github/forks/XCyberThunder/alpha-agent?style=for-the-badge&color=10b981&logo=git&logoColor=white" alt="GitHub forks">
+    <img src="https://img.shields.io/github/forks/XCyberThunder/Alpha-agent?style=for-the-badge&color=10b981&logo=git&logoColor=white" alt="GitHub forks">
   </a>
   <a href="https://github.com/XCyberThunder/alpha-agent/graphs/contributors">
-    <img src="https://img.shields.io/github/contributors/XCyberThunder/alpha-agent?style=for-the-badge&color=10b981&logo=users&logoColor=white" alt="Contributors">
+    <img src="https://img.shields.io/github/contributors/XCyberThunder/Alpha-agent?style=for-the-badge&color=10b981&logo=users&logoColor=white" alt="Contributors">
   </a>
   <a href="https://github.com/XCyberThunder/alpha-AI/releases">
-    <img src="https://img.shields.io/github/downloads/XCyberThunder/alpha-agent/total?style=for-the-badge&color=10b981&logo=download&logoColor=white" alt="Downloads">
+    <img src="https://img.shields.io/github/downloads/XCyberThunder/Alpha-agent/total?style=for-the-badge&color=10b981&logo=download&logoColor=white" alt="Downloads">
   </a>
 </div>
 
