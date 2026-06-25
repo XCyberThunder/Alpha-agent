@@ -1,85 +1,411 @@
-# 👁️ alpha: The Neural OS - AI Developer Context & Guidelines
+<div align="center">
 
-## 📍 IDENTITY & PROJECT PURPOSE
-You are an AI coding assistant tasked with building and maintaining **alpha**, a high-performance, local-first Agentic Operating System (OS). alpha is not a standard web app; it is a deeply integrated, highly autonomous desktop environment built on Electron, featuring a real-time conversational WebRTC audio pipeline, biometric security, and full file-system/hardware control.
+![alpha Neural OS Documentation Banner](./assets/banner.jpeg)
 
-When writing code for alpha, you must adopt the mindset of a **High-End Silicon Valley Systems Architect**. Code must be hyper-optimized, visually cinematic, and uncompromisingly secure.
+## The Autonomous Neural OS Agent
 
----
+<div style="display: flex; justify-center; gap: 10px; margin-bottom: 20px;">
+  <a href="https://github.com/XCyberThunder/alpha-AI/stargazers">
+    <img src="https://img.shields.io/github/stars/XCyberThunder/alpha-AI?style=for-the-badge&color=10b981&logo=github&logoColor=white" alt="GitHub stars">
+  </a>
+  <a href="https://github.com/XCyberThunder/alpha-AI/network/members">
+    <img src="https://img.shields.io/github/forks/XCyberThunder/alpha-AI?style=for-the-badge&color=10b981&logo=git&logoColor=white" alt="GitHub forks">
+  </a>
+  <a href="https://github.com/XCyberThunder/alpha-AI/graphs/contributors">
+    <img src="https://img.shields.io/github/contributors/XCyberThunder/alpha-AI?style=for-the-badge&color=10b981&logo=users&logoColor=white" alt="Contributors">
+  </a>
+  <a href="https://github.com/XCyberThunder/alpha-AI/releases">
+    <img src="https://img.shields.io/github/downloads/XCyberThunder/alpha-AI/total?style=for-the-badge&color=10b981&logo=download&logoColor=white" alt="Downloads">
+  </a>
+</div>
 
-## 🛠️ TECH STACK & ARCHITECTURE
-- **Core Framework:** Electron (Main Process) + React (Renderer Process) + Vite.
-- **Language:** TypeScript (Strict typing is mandatory).
-- **Styling:** Tailwind CSS (No raw CSS unless absolutely necessary).
-- **Animations:** Framer Motion (for UI orchestration) & GSAP (for complex micro-interactions/loops).
-- **3D Engine:** Three.js / React Three Fiber (R3F) (Must be heavily optimized, see performance rules).
-- **AI Core:** Gemini 2.5 Flash (`BidiGenerateContent` WebRTC streaming).
-- **Biometrics:** `face-api.js` (Running natively on local hardware).
-
----
-
-## 🎨 UI / UX DESIGN SYSTEM (THE "NEURAL OS" AESTHETIC)
-alpha uses a premium, dark-mode, glassmorphic "Agentic" aesthetic. Do NOT use flat colors, standard white backgrounds, or generic web components.
-
-### 1. Color Palette
-- **Deep Backgrounds:** `#030303` or `#050505` (Never absolute black `#000000` unless for deep shadows).
-- **Primary Accents:** Emerald / Neon Green (`emerald-400`, `emerald-500`, `#10b981`, `#34d399`).
-- **Secondary Accents:** Cyan (`cyan-400`, `#06b6d4`), Purple (`purple-500`), Orange (`orange-500` for temp/warnings).
-- **Error States:** Deep Red (`red-500`, `red-900/20`).
-
-### 2. Components & Styling Rules
-- **Glassmorphism:** Use heavily. Standard panels should be `bg-black/40 backdrop-blur-xl border border-white/5 shadow-2xl`.
-- **Typography:** Use `font-sans` for main UI, and `font-mono tracking-widest uppercase text-[10px]` for system telemetry, labels, and logs.
-- **Glows & Lasers:** Use absolute positioned `div` elements with `box-shadow` or `radial-gradient` to create ambient blooms behind active components.
-- **No Scrollbars:** Hide standard scrollbars or style them to be ultra-thin (`scrollbar-small`) with `zinc-800` thumbs.
+**A local-first neural execution system that turns intent into real OS actions.**
 
 ---
 
-## ⚙️ CORE ENGINEERING PROTOCOLS
+</div>
 
-### 1. The Electron Bridge (IPC Strictness)
-- **NEVER** import `fs`, `path`, or `child_process` in the React (`@renderer`) layer.
-- All system-level actions MUST be routed through `window.electron.ipcRenderer.invoke()` or `.send()`.
-- Example: `await window.electron.ipcRenderer.invoke('secure-save-keys', data)`
+# 📑 Table of Contents
 
-### 2. Audio & WebSocket Latency (The 250ms Rule)
-- alpha operates on a real-time WebRTC audio pipeline. Do NOT flood the WebSocket.
-- Audio from `AudioWorklet` must be buffered (e.g., `4096` frames / ~250ms) before being base64-encoded and sent to Gemini.
-- Always implement Voice Activity Detection (VAD) checks: if `serverContent.interrupted` is true, you must INSTANTLY flush local audio queues and stop playback nodes.
-
-### 3. WebGL / 3D Performance (Strict Limitations)
-If modifying `Sphere.tsx` or any R3F components:
-- **Never** instantiate variables (like `new THREE.Color()` or `new THREE.Vector3()`) inside `useFrame`. Memory churn causes Garbage Collection (GC) stutters which ruin the OS illusion. Pre-instantiate using `useMemo` and mutate via `.lerp()` or `.copy()`.
-- Cap pixel ratios to prevent melting low-end GPUs: `<Canvas dpr={[1, 1.5]} gl={{ powerPreference: "high-performance" }}>`.
-- For overlapping transparent particles, disable depth writing: `depthWrite={false}`.
-
----
-
-## 📂 PROJECT STRUCTURE & ROUTING
-- `/src/main`: Electron backend. Contains all tool logic, hardware handlers, and IPC registry.
-- `/src/renderer/src`: React frontend. Contains all visual layers.
-  - `/components`: Reusable UI parts.
-  - `/views`: Main OS screens (Dashboard, Settings, LockScreen).
-  - `/hooks`: Custom React logic.
-  - `/services`: Class-based managers (e.g., `GeminiLiveService`).
-- `/src/preload`: The secure bridge exposing APIs to `window.electron`.
+- [⚡ Overview](#-overview)
+- [✨ Core Features](#-core-features)
+- [🏗️ Architecture](#️-architecture)
+- [💻 Tech Stack](#-tech-stack)
+- [🔐 Security](#-security)
+- [🚀 Installation & Setup](#-installation--setup)
+- [📁 Project Structure](#-project-structure)
+- [🧠 Development Philosophy](#-development-philosophy)
+- [🤝 Contributing](#-contributing)
+- [🧩 Extending alpha](#-extending-alpha)
+- [🧠 Roadmap](#-roadmap)
+- [⚠️ Disclaimer](#️-disclaimer)
+- [👨‍💻 Architect](#-architect)
+- [📜 License](#-license)
 
 ---
 
-## 🤖 AI TOOL CAPABILITIES (CONTEXT FOR ASSISTANT)
-alpha natively executes the following tools. When writing frontend logic, assume the backend can handle:
-- **File System:** Read, write, move, index, semantic search.
-- **Mobile ADB:** Launch Android apps, tap/swipe screen, pull/push files, toggle hardware.
-- **Hacking/Web:** Reality hacking (DOM injection), deep RAG research, opening maps/navigation.
-- **System:** Teleport/resize OS windows, execute keyboard macros (`ghost_type`), take screenshots.
-- **Generative:** Create floating desktop widgets, build local animated websites, generate images.
+# ⚡ Overview
+
+alpha is not a chatbot.
+
+It is a **local-first AI Operating System layer** that executes real-world actions across your system, applications, and devices.
+
+> Speak your command. alpha executes it.
 
 ---
 
-## 🚨 CODE GENERATION RULES (READ CAREFULLY)
-1. **Never use generic placeholder text.** Use highly technical, OS-themed text (e.g., "INITIALIZING OPTICS", "NEURAL UPLINK SECURE").
-2. **Always handle loading/error states.** A premium OS never shows a blank screen or a raw JavaScript error. Catch all promises and display cinematic error HUDs.
-3. **If you update main process logic**, remember to update the `preload` script if new variables need to be exposed.
-4. **Assume the user is a Power User / Creator.** Do not write overly cautious warning dialogues unless requested. Execute commands swiftly.
+# ✨ Core Features & System Capabilities
 
-MADE BY - XCyberThunder
+### 📂 System & File Management
+
+- 🖥️ **Open App:** Native application lifecycle control.
+- 🛑 **Close App:** Instant process termination commands.
+- 🗂️ **Read Directory:** Local folder scanning & indexing.
+- 📁 **Create Folder:** Instant directory structure generation.
+- 📄 **Read File:** Deep text & code extraction.
+- 📝 **Write File:** Autonomous disk write access.
+- 🔄 **Manage File:** Copy, move, and delete control.
+- 🚀 **Open File:** Native OS application launcher.
+- 🗃️ **Smart Drop Zones:** Viral, autonomous folder sorting.
+
+### 🧠 Vector Search & Local Knowledge
+
+- 🔍 **Index Folder:** Semantic LanceDB directory ingestion.
+- 🔎 **Smart File Search:** Vector-based local file retrieval.
+- 🖼️ **Read Gallery:** Local image cache scanning.
+- 👁️ **Analyze Photo:** Direct multimodal vision processing.
+
+### 💻 Developer & Terminal Tools
+
+- ⌨️ **Run Terminal:** Native shell & CLI execution.
+- 🛠️ **Open Project:** Instant IDE workspace loading.
+- ⚙️ **Activate Protocol:** Context-aware coding mode switch.
+- 🏗️ **Build File:** Writing code directly to disk.
+- 🤖 **Execute Sequence:** JSON-based macro automation runs.
+- ▶️ **Execute Macro:** Named workflow sequence triggering.
+- 🕳️ **Deploy Wormhole:** Expose localhost to public internet.
+- 🛑 **Close Wormhole:** Terminate public localhost tunnels.
+
+### 🎯 Desktop UI, Vision & Automation
+
+- 🪟 **Teleport Windows:** Dynamic desktop window management.
+- 🧩 **Create Widget:** Spawn live floating desktop components.
+- ❌ **Close Widgets:** Clear active floating overlays.
+- 🖱️ **Click on Screen:** AI-driven exact coordinate targeting.
+- 📜 **Scroll Screen:** Autonomous up/down page navigation.
+- ⚡ **Press Shortcut:** Global keyboard hotkey injection.
+- 👻 **Phantom Typer:** Global inline clipboard injection.
+- ✂️ **Screen Peeler (OCR):** Instant UI-to-code visual extraction.
+- ⌨️ **Ghost Coder:** Inline IDE generation (`Ctrl+Alt+Space`).
+- 🔊 **Set Volume:** Master audio level control.
+- 📸 **Take Screenshot:** Instant visual context capture.
+
+### 💾 Memory & Information
+
+- 🧠 **Save Core Memory:** Deep persistent identity tracking.
+- 📥 **Retrieve Memory:** Instant past context recall.
+- 📝 **Save Note:** Local markdown note generation.
+- 📖 **Read Notes:** Instant saved plan retrieval.
+- 📧 **Read Emails:** Gmail inbox scraping & summarization.
+
+### 🌐 Web, Media & Financials
+
+- 🔍 **Google Search:** Live internet data retrieval.
+- 🌤️ **Get Weather:** Real-time atmospheric condition checks.
+- 🗺️ **Open Map:** Interactive dark-mode map loading.
+- 🚗 **Get Navigation:** Real-time routing and directions.
+- 🎵 **Play Spotify:** Instant music & playlist execution.
+- 📈 **Stock Price:** Real-time financial ticker tracking.
+- 📊 **Compare Stocks:** Dual-ticker fundamental market analysis.
+- 🕷️ **Hack Live Website:** Viral visual DOM manipulation.
+- 🎨 **Build Animated Web:** Agentic Tailwind & GSAP generation.
+- 🖼️ **Generate Image:** High-fidelity multimodal media generation.
+
+### 💬 Communications
+
+- 📲 **Send WhatsApp:** Instant automated message dispatch.
+- 🕒 **Schedule WhatsApp:** Cron-based delayed message automation.
+- 📧 **Draft Email:** Autonomous message composition.
+- 🚀 **Send Email:** Action-oriented direct dispatch.
+
+### 📱 Mobile Telekinesis (Deep Android Link)
+
+- 🔔 **Mobile Notifications:** Read texts from connected phone.
+- 🔋 **Mobile Info:** Battery & hardware telemetry tracking.
+- 📤 **Push File to Mobile:** Seamless PC-to-phone transfers.
+- 📥 **Pull File from Mobile:** Instant phone-to-PC fetching.
+- 📱 **Open Mobile App:** Remote Android application launching.
+- 🛑 **Close Mobile App:** Remote Android process killing.
+- 👆 **Tap Mobile Screen:** Remote coordinate touch execution.
+- 📜 **Swipe Mobile Screen:** Remote directional scrolling control.
+- ⚙️ **Toggle Hardware:** Remote Wi-Fi/Bluetooth/Flashlight switching.
+
+### 🕵️ Autonomous Research & Deep RAG
+
+- 🕸️ **Deep Research:** Autonomous Llama 3 web crawling.
+- 📓 **Read Notion Reports:** Deep sync with Notion databases.
+- 📚 **Ingest Codebase:** Deep local project Vector embedding.
+- 🔮 **Consult Oracle:** Deep local codebase RAG queries.
+
+### 🔐 Security & OS Vault
+
+- 🔒 **Lock System Vault:** Standard PIN OS lockdown protocol.
+- 🛡️ **Biometric Encryption:** Multi-face recognition OS lockdown.
+
+---
+
+# 🏗️ Architecture
+
+### Frontend
+
+- React + Tailwind + Framer Motion
+- Handles UI, commands, voice
+
+### Backend
+
+- Electron (Node.js)
+- Full system access (files, automation, sockets)
+
+### IPC Bridge
+
+```js
+window.electron.ipcRenderer.invoke('tool-name', payload)
+```
+
+---
+
+# 💻 Tech Stack
+
+alpha is forged using a high-performance stack combining web technologies with deep native OS access and state-of-the-art AI models.
+
+### 🖥️ Core Desktop & UI Framework
+
+- **Electron & Vite:** High-performance desktop compilation and split-process architecture.
+- **React 19:** Component-based, responsive frontend.
+- **Tailwind CSS v4:** Utility-first styling engine for the Neon Emerald aesthetic.
+- **Framer Motion & GSAP:** Cinematic, hardware-accelerated UI animations.
+- **Three.js & React Three Fiber:** 3D rendering for complex neural visualizations.
+- **Zustand:** Fast, scalable global state management.
+
+### 🧠 AI, RAG & Machine Learning
+
+- **Google Gemini AI:** Core reasoning and generative engine (`@google/genai`).
+- **Groq SDK:** Ultra-fast, low-latency inference routing.
+- **Hugging Face & Xenova:** Local model inference and transformers (`@huggingface/inference`, `@xenova/transformers`).
+- **LanceDB (VectorDB):** Embedded local vector database for deep codebase RAG and memory storage.
+- **Face-api.js:** Local biometric facial recognition for the System Vault.
+
+### ⚙️ OS Control & Automation Engine
+
+- **Nut.js:** Deep native desktop automation (mouse, keyboard, exact coordinate targeting).
+- **Puppeteer (with Stealth):** Headless browser automation, DOM hacking, and invisible web crawling.
+- **Node Window Manager:** Native OS window lifecycle and spatial placement control.
+- **Tesseract.js:** Optical Character Recognition (OCR) for the 'Screen Peeler' visual extraction.
+- **Native Utilities:** `loudness` (master audio), `clipboardy` (phantom typing), `screenshot-desktop` (visual context).
+
+### 🔗 Integrations & Parsing
+
+- **Google APIs & Auth:** Secure local auth, Gmail scraping, and Google Cloud services.
+- **Notion Client:** Direct read/write mapping to Notion databases.
+- **Tavily Core:** Agentic, deep-web search routing.
+- **Data Parsers:** `pdf-parse`, `mammoth` (docx), `cheerio` (HTML DOM).
+
+---
+
+# 🔐 Security
+
+- 100% BYOK (Bring Your Own Key)
+- Local encryption (OS keychain)
+- Zero-trust architecture
+- No external key storage
+
+---
+
+# 💻 System Requirements
+
+- **OS:** Windows 10 / 11 (Native execution).
+- **Memory:** Minimum 4GB RAM (8GB recommended for heavy RAG indexing).
+- **Storage:** ~5.2 GB for the application, plus extra space for local LanceDB vector storage.
+
+---
+
+# 🚀 Installation & Setup
+
+### 1. Clone Repo
+
+```bash
+git clone https://github.com/201Thunder/alpha-AI.git
+cd alpha-AI
+```
+
+### 2. Install Dependencies
+
+```bash
+npm install
+```
+
+---
+
+### 3. Run Dev Server
+
+```bash
+npm run dev
+```
+
+---
+
+### 5. Initialize Vault
+
+- Open app
+- Go to Command Center (Settings)
+- Add API keys securely
+
+---
+
+## 🔑 System Keys & Configuration
+
+alpha operates locally, but requires specific API keys to bridge the gap to large language models and search engines. **Your keys are encrypted and stored locally on your machine. They are never sent to our servers.**
+
+### How to Configure
+
+- **Desktop App Users:** Open alpha, navigate to the **Settings Tab (Command Center) > API Keys**, and paste your keys directly into the vault.
+- **Developers (Running from source):** Rename `.env.example` to `.env` in the root directory and place your keys there for local testing.
+
+### 🔴 Required Keys
+
+The Neural OS requires these core engines to process logic and execute actions.
+
+- **[Google Gemini API](https://aistudio.google.com/app/apikey)** (`GEMINI_API_KEY`)
+  - **Role:** The primary reasoning and generative engine for alpha.
+  - **Setup:** Sign in to Google AI Studio > Click 'Get API Key' > Create a key.
+
+- **[Groq API](https://console.groq.com/keys)** (`GROQ_API_KEY`)
+  - **Role:** Used for ultra-fast, low-latency agent routing and rapid decision-making.
+  - **Setup:** Log in to Groq Cloud Console > Navigate to 'API Keys' > Create & copy your key.
+
+### 🟡 Optional Keys
+
+These keys unlock advanced, autonomous subsystems.
+
+- **[Tavily Search API](https://app.tavily.com/home)** (`TAVILY_API_KEY`)
+  - **Role:** Powers the Deep Research agent for real-time web crawling and synthesis.
+  - **Setup:** Sign up at the Tavily Portal > Go to Dashboard > Generate a free-tier key.
+
+- **[Hugging Face Token](https://huggingface.co/settings/tokens)** (`HUGGINGFACE_API_KEY`)
+  - **Role:** Required only if you are downloading and running local open-source inference models.
+  - **Setup:** Create a Hugging Face account > Settings > Access Tokens > Create token with 'Read' permissions.
+
+> 💡 **Having trouble finding your keys?** Visit our official [Key Forging Guide](https://alphaaiw.vercel.app/guide) for step-by-step instructions.
+
+
+# 📁 Project Structure
+
+```text
+alpha/
+├── build/                   # OS-specific build artifacts
+├── out/                     # Compiled output ready for packaging
+├── resources/               # Static assets (icons, trained data, etc.)
+├── src/                     # Core application source code
+│   ├── main/                # Electron Main Process (Node.js backend & OS execution)
+│   ├── preload/             # Context Isolation Scripts (The IPC secure bridge)
+│   └── renderer/            # React Frontend (UI, floating widgets, GSAP animations)
+├── .env.example             # Template for API keys and environment variables
+├── electron-builder.yml     # Configuration for packaging the .exe / .app / .AppImage
+├── electron.vite.config.ts  # Vite configuration for the split architecture
+├── eng.traineddata          # Tesseract OCR language data file
+└── package.json             # Project dependencies and scripts
+```
+
+---
+
+# 🧠 Development Philosophy
+
+- Execution > Conversation
+- Modular system design
+- Real-world usability
+
+---
+
+## 🤝 Contributing
+
+alpha is built for the community. If you want to expand the neural forge, submit a PR.
+
+### Quick Start
+
+1. **Fork** the repository.
+2. **Branch** off `main`.
+3. **Match** existing patterns (Tailwind for UI, strict IPC typing for the backend).
+4. **Test** thoroughly (ensure tools do not block the main Electron thread).
+5. **Submit** a PR with a clear explanation and visual evidence if altering the UI.
+
+🚨 **Read the full [Contribution Guide](CONTRIBUTING.md) before submitting.**
+
+---
+
+### Commit Rules
+
+Keep your commit messages clean, descriptive, and easy to understand. Clearly state what the commit accomplishes and always include the relevant Issue ID so we can track the changes.
+
+```bash
+✅ git commit -m "feat: integrated new desktop widget (#45)"
+✅ git commit -m "fix: resolved IPC memory leak in Oracle module (#12)"
+```
+
+---
+
+# 🧩 Extending alpha
+
+You can:
+
+- Add new IPC tools
+- Integrate APIs
+- Build automation modules
+- Extend UI widgets
+
+---
+
+## 🧠 Roadmap
+
+- [ ] Voice-first system
+- [ ] Plugin marketplace
+- [ ] Memory graph
+- [ ] Multi-agent system
+- [ ] Desktop + Cloud hybrid
+
+---
+
+# ⚠️ Disclaimer
+
+alpha has deep system-level execution capabilities.  
+Use responsibly. The maintainers are not liable for misuse.
+
+---
+
+
+# 👨‍💻 Architect
+
+**XCyberThunder**  
+AI Systems Engineer and Project Leader + Cybersecurity
+
+Instagram: [@XCyberThunder](https://www.instagram.com/XCyberThunder/)
+GitHub: [@XCyberThunder](https://github.com/XCyberThunder)
+
+---
+
+# 📜 License
+
+MIT License — see LICENSE file.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+---
+
+# 🟥 Final Note
+
+**alpha is not a chatbot.** It is a **neural extension of your operating system**.
+
+> _System Online._
+
+# Made with ❤️ by [XCyberThunder](https://instagram.com/XCyberThunder)
+
+
+---
