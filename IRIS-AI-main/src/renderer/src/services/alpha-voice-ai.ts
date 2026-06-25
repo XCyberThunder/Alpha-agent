@@ -461,6 +461,10 @@ export class GeminiLiveService {
       run
     })
 
+    if (/^(ye|yeh|this|isko|ise|isey)\s+(karo|kar do|do it)$/.test(normalized)) {
+      return make('CLARIFY_COMMAND', 'unclear', 'Kya karna hai?', () => undefined)
+    }
+
     if (/(brave|browser).*(close|band|bnd)|close\s+brave|brave\s+band/i.test(normalized)) {
       return make('CLOSE_APP', 'brave', 'Closing Brave.', () => closeApp('brave'))
     }
@@ -501,12 +505,12 @@ export class GeminiLiveService {
       return make('SCROLL', 'bottom', 'Going to the bottom.', () => shortcut('end', []))
     }
 
-    if (/(scroll|neeche|niche|down|aur neeche|aur niche)/i.test(normalized)) {
-      return make('SCROLL', 'down', 'Scrolling down.', () => scrollScreen('down', 800))
-    }
-
     if (/(upar|up).*scroll|scroll.*(upar|up)/i.test(normalized)) {
       return make('SCROLL', 'up', 'Scrolling up.', () => scrollScreen('up', 800))
+    }
+
+    if (/(scroll down|down scroll|neeche|niche|aur neeche|aur niche)/i.test(normalized)) {
+      return make('SCROLL', 'down', 'Scrolling down.', () => scrollScreen('down', 800))
     }
 
     if (/(app minimize|alpha minimize|emba minimize|window minimize|minimize karo)/i.test(normalized)) {
@@ -2434,7 +2438,7 @@ ${coreMemory}
             this.aiResponseBuffer += serverContent.outputTranscription.text
           }
 
-          if (serverContent.inputTranscription?.text) {
+          if (serverContent.inputTranscription?.text && !this.localAckSpeakText) {
             console.debug(`[VOICE_TIMING] stt_transcript_received=${Date.now()}`)
             if (this.activeAudioNodes.length > 0 && Date.now() - this.lastBargeInAt > 350) {
               this.lastBargeInAt = Date.now()

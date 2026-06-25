@@ -91,6 +91,10 @@ export default function DashboardView({
   }, [])
 
   useEffect(() => {
+    console.debug(`[CHAT_UI] collapsed=${isChatCollapsed} restored=${!isChatCollapsed} width=${isChatCollapsed ? 132 : 360}`)
+  }, [isChatCollapsed])
+
+  useEffect(() => {
     if (!isSystemActive) {
       setNetworkStats({ ping: 0, rate: 0.0, tx: 0, rx: 0 })
       return
@@ -566,102 +570,94 @@ export default function DashboardView({
       </div>
 
       <div
-        className={`hidden lg:flex ${
-          isChatCollapsed ? 'col-span-1' : 'col-span-3'
-        } flex-col overflow-hidden h-full z-40 transition-all duration-300 ${
-          isChatCollapsed ? 'opacity-90' : 'opacity-100'
+        className={`hidden lg:flex col-span-3 h-full z-40 transition-all duration-300 ${
+          isChatCollapsed
+            ? 'items-start justify-start overflow-visible pointer-events-none'
+            : 'flex-col overflow-hidden'
         }`}
       >
-        <div className={`${glassPanel} h-full p-4 flex flex-col`}>
-          <div className="flex items-center justify-between border-b border-white/10 pb-3 mb-2">
-            <span className="text-[10px] font-bold tracking-widest text-zinc-400">
-              <RiTerminalBoxLine className="inline mr-1" /> HYBRID CHAT
-            </span>
-            <div className="flex items-center gap-2">
-              <span className="text-[8px] font-mono text-emerald-500/50">
-                {isAiTyping ? 'STREAMING' : 'LIVE-LOG'}
+        {isChatCollapsed ? (
+          <button
+            onClick={() => setIsChatCollapsed(false)}
+            className={`${glassPanel} pointer-events-auto mt-1 ml-auto rounded-full px-4 py-3 flex items-center gap-3 text-cyan-200 border-cyan-300/25 hover:border-cyan-200/50 hover:bg-cyan-300/10 transition-all shadow-[0_0_24px_rgba(34,211,238,0.14)]`}
+            title="Restore Hybrid Chat"
+          >
+            <RiTerminalBoxLine size={15} className="shrink-0" />
+            <span className="font-mono text-[10px] font-bold tracking-widest whitespace-nowrap">CHAT</span>
+            {isAiTyping && <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse shadow-[0_0_10px_rgba(52,211,153,0.8)]" />}
+          </button>
+        ) : (
+          <div className={`${glassPanel} h-full p-4 flex flex-col min-w-0`}>
+            <div className="flex items-center justify-between border-b border-white/10 pb-3 mb-2 shrink-0">
+              <span className="text-[10px] font-bold tracking-widest text-zinc-400 whitespace-nowrap">
+                <RiTerminalBoxLine className="inline mr-1" /> HYBRID CHAT
               </span>
+              <div className="flex items-center gap-2">
+                <span className="text-[8px] font-mono text-emerald-500/50 whitespace-nowrap">
+                  {isAiTyping ? 'STREAMING' : 'LIVE-LOG'}
+                </span>
+                <button
+                  onClick={() => setIsChatCollapsed(true)}
+                  className="p-1 rounded border border-white/10 text-zinc-500 hover:text-white hover:bg-white/5 transition-colors"
+                  title="Collapse chat"
+                >
+                  <RiArrowDownSLine size={14} />
+                </button>
+              </div>
+            </div>
+            <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto space-y-3 pr-2 scrollbar-small scroll-smooth">
+              {chatHistory.length === 0 ? (
+                <div className="h-full flex flex-col items-center justify-center text-zinc-700 gap-2 opacity-50">
+                  <RiHistoryLine size={24} />
+                  <span className="text-[9px] tracking-widest uppercase font-mono">No Data Stream</span>
+                </div>
+              ) : (
+                chatHistory.map((msg, idx) => {
+                  const text = msg.parts && msg.parts[0] ? msg.parts[0].text : msg.content
+                  const isUser = msg.role === 'user'
+                  return (
+                    <div key={idx} className={`flex flex-col gap-1 ${isUser ? 'items-end' : 'items-start'}`}>
+                      <div
+                        className={`chat-bubble-glass max-w-[95%] py-2 px-3 rounded-lg text-[11px] leading-relaxed border font-mono font-semibold break-words ${isUser ? 'bg-cyan-900/20 border-cyan-400/20 text-cyan-50/90 rounded-br-none' : 'bg-white/5 border-white/10 text-zinc-300 rounded-bl-none'}`}
+                      >
+                        {text}
+                      </div>
+                      <span className="text-[8px] font-mono text-zinc-700 px-1">
+                        {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    </div>
+                  )
+                })
+              )}
+              {isAiTyping && (
+                <div className="flex items-start">
+                  <div className="chat-bubble-glass py-2 px-3 rounded-lg rounded-bl-none border border-purple-400/20 bg-purple-500/10 text-purple-200 text-[10px] font-mono tracking-widest animate-pulse">
+                    alpha THINKING...
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="mt-3 flex items-end gap-2 border-t border-white/10 pt-3 shrink-0">
+              <textarea
+                value={chatInput}
+                onChange={(event) => setChatInput(event.target.value)}
+                onKeyDown={onChatKeyDown}
+                rows={2}
+                placeholder={isSystemActive ? 'Type to alpha...' : 'Activate alpha first...'}
+                disabled={!isSystemActive}
+                className="glass-input min-h-11 max-h-24 flex-1 resize-none rounded-lg px-3 py-2 text-[11px] font-mono text-zinc-100 outline-none placeholder:text-zinc-600 disabled:opacity-40 scrollbar-small"
+              />
               <button
-                onClick={() => setIsChatCollapsed((prev) => !prev)}
-                className="p-1 rounded border border-white/10 text-zinc-500 hover:text-white hover:bg-white/5 transition-colors"
+                onClick={submitChat}
+                disabled={!isSystemActive || !chatInput.trim() || isSendingText}
+                className="glass-button h-11 w-11 shrink-0 rounded-lg text-cyan-300 disabled:opacity-30 transition-all flex items-center justify-center"
               >
-                {isChatCollapsed ? <RiArrowUpSLine size={14} /> : <RiArrowDownSLine size={14} />}
+                <RiSendPlane2Line size={18} />
               </button>
             </div>
           </div>
-          {!isChatCollapsed ? (
-            <>
-              <div ref={scrollRef} className="flex-1 overflow-y-auto space-y-3 pr-2 scrollbar-small scroll-smooth">
-                {chatHistory.length === 0 ? (
-                  <div className="h-full flex flex-col items-center justify-center text-zinc-700 gap-2 opacity-50">
-                    <RiHistoryLine size={24} />
-                    <span className="text-[9px] tracking-widest uppercase font-mono">
-                      No Data Stream
-                    </span>
-                  </div>
-                ) : (
-                  chatHistory.map((msg, idx) => {
-                    const text = msg.parts && msg.parts[0] ? msg.parts[0].text : msg.content
-                    const isUser = msg.role === 'user'
-                    return (
-                      <div
-                        key={idx}
-                        className={`flex flex-col gap-1 ${isUser ? 'items-end' : 'items-start'}`}
-                      >
-                        <div
-            className={`chat-bubble-glass max-w-[95%] py-2 px-3 rounded-lg text-[11px] leading-relaxed border font-mono font-semibold ${isUser ? 'bg-cyan-900/20 border-cyan-400/20 text-cyan-50/90 rounded-br-none' : 'bg-white/5 border-white/10 text-zinc-300 rounded-bl-none'}`}
-                        >
-                          {text}
-                        </div>
-                        <span className="text-[8px] font-mono text-zinc-700 px-1">
-                          {new Date().toLocaleTimeString([], {
-                            hour: '2-digit',
-                            minute: '2-digit'
-                          })}
-                        </span>
-                      </div>
-                    )
-                  })
-                )}
-                {isAiTyping && (
-                  <div className="flex items-start">
-                    <div className="chat-bubble-glass py-2 px-3 rounded-lg rounded-bl-none border border-purple-400/20 bg-purple-500/10 text-purple-200 text-[10px] font-mono tracking-widest animate-pulse">
-                      alpha THINKING...
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <div className="mt-3 flex items-end gap-2 border-t border-white/10 pt-3">
-                <textarea
-                  value={chatInput}
-                  onChange={(event) => setChatInput(event.target.value)}
-                  onKeyDown={onChatKeyDown}
-                  rows={2}
-                  placeholder={
-                    isSystemActive ? 'Type to alpha...' : 'Activate alpha first...'
-                  }
-                  disabled={!isSystemActive}
-                  className="glass-input min-h-11 max-h-24 flex-1 resize-none rounded-lg px-3 py-2 text-[11px] font-mono text-zinc-100 outline-none placeholder:text-zinc-600 disabled:opacity-40 scrollbar-small"
-                />
-                <button
-                  onClick={submitChat}
-                  disabled={!isSystemActive || !chatInput.trim() || isSendingText}
-                  className="glass-button h-11 w-11 shrink-0 rounded-lg text-cyan-300 disabled:opacity-30 transition-all flex items-center justify-center"
-                >
-                  <RiSendPlane2Line size={18} />
-                </button>
-              </div>
-            </>
-          ) : (
-            <button
-              onClick={() => setIsChatCollapsed(false)}
-              className="glass-button flex-1 rounded-xl text-cyan-300/90 font-mono text-[10px] tracking-widest transition-all"
-            >
-              RESTORE CHAT STREAM
-            </button>
-          )}
-        </div>
+        )}
       </div>
     </div>
   )
