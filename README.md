@@ -5,7 +5,7 @@
 ## The Autonomous Neural OS Agent
 
 <div style="display: flex; justify-center; gap: 10px; margin-bottom: 20px;">
-  <a href="https://github.com/XCyberThunder/alpha-AI/stargazers">
+  <a href="https://github.com/XCyberThunder/alpha-agent/stargazers">
     <img src="https://img.shields.io/github/stars/XCyberThunder/Alpha-agent?style=for-the-badge&color=10b981&logo=github&logoColor=white" alt="GitHub stars">
   </a>
   <a href="https://github.com/XCyberThunder/alpha-agent/network/members">
