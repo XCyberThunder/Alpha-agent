@@ -1,5 +1,50 @@
+appId: com.thunder.alpha
+productName: alpha
 npmRebuild: false
+nodeGypRebuild: false
+buildDependenciesFromSource: false
+
+directories:
+  buildResources: build
+
+files:
+  - "!**/.vscode/*"
+  - "!dist/**"
+  - "!dist-*/**"
+  - "!dist*/**"
+  - "!src/*"
+  - "!electron.vite.config.{js,ts,mjs,cjs}"
+  - "!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}"
+  - "!{.env,.env.*,.npmrc,pnpm-lock.yaml}"
+  - "!{tsconfig.json,tsconfig.node.json,tsconfig.web.json,credentials.json}"
+
+asarUnpack:
+  - resources/**
+
+win:
+  icon: alpha.ico
+  executableName: alpha
+  signAndEditExecutable: false
+  target:
+    - target: nsis
+      arch:
+        - x64
+
+nsis:
+  artifactName: alpha Setup.${ext}
+  shortcutName: alpha
+  uninstallDisplayName: alpha
+  installerIcon: alpha.ico
+  uninstallerIcon: alpha.ico
+  installerHeaderIcon: alpha.ico
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  runAfterFinish: true
+  differentialPackage: false
+
 publish:
   provider: github
-  owner: Thunder
-  repo: alpha
+  owner: XCyberThunder
+  repo: Alpha-agent

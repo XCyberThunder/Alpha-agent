@@ -48,7 +48,8 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": "always",
       "createStartMenuShortcut": true,
-      "runAfterFinish": true
+      "runAfterFinish": true,
+      "differentialPackage": false
     },
     "mac": {
       "entitlementsInherit": "build/entitlements.mac.plist",
@@ -82,7 +83,14 @@
     },
     "appImage": {
       "artifactName": "${name}-${version}.${ext}"
-    }
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "XCyberThunder",
+        "repo": "Alpha-agent"
+      }
+    ]
   },
   "scripts": {
     "format": "prettier --write .",
@@ -95,7 +103,7 @@
     "build": "npm run typecheck && electron-vite build",
     "postinstall": "electron-builder install-app-deps",
     "build:unpack": "npm run build && electron-builder --dir",
-    "build:win": "npm run build && electron-builder --win",
+    "build:win": "npm run build && electron-builder --win nsis",
     "build:mac": "electron-vite build && electron-builder --mac",
     "build:linux": "electron-vite build && electron-builder --linux"
   },
