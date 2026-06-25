@@ -31,7 +31,7 @@ interface SettingsProps {
 }
 
 type TabType = 'updates' | 'general' | 'keys' | 'security'
-type KeyGroup = 'geminiBrain' | 'geminiAgent' | 'geminiLiveAudio' | 'openrouter'
+type KeyGroup = 'geminiBrain' | 'geminiAgent' | 'openrouter'
 type KeySlotStatus = {
   slot: number
   enabled: boolean
@@ -54,11 +54,6 @@ const keyGroupLabels: Record<KeyGroup, { title: string; description: string; acc
     description: 'Reserved for future parallel agent subtasks.',
     accent: 'text-violet-300 border-violet-500/20 bg-violet-500/5'
   },
-  geminiLiveAudio: {
-    title: 'Gemini Live Audio / STT-TTS Keys',
-    description: 'Used for Gemini Live websocket audio STT/TTS. Working slot is cached.',
-    accent: 'text-cyan-300 border-cyan-500/20 bg-cyan-500/5'
-  },
   openrouter: {
     title: 'GLM 5.2 Complex Keys',
     description: 'Used only for complex coding, website, planning, and reasoning tasks.',
@@ -69,14 +64,12 @@ const keyGroupLabels: Record<KeyGroup, { title: string; description: string; acc
 const emptySlotInputs = (): Record<KeyGroup, string[]> => ({
   geminiBrain: ['', '', ''],
   geminiAgent: ['', '', ''],
-  geminiLiveAudio: ['', '', ''],
   openrouter: ['', '', '']
 })
 
 const emptySlotStatuses = (): Record<KeyGroup, KeySlotStatus[]> => ({
   geminiBrain: [],
   geminiAgent: [],
-  geminiLiveAudio: [],
   openrouter: []
 })
 
@@ -799,7 +792,6 @@ const SettingsView = ({ isSystemActive }: SettingsProps) => {
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     {renderKeySlotGroup('geminiBrain')}
                     {renderKeySlotGroup('geminiAgent')}
-                    {renderKeySlotGroup('geminiLiveAudio')}
                     {renderKeySlotGroup('openrouter')}
 
                     <div className="flex flex-col gap-3 md:col-span-2 bg-cyan-500/5 border border-cyan-500/20 rounded-xl p-5">

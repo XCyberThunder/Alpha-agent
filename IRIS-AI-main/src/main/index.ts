@@ -100,7 +100,7 @@ function readSecureVault(): Record<string, any> {
   }
 }
 
-type ApiKeyGroup = 'geminiBrain' | 'geminiAgent' | 'geminiLiveAudio' | 'openrouter'
+type ApiKeyGroup = 'geminiBrain' | 'geminiAgent' | 'openrouter'
 type ApiKeyStatus = 'empty' | 'active' | 'available' | 'disabled' | 'failed' | 'rate-limited'
 type ApiKeySlot = {
   slot: number
@@ -112,7 +112,7 @@ type ApiKeySlot = {
   lastUsedAt?: string
 }
 
-const apiKeyGroups: ApiKeyGroup[] = ['geminiBrain', 'geminiAgent', 'geminiLiveAudio', 'openrouter']
+const apiKeyGroups: ApiKeyGroup[] = ['geminiBrain', 'geminiAgent', 'openrouter']
 
 const maskApiKey = (key = '') => {
   if (!key) return ''
@@ -460,11 +460,7 @@ app.whenReady().then(() => {
         keySlots.geminiBrain[0].key = encryptVaultValue(geminiKey.trim())
         keySlots.geminiBrain[0].enabled = true
         keySlots.geminiBrain[0].status = 'available'
-        keySlots.geminiLiveAudio[0].key = encryptVaultValue(geminiKey.trim())
-        keySlots.geminiLiveAudio[0].enabled = true
-        keySlots.geminiLiveAudio[0].status = 'available'
         markActiveKeySlot(secureData, 'geminiBrain', 1)
-        markActiveKeySlot(secureData, 'geminiLiveAudio', 1)
       }
       if (typeof openrouterKey === 'string' && openrouterKey.trim()) {
         keySlots.openrouter[0].key = encryptVaultValue(openrouterKey.trim())
@@ -488,18 +484,14 @@ app.whenReady().then(() => {
       const data = readSecureVault()
       const brainSlot = getActiveKeySlot(data, 'geminiBrain')
       const agentSlot = getActiveKeySlot(data, 'geminiAgent')
-      const liveSlot = getActiveKeySlot(data, 'geminiLiveAudio')
       const openRouterSlot = getActiveKeySlot(data, 'openrouter')
       return {
         groqKey: decryptVaultValue(data.groq),
-        geminiKey: decryptKeySlot(brainSlot || liveSlot || ({} as ApiKeySlot)) || decryptVaultValue(data.gemini),
+        geminiKey: decryptKeySlot(brainSlot || ({} as ApiKeySlot)) || decryptVaultValue(data.gemini),
         geminiBrainKey: decryptKeySlot(brainSlot || ({} as ApiKeySlot)) || decryptVaultValue(data.gemini),
         geminiBrainSlot: brainSlot?.slot || null,
         geminiAgentKey: decryptKeySlot(agentSlot || ({} as ApiKeySlot)),
         geminiAgentSlot: agentSlot?.slot || null,
-        geminiLiveAudioKey:
-          decryptKeySlot(liveSlot || brainSlot || ({} as ApiKeySlot)) || decryptVaultValue(data.gemini),
-        geminiLiveAudioSlot: liveSlot?.slot || brainSlot?.slot || null,
         openrouterKey: decryptKeySlot(openRouterSlot || ({} as ApiKeySlot)) || decryptVaultValue(data.openrouter),
         openrouterSlot: openRouterSlot?.slot || null,
         openrouterModel: data.openrouterModel || 'glm-5.2',

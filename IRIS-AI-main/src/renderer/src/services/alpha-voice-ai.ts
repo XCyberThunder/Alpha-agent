@@ -297,7 +297,6 @@ export class GeminiLiveService {
 
   public isConnected: boolean = false
 
-  private activeLiveAudioSlot: number | null = null
   private isMicMuted: boolean = false
 
   private nextStartTime: number = 0
@@ -795,19 +794,8 @@ export class GeminiLiveService {
 
   async connect(): Promise<void> {
     if (window.electron?.ipcRenderer) {
-      const activeLiveKey = await window.electron.ipcRenderer.invoke(
-        'key-manager-get-active-key',
-        'geminiLiveAudio'
-      )
       const secureKeys = await window.electron.ipcRenderer.invoke('secure-get-keys')
-      this.apiKey =
-        activeLiveKey?.key ||
-        secureKeys?.geminiLiveAudioKey ||
-        secureKeys?.geminiKey ||
-        localStorage?.getItem('alpha_custom_api_key') ||
-        ''
-      this.activeLiveAudioSlot =
-        activeLiveKey?.slot || secureKeys?.geminiLiveAudioSlot || this.activeLiveAudioSlot || null
+      this.apiKey = secureKeys?.geminiKey || localStorage?.getItem('alpha_custom_api_key') || ''
     } else {
       this.apiKey = localStorage.getItem('alpha_custom_api_key') || ''
     }
@@ -2321,32 +2309,8 @@ ${coreMemory}
       } catch (err) {}
     }
 
-    this.socket.onclose = async (event) => {
-      const wasConnected = this.isConnected
-      const failedBeforeOpen = !wasConnected && Boolean(this.activeLiveAudioSlot)
-      let shouldRetryWithRotatedKey = false
-      if (failedBeforeOpen && window.electron?.ipcRenderer) {
-        await window.electron.ipcRenderer.invoke('key-manager-mark-failed', {
-          group: 'geminiLiveAudio',
-          slot: this.activeLiveAudioSlot,
-          reason: event.reason || `Gemini Live websocket closed before open (${event.code})`
-        })
-        const rotated = await window.electron.ipcRenderer.invoke('key-manager-rotate-next-key', {
-          group: 'geminiLiveAudio',
-          reason: event.reason || `Gemini Live websocket closed before open (${event.code})`
-        })
-        if (rotated?.key) {
-          this.apiKey = rotated.key
-          this.activeLiveAudioSlot = rotated.slot || null
-          shouldRetryWithRotatedKey = true
-        }
-      }
+    this.socket.onclose = async () => {
       this.disconnect()
-      if (shouldRetryWithRotatedKey) {
-        setTimeout(() => {
-          this.connect().catch(() => {})
-        }, 120)
-      }
     }
   }
 
