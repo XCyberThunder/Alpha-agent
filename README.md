@@ -11,10 +11,10 @@
   <a href="https://github.com/XCyberThunder/alpha-agent/network/members">
     <img src="https://img.shields.io/github/forks/XCyberThunder/Alpha-agent?style=for-the-badge&color=10b981&logo=git&logoColor=white" alt="GitHub forks">
   </a>
-  <a href="https://github.com/XCyberThunder/alpha-agent/graphs/contributors">
+  <a href="https://github.com/XCyberThunder/Alpha-agent/graphs/contributors">
     <img src="https://img.shields.io/github/contributors/XCyberThunder/Alpha-agent?style=for-the-badge&color=10b981&logo=users&logoColor=white" alt="Contributors">
   </a>
-  <a href="https://github.com/XCyberThunder/alpha-AI/releases">
+  <a href="https://github.com/XCyberThunder/Alpha-agent/releases">
     <img src="https://img.shields.io/github/downloads/XCyberThunder/Alpha-agent/total?style=for-the-badge&color=10b981&logo=download&logoColor=white" alt="Downloads">
   </a>
 </div>
