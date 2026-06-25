@@ -112,7 +112,7 @@ const classifyPrompt = (prompt: string): 'general' | 'realtime' | 'automation' |
   }
 
   if (
-    /(open|kholo|karo|search|scroll|tab|video|youtube|google|instagram|facebook|downloads|folder|screenshot|copy|paste|type|minimize|maximize|restore|fullscreen|floating|terminal|kali|wsl|vscode|code|remind|reminder|note|memory|yaad|remember|sikh lo|seekh lo|previous task|continue previous|volume|mute|unmute|back|forward|refresh|upar|neeche|niche|new tab|close tab|app minimize|app maximize|main window)/i.test(lower)
+    /(open|kholo|karo|search|scroll|tab|video|youtube|google|instagram|facebook|downloads|folder|screenshot|copy|paste|type|minimize|maximize|restore|fullscreen|floating|terminal|kali|wsl|vscode|code|brave|browser|band|remind|reminder|note|memory|yaad|remember|sikh lo|seekh lo|previous task|continue previous|volume|mute|unmute|back|forward|refresh|upar|neeche|niche|new tab|close tab|app minimize|app maximize|main window)/i.test(lower)
   ) {
     return 'automation'
   }
@@ -150,6 +150,7 @@ const extractCommand = (prompt: string) => {
 
 const getAppName = (prompt: string) => {
   const lower = normalizeTranscript(prompt)
+  if (lower.includes('brave')) return 'brave'
   if (lower.includes('browser') || lower.includes('chrome') || lower.includes('edge')) return 'browser'
   if (lower.includes('vscode') || lower.includes('code')) return 'vscode'
   if (lower.includes('instagram')) return 'instagram'
@@ -323,6 +324,8 @@ export class GeminiLiveService {
   private sttChunkMs: number = 8
   private sttMaxBacklog: number = 128 * 1024
   private sttBargeInMs: number = 45
+  private localAckSpeakText: string | null = null
+  private lastTtsStartLogAt: number = 0
 
   constructor() {
     this.apiKey = ''
@@ -395,6 +398,189 @@ export class GeminiLiveService {
     window.dispatchEvent(new CustomEvent('alpha-chat-typing', { detail: { active: false } }))
   }
 
+  private nowMs() {
+    return typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now()
+  }
+
+  private speakLocalAck(ack: string) {
+    if (this.isMicMuted || !ack || !this.socket || this.socket.readyState !== WebSocket.OPEN) return
+
+    this.localAckSpeakText = ack
+    this.aiResponseBuffer = ''
+    this.suppressAudioUntil = Date.now() + 80
+
+    try {
+      this.socket.send(
+        JSON.stringify({
+          clientContent: {
+            turns: [
+              {
+                role: 'user',
+                parts: [
+                  {
+                    text: `Say exactly this short acknowledgement and nothing else: ${ack}`
+                  }
+                ]
+              }
+            ],
+            turnComplete: true
+          }
+        })
+      )
+    } catch {
+      this.localAckSpeakText = null
+    }
+  }
+
+  private getLocalFastRoute(prompt: string):
+    | {
+        intent: string
+        target: string
+        ack: string
+        normalized: string
+        run: () => Promise<unknown> | unknown
+      }
+    | null {
+    const siteRoute = getFastOpenSiteRoute(prompt)
+    if (siteRoute) {
+      return {
+        intent: siteRoute.intent,
+        target: siteRoute.url,
+        ack: siteRoute.ack,
+        normalized: siteRoute.normalized,
+        run: () => openUrl(siteRoute.url)
+      }
+    }
+
+    const normalized = normalizeFastCommand(prompt)
+    const make = (intent: string, target: string, ack: string, run: () => Promise<unknown> | unknown) => ({
+      intent,
+      target,
+      ack,
+      normalized,
+      run
+    })
+
+    if (/(brave|browser).*(close|band|bnd)|close\s+brave|brave\s+band/i.test(normalized)) {
+      return make('CLOSE_APP', 'brave', 'Closing Brave.', () => closeApp('brave'))
+    }
+
+    if (/(new tab|naya tab|tab kholo)/i.test(normalized)) {
+      return make('BROWSER_SHORTCUT', 'new-tab', 'Opening a new tab.', () => shortcut('t'))
+    }
+
+    if (/(close current tab|current tab close|ye tab close|tab close|sirf tab close)/i.test(normalized)) {
+      return make('BROWSER_SHORTCUT', 'close-tab', 'Tab closed.', () => shortcut('w'))
+    }
+
+    if (/(next tab|agle tab|agla tab)/i.test(normalized)) {
+      return make('BROWSER_SHORTCUT', 'next-tab', 'Moving to the next tab.', () => shortcut('tab', ['ctrl']))
+    }
+
+    if (/(previous tab|prev tab|pichle tab|pichla tab)/i.test(normalized)) {
+      return make('BROWSER_SHORTCUT', 'previous-tab', 'Moving to the previous tab.', () => shortcut('tab', ['ctrl', 'shift']))
+    }
+
+    if (/(back jao|go back|browser back|peeche jao|piche jao)/i.test(normalized)) {
+      return make('BROWSER_SHORTCUT', 'back', 'Going back.', () => shortcut('left', ['alt']))
+    }
+
+    if (/(forward jao|go forward|browser forward|aage jao)/i.test(normalized)) {
+      return make('BROWSER_SHORTCUT', 'forward', 'Going forward.', () => shortcut('right', ['alt']))
+    }
+
+    if (/(refresh|reload)/i.test(normalized)) {
+      return make('BROWSER_SHORTCUT', 'refresh', 'Refreshing.', () => shortcut('r'))
+    }
+
+    if (/(top pe jao|go top|page top)/i.test(normalized)) {
+      return make('SCROLL', 'top', 'Going to the top.', () => shortcut('home', []))
+    }
+
+    if (/(bottom pe jao|go bottom|page bottom)/i.test(normalized)) {
+      return make('SCROLL', 'bottom', 'Going to the bottom.', () => shortcut('end', []))
+    }
+
+    if (/(scroll|neeche|niche|down|aur neeche|aur niche)/i.test(normalized)) {
+      return make('SCROLL', 'down', 'Scrolling down.', () => scrollScreen('down', 800))
+    }
+
+    if (/(upar|up).*scroll|scroll.*(upar|up)/i.test(normalized)) {
+      return make('SCROLL', 'up', 'Scrolling up.', () => scrollScreen('up', 800))
+    }
+
+    if (/(app minimize|alpha minimize|emba minimize|window minimize|minimize karo)/i.test(normalized)) {
+      return make('WINDOW_CONTROL', 'minimize', 'Minimizing alpha.', () => window.electron.ipcRenderer.send('window-min'))
+    }
+
+    if (/(restore|main window kholo|open main window|alpha restore|emba restore)/i.test(normalized)) {
+      return make('WINDOW_CONTROL', 'restore', 'Restoring alpha.', () => window.electron.ipcRenderer.send('toggle-overlay'))
+    }
+
+    if (/(maximize|window maximize|app maximize|maximize karo)/i.test(normalized)) {
+      return make('WINDOW_CONTROL', 'maximize', 'Maximizing alpha.', () => window.electron.ipcRenderer.send('window-max'))
+    }
+
+    if (/(floating chat|mini chat).*(open|kholo|show)/i.test(normalized)) {
+      return make('OVERLAY_CONTROL', 'floating-chat-open', 'Opening floating chat.', () => {
+        window.electron.ipcRenderer.send('set-overlay-chat-mode', true)
+        window.electron.ipcRenderer.send('toggle-overlay')
+      })
+    }
+
+    if (/(floating chat|mini chat).*(close|band|minimize|hide)/i.test(normalized)) {
+      return make('OVERLAY_CONTROL', 'floating-chat-close', 'Closing floating chat.', () =>
+        window.electron.ipcRenderer.send('set-overlay-chat-mode', false)
+      )
+    }
+
+    return null
+  }
+
+  private handleLocalFastRoute(prompt: string): boolean {
+    const route = this.getLocalFastRoute(prompt)
+    if (!route) return false
+
+    const startedAt = this.nowMs()
+    this.lastHandledUserPrompt = prompt
+    this.lastHandledPromptAt = Date.now()
+    this.activeConversationId += 1
+    this.stopCurrentSpeech()
+    this.suppressAudioUntil = Date.now() + 80
+    this.aiResponseBuffer = ''
+    this.userInputBuffer = ''
+    this.rawAudioBuffer = []
+    this.rawAudioBufferLength = 0
+
+    void saveMessage('user', prompt)
+    void saveMessage('alpha', route.ack)
+    window.dispatchEvent(new CustomEvent('alpha-chat-typing', { detail: { active: false } }))
+    this.speakLocalAck(route.ack)
+
+    const ackMs = Math.round(this.nowMs() - startedAt)
+    const actionStartedAt = this.nowMs()
+
+    void Promise.resolve()
+      .then(() => route.run())
+      .then(() => {
+        const actionMs = Math.round(this.nowMs() - actionStartedAt)
+        console.debug(
+          `[FAST_ROUTE] input="${prompt}" normalized="${route.normalized}" intent="${route.intent}" target="${route.target}" routedBeforeGemini=true ackMs=${ackMs} actionMs=${actionMs} handled=true handledBy="local-fast-route"`
+        )
+      })
+      .catch((error) => {
+        const actionMs = Math.round(this.nowMs() - actionStartedAt)
+        console.debug(
+          `[FAST_ROUTE] input="${prompt}" normalized="${route.normalized}" intent="${route.intent}" target="${route.target}" routedBeforeGemini=true ackMs=${ackMs} actionMs=${actionMs} handled=false handledBy="local-fast-route" error="${String(error?.message || error)}"`
+        )
+      })
+
+    console.debug(
+      `[VOICE_TIMING] prompt_start=${Math.round(startedAt)} route_decision=${Math.round(this.nowMs())} tts_ack_started=${!this.isMicMuted && !!this.socket && this.socket.readyState === WebSocket.OPEN}`
+    )
+
+    return true
+  }
   private async handlePrompt(prompt: string, source: 'voice' | 'text' = 'voice') {
     const trimmed = prompt.trim()
     if (!trimmed) return false
@@ -403,34 +589,9 @@ export class GeminiLiveService {
     if (trimmed === this.lastHandledUserPrompt && now - this.lastHandledPromptAt < 900) {
       return true
     }
+    console.debug(`[VOICE_TIMING] transcript_or_text_received=${now} prompt_handling_start=${Math.round(this.nowMs())}`)
 
-    const fastSiteRoute = getFastOpenSiteRoute(trimmed)
-    if (fastSiteRoute) {
-      const startedAt =
-        typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now()
-      this.lastHandledUserPrompt = trimmed
-      this.lastHandledPromptAt = now
-      this.activeConversationId += 1
-      this.stopCurrentSpeech()
-      this.aiResponseBuffer = ''
-      this.userInputBuffer = ''
-
-      await openUrl(fastSiteRoute.url)
-
-      const durationMs = Math.round(
-        (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now()) -
-          startedAt
-      )
-
-      console.debug(
-        `[FAST_ROUTE] input="${trimmed}" normalized="${fastSiteRoute.normalized}" intent="${fastSiteRoute.intent}" target="${fastSiteRoute.url}" durationMs=${durationMs} handled=true handledBy="local-fast-route"`
-      )
-
-      await saveMessage('user', trimmed)
-      await saveMessage('alpha', fastSiteRoute.ack)
-      window.dispatchEvent(new CustomEvent('alpha-chat-typing', { detail: { active: false } }))
-      return true
-    }
+    if (this.handleLocalFastRoute(trimmed)) return true
 
     this.lastHandledUserPrompt = trimmed
     this.lastHandledPromptAt = now
@@ -462,19 +623,10 @@ export class GeminiLiveService {
       window.dispatchEvent(new CustomEvent('alpha-chat-typing', { detail: { active: false } }))
       return true
     }
-
     if (source === 'text') {
-      const brainResponse = await this.generateBrainReply(trimmed)
-      if (brainResponse) {
-        this.aiResponseBuffer = ''
-        this.userInputBuffer = ''
-        await saveMessage('alpha', brainResponse)
-        window.dispatchEvent(new CustomEvent('alpha-chat-typing', { detail: { active: false } }))
-        return true
-      }
-
-      if (this.socket?.readyState === WebSocket.OPEN) {
+      if (!this.isMicMuted && this.socket?.readyState === WebSocket.OPEN) {
         this.stopCurrentSpeech()
+        this.suppressAudioUntil = Date.now() + 80
         this.aiResponseBuffer = ''
         this.userInputBuffer = ''
         this.socket.send(
@@ -486,6 +638,16 @@ export class GeminiLiveService {
           })
         )
         window.dispatchEvent(new CustomEvent('alpha-chat-typing', { detail: { active: true } }))
+        console.debug(`[VOICE_TIMING] typed_live_tts_sent=${Date.now()} routedBeforeRestBrain=true`)
+        return true
+      }
+
+      const brainResponse = await this.generateBrainReply(trimmed)
+      if (brainResponse) {
+        this.aiResponseBuffer = ''
+        this.userInputBuffer = ''
+        await saveMessage('alpha', brainResponse)
+        window.dispatchEvent(new CustomEvent('alpha-chat-typing', { detail: { active: false } }))
         return true
       }
 
@@ -2268,11 +2430,12 @@ ${coreMemory}
             })
           }
 
-          if (serverContent.outputTranscription?.text) {
+          if (serverContent.outputTranscription?.text && !this.localAckSpeakText) {
             this.aiResponseBuffer += serverContent.outputTranscription.text
           }
 
           if (serverContent.inputTranscription?.text) {
+            console.debug(`[VOICE_TIMING] stt_transcript_received=${Date.now()}`)
             if (this.activeAudioNodes.length > 0 && Date.now() - this.lastBargeInAt > 350) {
               this.lastBargeInAt = Date.now()
               this.stopCurrentSpeech()
@@ -2284,6 +2447,13 @@ ${coreMemory}
           }
 
           if (serverContent.turnComplete || serverContent.interrupted) {
+            if (this.localAckSpeakText) {
+              this.localAckSpeakText = null
+              this.aiResponseBuffer = ''
+              window.dispatchEvent(new CustomEvent('alpha-chat-typing', { detail: { active: false } }))
+              return
+            }
+
             if (this.userInputBuffer.trim()) {
               const prompt = this.userInputBuffer.trim()
               this.userInputBuffer = ''
@@ -2555,6 +2725,11 @@ ${coreMemory}
 
     const source = this.audioContext.createBufferSource()
     source.buffer = buffer
+
+    if (this.activeAudioNodes.length === 0 && Date.now() - this.lastTtsStartLogAt > 250) {
+      this.lastTtsStartLogAt = Date.now()
+      console.debug(`[VOICE_TIMING] tts_audio_start=${this.lastTtsStartLogAt}`)
+    }
 
     source.connect(this.analyser)
     this.analyser.connect(this.audioContext.destination)
