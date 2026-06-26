@@ -50,15 +50,25 @@ type PlaywrightSettings = {
   lastTestedAt?: string
   lastStatus?: string
 }
+type GlmProviderMode = 'zenmux' | 'custom-compatible' | 'direct-zai'
 type KeySlotStatus = {
   slot: number
   enabled: boolean
   status: string
   maskedKey: string
   hasKey: boolean
+  baseUrl?: string
+  modelId?: string
+  providerMode?: GlmProviderMode | string
   lastFailureReason?: string
   lastCheckedAt?: string
   lastUsedAt?: string
+}
+
+type GlmSlotConfig = {
+  baseUrl: string
+  modelId: string
+  providerMode: GlmProviderMode
 }
 
 const keyGroupLabels: Record<KeyGroup, { title: string; description: string; accent: string }> = {
@@ -154,6 +164,12 @@ const emptySlotStatuses = (): Record<KeyGroup, KeySlotStatus[]> => ({
   openrouter: []
 })
 
+const defaultGlmSlotConfigs = (): GlmSlotConfig[] => [
+  { baseUrl: 'https://zenmux.ai/api/v1', modelId: 'z-ai/glm-5.2-free', providerMode: 'zenmux' },
+  { baseUrl: 'https://zenmux.ai/api/v1', modelId: 'z-ai/glm-5.2-free', providerMode: 'zenmux' },
+  { baseUrl: 'https://zenmux.ai/api/v1', modelId: 'z-ai/glm-5.2-free', providerMode: 'zenmux' }
+]
+
 const SettingsView = ({ isSystemActive }: SettingsProps) => {
   const [activeTab, setActiveTab] = useState<TabType>('updates')
 
@@ -176,6 +192,7 @@ const SettingsView = ({ isSystemActive }: SettingsProps) => {
   const [keySlotInputs, setKeySlotInputs] = useState<Record<KeyGroup, string[]>>(emptySlotInputs)
   const [keySlotStatuses, setKeySlotStatuses] =
     useState<Record<KeyGroup, KeySlotStatus[]>>(emptySlotStatuses)
+  const [glmSlotConfigs, setGlmSlotConfigs] = useState<GlmSlotConfig[]>(defaultGlmSlotConfigs)
   const [visibleKeySlots, setVisibleKeySlots] = useState<Record<string, boolean>>({})
   const [keySlotMessage, setKeySlotMessage] = useState('')
   const [launchOnStartup, setLaunchOnStartup] = useState(false)
@@ -219,6 +236,18 @@ const SettingsView = ({ isSystemActive }: SettingsProps) => {
       })
       window.electron.ipcRenderer.invoke('key-manager-list-statuses').then((res) => {
         if (res?.statuses) setKeySlotStatuses(res.statuses)
+        if (res?.statuses?.glm?.length) {
+          setGlmSlotConfigs(
+            [1, 2, 3].map((slot) => {
+              const found = res.statuses.glm.find((item: KeySlotStatus) => item.slot === slot)
+              return {
+                baseUrl: found?.baseUrl || 'https://zenmux.ai/api/v1',
+                modelId: found?.modelId || 'z-ai/glm-5.2-free',
+                providerMode: (found?.providerMode as GlmProviderMode) || 'zenmux'
+              }
+            })
+          )
+        }
         if (res?.openrouterModel) setOpenRouterModel(res.openrouterModel)
         if (res?.playwrightSettings) setPlaywrightSettings({ ...defaultPlaywrightSettings, ...res.playwrightSettings })
       })
@@ -325,6 +354,18 @@ const SettingsView = ({ isSystemActive }: SettingsProps) => {
     if (!window.electron?.ipcRenderer) return
     const res = await window.electron.ipcRenderer.invoke('key-manager-list-statuses')
     if (res?.statuses) setKeySlotStatuses(res.statuses)
+    if (res?.statuses?.glm?.length) {
+      setGlmSlotConfigs(
+        [1, 2, 3].map((slot) => {
+          const found = res.statuses.glm.find((item: KeySlotStatus) => item.slot === slot)
+          return {
+            baseUrl: found?.baseUrl || 'https://zenmux.ai/api/v1',
+            modelId: found?.modelId || 'z-ai/glm-5.2-free',
+            providerMode: (found?.providerMode as GlmProviderMode) || 'zenmux'
+          }
+        })
+      )
+    }
     if (res?.openrouterModel) setOpenRouterModel(res.openrouterModel)
     if (res?.playwrightSettings) setPlaywrightSettings({ ...defaultPlaywrightSettings, ...res.playwrightSettings })
   }
@@ -339,15 +380,26 @@ const SettingsView = ({ isSystemActive }: SettingsProps) => {
 
   const saveKeySlot = async (group: KeyGroup, slot: number) => {
     const key = keySlotInputs[group][slot - 1]?.trim()
-    if (!key || !window.electron?.ipcRenderer) return
+    if (!window.electron?.ipcRenderer) return
+    const glmConfig = group === 'glm' ? glmSlotConfigs[slot - 1] : null
+    if (!key && group !== 'glm') return
     const res = await window.electron.ipcRenderer.invoke('key-manager-save-slot', {
       group,
       slot,
-      key
+      key,
+      baseUrl: glmConfig?.baseUrl,
+      modelId: glmConfig?.modelId,
+      providerMode: glmConfig?.providerMode
     })
     if (res?.statuses) setKeySlotStatuses(res.statuses)
     updateKeySlotInput(group, slot, '')
     setKeySlotMessage(`${keyGroupLabels[group].title} slot ${slot} saved securely.`)
+  }
+
+  const updateGlmSlotConfig = <K extends keyof GlmSlotConfig>(slot: number, field: K, value: GlmSlotConfig[K]) => {
+    setGlmSlotConfigs((prev) =>
+      prev.map((item, index) => (index === slot - 1 ? { ...item, [field]: value } : item))
+    )
   }
 
   const testKeySlot = async (group: KeyGroup, slot: number) => {
@@ -502,65 +554,102 @@ const SettingsView = ({ isSystemActive }: SettingsProps) => {
           {[1, 2, 3].map((slot) => {
             const slotStatus = statuses.find((item) => item.slot === slot)
             const visibleKey = `${group}-${slot}`
+            const glmConfig = glmSlotConfigs[slot - 1]
             return (
               <div
                 key={visibleKey}
-                className="grid grid-cols-1 lg:grid-cols-[130px_1fr_86px_82px_74px_92px] gap-2 items-center bg-black/20 border border-white/10 rounded-lg p-3"
+                className="grid grid-cols-1 gap-3 bg-black/20 border border-white/10 rounded-lg p-3"
               >
-                <div className="flex flex-col">
-                  <span className="text-[10px] text-white font-mono tracking-widest">
-                    SLOT {slot}
-                  </span>
-                  <span className="text-[10px] text-zinc-500 font-mono">
-                    {slotStatus?.maskedKey || 'not saved'}
-                  </span>
-                </div>
-                <div className={inputContainerClass}>
-                  <input
-                    type={visibleKeySlots[visibleKey] ? 'text' : 'password'}
-                    value={keySlotInputs[group][slot - 1]}
-                    onChange={(e) => updateKeySlotInput(group, slot, e.target.value)}
-                    placeholder={slotStatus?.hasKey ? slotStatus.maskedKey : 'Paste API key...'}
-                    className="bg-transparent border-none outline-none text-sm font-mono text-zinc-100 w-full placeholder:text-zinc-700"
-                  />
-                  <button
-                    onClick={() =>
-                      setVisibleKeySlots((prev) => ({ ...prev, [visibleKey]: !prev[visibleKey] }))
-                    }
-                    className="text-zinc-500 hover:text-white transition-colors ml-2"
-                    title={visibleKeySlots[visibleKey] ? 'Hide key' : 'Show key'}
+                <div className="grid grid-cols-1 lg:grid-cols-[130px_1fr_86px_82px_74px_92px] gap-2 items-center">
+                  <div className="flex flex-col">
+                    <span className="text-[10px] text-white font-mono tracking-widest">
+                      SLOT {slot}
+                    </span>
+                    <span className="text-[10px] text-zinc-500 font-mono">
+                      {slotStatus?.maskedKey || 'not saved'}
+                    </span>
+                  </div>
+                  <div className={inputContainerClass}>
+                    <input
+                      type={visibleKeySlots[visibleKey] ? 'text' : 'password'}
+                      value={keySlotInputs[group][slot - 1]}
+                      onChange={(e) => updateKeySlotInput(group, slot, e.target.value)}
+                      placeholder={slotStatus?.hasKey ? slotStatus.maskedKey : 'Paste API key...'}
+                      className="bg-transparent border-none outline-none text-sm font-mono text-zinc-100 w-full placeholder:text-zinc-700"
+                    />
+                    <button
+                      onClick={() =>
+                        setVisibleKeySlots((prev) => ({ ...prev, [visibleKey]: !prev[visibleKey] }))
+                      }
+                      className="text-zinc-500 hover:text-white transition-colors ml-2"
+                      title={visibleKeySlots[visibleKey] ? 'Hide key' : 'Show key'}
+                    >
+                      {visibleKeySlots[visibleKey] ? <RiEyeOffLine size={18} /> : <RiEyeLine size={18} />}
+                    </button>
+                  </div>
+                  <span
+                    className={`text-[10px] font-mono border px-2 py-2 rounded text-center uppercase ${statusClass(slotStatus?.status || 'empty')}`}
+                    title={slotStatus?.lastFailureReason || ''}
                   >
-                    {visibleKeySlots[visibleKey] ? <RiEyeOffLine size={18} /> : <RiEyeLine size={18} />}
+                    {slotStatus?.status || 'empty'}
+                  </span>
+                  <button
+                    onClick={() => toggleKeySlot(group, slot, !(slotStatus?.enabled ?? true))}
+                    className={`text-[10px] font-bold tracking-widest rounded border py-2 transition-all cursor-pointer ${
+                      slotStatus?.enabled === false
+                        ? 'border-white/10 text-zinc-500 hover:text-white'
+                        : 'border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/10'
+                    }`}
+                  >
+                    {slotStatus?.enabled === false ? 'ENABLE' : 'DISABLE'}
+                  </button>
+                  <button
+                    onClick={() => testKeySlot(group, slot)}
+                    className="text-[10px] font-bold tracking-widest rounded border border-white/10 py-2 text-zinc-300 hover:text-white hover:bg-white/5 transition-all cursor-pointer"
+                  >
+                    TEST
+                  </button>
+                  <button
+                    onClick={() => saveKeySlot(group, slot)}
+                    className="text-[10px] font-bold tracking-widest rounded bg-white text-black py-2 hover:bg-zinc-200 transition-all cursor-pointer"
+                  >
+                    SAVE
                   </button>
                 </div>
-                <span
-                  className={`text-[10px] font-mono border px-2 py-2 rounded text-center uppercase ${statusClass(slotStatus?.status || 'empty')}`}
-                  title={slotStatus?.lastFailureReason || ''}
-                >
-                  {slotStatus?.status || 'empty'}
-                </span>
-                <button
-                  onClick={() => toggleKeySlot(group, slot, !(slotStatus?.enabled ?? true))}
-                  className={`text-[10px] font-bold tracking-widest rounded border py-2 transition-all cursor-pointer ${
-                    slotStatus?.enabled === false
-                      ? 'border-white/10 text-zinc-500 hover:text-white'
-                      : 'border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/10'
-                  }`}
-                >
-                  {slotStatus?.enabled === false ? 'ENABLE' : 'DISABLE'}
-                </button>
-                <button
-                  onClick={() => testKeySlot(group, slot)}
-                  className="text-[10px] font-bold tracking-widest rounded border border-white/10 py-2 text-zinc-300 hover:text-white hover:bg-white/5 transition-all cursor-pointer"
-                >
-                  TEST
-                </button>
-                <button
-                  onClick={() => saveKeySlot(group, slot)}
-                  className="text-[10px] font-bold tracking-widest rounded bg-white text-black py-2 hover:bg-zinc-200 transition-all cursor-pointer"
-                >
-                  SAVE
-                </button>
+
+                {group === 'glm' && (
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+                    <div className={inputContainerClass}>
+                      <input
+                        value={glmConfig?.baseUrl || ''}
+                        onChange={(e) => updateGlmSlotConfig(slot, 'baseUrl', e.target.value)}
+                        placeholder="https://zenmux.ai/api/v1"
+                        className="bg-transparent border-none outline-none text-sm font-mono text-zinc-100 w-full placeholder:text-zinc-700"
+                      />
+                    </div>
+                    <div className={inputContainerClass}>
+                      <input
+                        value={glmConfig?.modelId || ''}
+                        onChange={(e) => updateGlmSlotConfig(slot, 'modelId', e.target.value)}
+                        placeholder="z-ai/glm-5.2-free"
+                        className="bg-transparent border-none outline-none text-sm font-mono text-zinc-100 w-full placeholder:text-zinc-700"
+                      />
+                    </div>
+                    <div className="glass-input flex items-center rounded-lg px-4 py-3">
+                      <select
+                        value={glmConfig?.providerMode || 'zenmux'}
+                        onChange={(e) =>
+                          updateGlmSlotConfig(slot, 'providerMode', e.target.value as GlmProviderMode)
+                        }
+                        className="w-full bg-transparent text-sm font-mono text-zinc-100 outline-none"
+                      >
+                        <option value="zenmux">ZenMux Compatible</option>
+                        <option value="custom-compatible">Custom Compatible API</option>
+                        <option value="direct-zai">Direct ZAI</option>
+                      </select>
+                    </div>
+                  </div>
+                )}
               </div>
             )
           })}

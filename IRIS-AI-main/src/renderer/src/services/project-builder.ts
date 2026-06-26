@@ -10,6 +10,7 @@ export type BuilderProjectMetadata = {
   createdAt: string
   updatedAt: string
   modelUsed: string
+  providerUsed: string
   files: string[]
   lastPrompt: string
   projectPath: string
@@ -31,15 +32,19 @@ export type BuilderProjectResponse = {
   projectPath?: string
 }
 
-export const createBuilderProject = async (prompt: string): Promise<BuilderProjectResponse> => {
-  return window.electron.ipcRenderer.invoke('project-builder-create', { prompt })
+export const createBuilderProject = async (
+  prompt: string,
+  provider: 'glm' | 'gemini' | 'openrouter' | 'kimi' | 'groq' = 'glm'
+): Promise<BuilderProjectResponse> => {
+  return window.electron.ipcRenderer.invoke('project-builder-create', { prompt, provider })
 }
 
 export const updateBuilderProject = async (
   projectId: string,
-  prompt: string
+  prompt: string,
+  provider?: 'glm' | 'gemini' | 'openrouter' | 'kimi' | 'groq'
 ): Promise<BuilderProjectResponse> => {
-  return window.electron.ipcRenderer.invoke('project-builder-update', { projectId, prompt })
+  return window.electron.ipcRenderer.invoke('project-builder-update', { projectId, prompt, provider })
 }
 
 export const readBuilderProject = async (projectId: string): Promise<BuilderProjectResponse> => {

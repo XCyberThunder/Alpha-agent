@@ -1,22 +1,24 @@
+import { createBuilderProject } from '@renderer/services/project-builder'
+
 export const buildAnimatedWebsite = async (prompt: string) => {
   try {
-    const geminiKey = localStorage.getItem('alpha_custom_api_key') || ''
+    const res = await createBuilderProject(prompt, 'glm')
 
-    if (!geminiKey.trim()) {
-      return `❌ System Error: Missing Gemini API Key. Please update it in the Command Center Vault.`
+    if (res.success && res.state) {
+      window.dispatchEvent(
+        new CustomEvent('alpha-open-project-builder', {
+          detail: {
+            state: res.state,
+            previewHtml: res.previewHtml,
+            prompt
+          }
+        })
+      )
+      return `Website Builder ready. Project saved at ${res.state.metadata.projectPath}.`
     }
 
-    const res = await window.electron.ipcRenderer.invoke('build-animated-website', {
-      prompt,
-      geminiKey
-    })
-
-    if (res.success) {
-      return `✅ Website generated successfully and saved to ${res.filePath}.`
-    } else {
-      return `❌ System Error during synthesis: ${res.error}`
-    }
-  } catch (error) {
-    return `System Error: Unable to establish connection to the Live Forge.`
+    return res.message || res.error || 'Website Builder project generate nahi kar paya.'
+  } catch {
+    return 'Website Builder route abhi unavailable hai.'
   }
 }

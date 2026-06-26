@@ -117,6 +117,9 @@ type ApiKeySlot = {
   key?: string
   enabled: boolean
   status: ApiKeyStatus
+  baseUrl?: string
+  modelId?: string
+  providerMode?: 'zenmux' | 'custom-compatible' | 'direct-zai'
   lastFailureReason?: string
   lastCheckedAt?: string
   lastUsedAt?: string
@@ -140,6 +143,12 @@ const maskApiKey = (key = '') => {
   return `${key.slice(0, 6)}...${key.slice(-4)}`
 }
 
+const defaultGlmConfig = {
+  baseUrl: 'https://zenmux.ai/api/v1',
+  modelId: 'z-ai/glm-5.2-free',
+  providerMode: 'zenmux' as const
+}
+
 const normalizeKeySlots = (secureData: Record<string, any>) => {
   const keySlots = secureData.keySlots || {}
   for (const group of apiKeyGroups) {
@@ -151,6 +160,24 @@ const normalizeKeySlots = (secureData: Record<string, any>) => {
         key: existing.key || '',
         enabled: typeof existing.enabled === 'boolean' ? existing.enabled : true,
         status: existing.status || (existing.key ? 'available' : 'empty'),
+        baseUrl:
+          group === 'glm'
+            ? typeof existing.baseUrl === 'string' && existing.baseUrl.trim()
+              ? existing.baseUrl
+              : defaultGlmConfig.baseUrl
+            : existing.baseUrl || '',
+        modelId:
+          group === 'glm'
+            ? typeof existing.modelId === 'string' && existing.modelId.trim()
+              ? existing.modelId
+              : defaultGlmConfig.modelId
+            : existing.modelId || '',
+        providerMode:
+          group === 'glm'
+            ? existing.providerMode === 'custom-compatible' || existing.providerMode === 'direct-zai'
+              ? existing.providerMode
+              : defaultGlmConfig.providerMode
+            : existing.providerMode || '',
         lastFailureReason: existing.lastFailureReason || '',
         lastCheckedAt: existing.lastCheckedAt || '',
         lastUsedAt: existing.lastUsedAt || ''
@@ -176,6 +203,9 @@ const getKeyStatuses = (secureData: Record<string, any>) => {
           status: slot.enabled ? slot.status : 'disabled',
           maskedKey: maskApiKey(key),
           hasKey: Boolean(key),
+          baseUrl: group === 'glm' ? slot.baseUrl || defaultGlmConfig.baseUrl : '',
+          modelId: group === 'glm' ? slot.modelId || defaultGlmConfig.modelId : '',
+          providerMode: group === 'glm' ? slot.providerMode || defaultGlmConfig.providerMode : '',
           lastFailureReason: slot.lastFailureReason || '',
           lastCheckedAt: slot.lastCheckedAt || '',
           lastUsedAt: slot.lastUsedAt || ''
@@ -239,6 +269,12 @@ const normalizePlaywrightSettings = (secureData: Record<string, any>) => {
     profilePath: typeof current.profilePath === 'string' ? current.profilePath : ''
   }
   return secureData.playwrightSettings
+}
+
+const normalizeCompatibleBaseUrl = (baseUrl?: string) => {
+  const trimmed = (baseUrl || '').trim().replace(/\/+$/, '')
+  if (!trimmed) return ''
+  return trimmed.endsWith('/chat/completions') ? trimmed : `${trimmed}/chat/completions`
 }
 const rotateKeySlot = (secureData: Record<string, any>, group: ApiKeyGroup) => {
   const keySlots = normalizeKeySlots(secureData)
@@ -528,6 +564,7 @@ app.whenReady().then(() => {
       const data = readSecureVault()
       const brainSlot = getActiveKeySlot(data, 'geminiBrain')
       const agentSlot = getActiveKeySlot(data, 'geminiAgent')
+      const glmSlot = getActiveKeySlot(data, 'glm')
       const openRouterSlot = getActiveKeySlot(data, 'openrouter')
       return {
         groqKey: decryptVaultValue(data.groq),
@@ -536,6 +573,11 @@ app.whenReady().then(() => {
         geminiBrainSlot: brainSlot?.slot || null,
         geminiAgentKey: decryptKeySlot(agentSlot || ({} as ApiKeySlot)),
         geminiAgentSlot: agentSlot?.slot || null,
+        glmKey: decryptKeySlot(glmSlot || ({} as ApiKeySlot)),
+        glmSlot: glmSlot?.slot || null,
+        glmBaseUrl: glmSlot?.baseUrl || defaultGlmConfig.baseUrl,
+        glmModelId: glmSlot?.modelId || defaultGlmConfig.modelId,
+        glmProviderMode: glmSlot?.providerMode || defaultGlmConfig.providerMode,
         openrouterKey: decryptKeySlot(openRouterSlot || ({} as ApiKeySlot)) || decryptVaultValue(data.openrouter),
         openrouterSlot: openRouterSlot?.slot || null,
         openrouterModel: data.openrouterModel || 'glm-5.2',
@@ -557,7 +599,7 @@ app.whenReady().then(() => {
     }
   })
 
-  ipcMain.handle('key-manager-save-slot', async (_, { group, slot, key }) => {
+  ipcMain.handle('key-manager-save-slot', async (_, { group, slot, key, baseUrl, modelId, providerMode }) => {
     try {
       if (!apiKeyGroups.includes(group) || ![1, 2, 3].includes(Number(slot))) {
         return { success: false, error: 'Invalid key slot.' }
@@ -571,6 +613,16 @@ app.whenReady().then(() => {
         target.status = 'available'
         target.lastFailureReason = ''
         target.lastCheckedAt = new Date().toISOString()
+      }
+      if (group === 'glm') {
+        target.baseUrl =
+          typeof baseUrl === 'string' && baseUrl.trim() ? baseUrl.trim() : target.baseUrl || defaultGlmConfig.baseUrl
+        target.modelId =
+          typeof modelId === 'string' && modelId.trim() ? modelId.trim() : target.modelId || defaultGlmConfig.modelId
+        target.providerMode =
+          providerMode === 'custom-compatible' || providerMode === 'direct-zai'
+            ? providerMode
+            : defaultGlmConfig.providerMode
       }
       target.enabled = true
       if (!secureData.activeKeySlots?.[group]) markActiveKeySlot(secureData, group, Number(slot))
@@ -611,7 +663,14 @@ app.whenReady().then(() => {
       target.lastUsedAt = new Date().toISOString()
       markActiveKeySlot(secureData, group, target.slot)
       fs.writeFileSync(secureConfigPath, JSON.stringify(secureData))
-      return { success: true, key: decryptKeySlot(target), slot: target.slot }
+      return {
+        success: true,
+        key: decryptKeySlot(target),
+        slot: target.slot,
+        baseUrl: group === 'glm' ? target.baseUrl || defaultGlmConfig.baseUrl : '',
+        modelId: group === 'glm' ? target.modelId || defaultGlmConfig.modelId : '',
+        providerMode: group === 'glm' ? target.providerMode || defaultGlmConfig.providerMode : ''
+      }
     } catch (error: any) {
       return { success: false, error: error.message }
     }
@@ -686,11 +745,59 @@ app.whenReady().then(() => {
       const target = keySlots[group as ApiKeyGroup].find((item) => item.slot === Number(slot))
       const key = target ? decryptKeySlot(target) : ''
       if (!target || !key) return { success: false, error: 'No key saved in this slot.' }
-      target.status = target.enabled ? 'available' : 'disabled'
-      target.lastCheckedAt = new Date().toISOString()
+
+      if (group === 'glm') {
+        const providerMode = target.providerMode || defaultGlmConfig.providerMode
+        const modelId = target.modelId || defaultGlmConfig.modelId
+        const baseUrl = target.baseUrl || defaultGlmConfig.baseUrl
+        const endpoint =
+          providerMode === 'direct-zai'
+            ? `${baseUrl.replace(/\/+$/, '')}/chat/completions`
+            : normalizeCompatibleBaseUrl(baseUrl)
+
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${key}`
+          },
+          body: JSON.stringify({
+            model: modelId,
+            messages: [{ role: 'user', content: 'Reply with OK only.' }],
+            max_tokens: 12,
+            temperature: 0
+          })
+        })
+
+        target.lastCheckedAt = new Date().toISOString()
+        if (!response.ok) {
+          const body = await response.text()
+          target.status = response.status === 429 ? 'rate-limited' : 'failed'
+          if (response.status === 401 || response.status === 403) {
+            target.lastFailureReason = 'ZenMux/GLM auth failed. API key ya model ID check karo.'
+          } else if (response.status === 404) {
+            target.lastFailureReason = 'GLM model ID invalid lag raha hai. Settings me model ID check karo.'
+          } else {
+            target.lastFailureReason = `GLM provider error ${response.status}: ${body.slice(0, 180)}`
+          }
+          fs.writeFileSync(secureConfigPath, JSON.stringify(secureData))
+          return { success: false, error: target.lastFailureReason, statuses: getKeyStatuses(secureData) }
+        }
+      } else {
+        target.status = target.enabled ? 'available' : 'disabled'
+        target.lastFailureReason = ''
+        target.lastCheckedAt = new Date().toISOString()
+      }
+
+      if (target.enabled) target.status = 'available'
       target.lastFailureReason = ''
       fs.writeFileSync(secureConfigPath, JSON.stringify(secureData))
-      return { success: true, status: target.status, maskedKey: maskApiKey(key), statuses: getKeyStatuses(secureData) }
+      return {
+        success: true,
+        status: target.status,
+        maskedKey: maskApiKey(key),
+        statuses: getKeyStatuses(secureData)
+      }
     } catch (error: any) {
       return { success: false, error: error.message }
     }

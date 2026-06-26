@@ -563,6 +563,13 @@ export class GeminiLiveService {
   private localAckSpeakText: string | null = null
   private lastTtsStartLogAt: number = 0
   private lastInputTranscriptAt: number = 0
+  private pendingCodingFallback:
+    | {
+        prompt: string
+        isProject: boolean
+        reason: string
+      }
+    | null = null
 
   constructor() {
     this.apiKey = ''
@@ -947,18 +954,157 @@ export class GeminiLiveService {
     return Boolean(activeGlmKey?.key?.trim())
   }
 
+  private getFallbackProviderChoice(prompt: string): 'gemini' | 'openrouter' | 'kimi' | 'groq' | 'cancel' | null {
+    const normalized = normalizeFastCommand(prompt)
+    if (/\b(cancel|stop|rehne do|mat karo)\b/i.test(normalized)) return 'cancel'
+    if (/\b(gemini)\b/i.test(normalized)) return 'gemini'
+    if (/\b(openrouter)\b/i.test(normalized)) return 'openrouter'
+    if (/\b(kimi)\b/i.test(normalized)) return 'kimi'
+    if (/\b(groq)\b/i.test(normalized)) return 'groq'
+    return null
+  }
+
+  private fallbackPickerMessage(reason: string) {
+    return `${reason} Kaunsa fallback use karna hai? Gemini / OpenRouter / Kimi / Groq / Cancel`
+  }
+
+  private async generateGeminiCodingReply(prompt: string): Promise<string> {
+    try {
+      const activeBrainKey = await window.electron.ipcRenderer.invoke('key-manager-get-active-key', 'geminiBrain')
+      const secureKeys = await window.electron.ipcRenderer.invoke('secure-get-keys')
+      const key = activeBrainKey?.key?.trim() || secureKeys?.geminiBrainKey?.trim() || secureKeys?.geminiKey?.trim()
+      const slot = activeBrainKey?.slot || secureKeys?.geminiBrainSlot || null
+      if (!key) return 'Gemini key missing hai. Gemini key/settings check karo ya OpenRouter/Kimi choose karo.'
+
+      const response = await fetch(
+        'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' +
+          encodeURIComponent(key),
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            systemInstruction: {
+              parts: [
+                {
+                  text:
+                    'You are ALPHA coding fallback using Gemini. Help with code generation, debugging, and project edits. Be concise and practical.'
+                }
+              ]
+            },
+            contents: [{ role: 'user', parts: [{ text: prompt }] }],
+            generationConfig: { temperature: 0.35, maxOutputTokens: 2048 }
+          })
+        }
+      )
+
+      if (!response.ok) {
+        if ([401, 403, 429, 500, 502, 503, 504].includes(response.status) && slot) {
+          await window.electron.ipcRenderer.invoke('key-manager-mark-failed', {
+            group: 'geminiBrain',
+            slot,
+            reason: `Gemini fallback status ${response.status}`
+          })
+        }
+        if (response.status === 401 || response.status === 403) {
+          return 'Gemini auth failed. Gemini key/settings check karo ya OpenRouter/Kimi choose karo.'
+        }
+        if (response.status === 429) {
+          return 'Gemini rate limit/quota hit hua. OpenRouter, Kimi, ya Groq choose karo.'
+        }
+        return `Gemini provider error ${response.status}.`
+      }
+
+      const data = await response.json()
+      const parts = data?.candidates?.[0]?.content?.parts || []
+      return (
+        parts
+          .map((part: any) => part?.text || '')
+          .join('')
+          .trim() || 'Gemini fallback ne empty response diya.'
+      )
+    } catch {
+      return 'Gemini network error aaya. OpenRouter, Kimi, ya Groq choose karo.'
+    }
+  }
+
+  private async executeCodingFallback(provider: 'gemini' | 'openrouter' | 'kimi' | 'groq') {
+    if (!this.pendingCodingFallback) return null
+
+    const pending = this.pendingCodingFallback
+    if (provider === 'gemini') {
+      if (pending.isProject) {
+        const builder = await createBuilderProject(pending.prompt, 'gemini')
+        if (builder.success && builder.state) {
+          window.dispatchEvent(
+            new CustomEvent('alpha-open-project-builder', {
+              detail: { state: builder.state, previewHtml: builder.previewHtml, prompt: pending.prompt }
+            })
+          )
+          this.pendingCodingFallback = null
+          return `Website Builder ready with Gemini fallback. Project saved at ${builder.state.metadata.projectPath}.`
+        }
+        const reason = builder.message || builder.error || 'Gemini fallback failed.'
+        this.pendingCodingFallback = { ...pending, reason }
+        return this.fallbackPickerMessage(reason)
+      }
+
+      const reply = await this.generateGeminiCodingReply(pending.prompt)
+      if (!/auth failed|missing hai|rate limit|network error|provider error/i.test(reply)) {
+        this.pendingCodingFallback = null
+      }
+      return /auth failed|missing hai|rate limit|network error|provider error/i.test(reply)
+        ? this.fallbackPickerMessage(reply)
+        : reply
+    }
+
+    if (pending.isProject) {
+      const builder = await createBuilderProject(pending.prompt, provider)
+      if (builder.success && builder.state) {
+        window.dispatchEvent(
+          new CustomEvent('alpha-open-project-builder', {
+            detail: { state: builder.state, previewHtml: builder.previewHtml, prompt: pending.prompt }
+          })
+        )
+        this.pendingCodingFallback = null
+        return `Website Builder ready with ${provider} fallback. Project saved at ${builder.state.metadata.projectPath}.`
+      }
+      const reason = builder.message || builder.error || `${provider} fallback failed.`
+      this.pendingCodingFallback = { ...pending, reason }
+      return this.fallbackPickerMessage(reason)
+    }
+
+    this.pendingCodingFallback = null
+    return `${provider} fallback selected. Project-style fallback is ready, but direct coding chat fallback for ${provider} is not available in this build yet.`
+  }
+
   private async routeCodingTask(prompt: string): Promise<string | null> {
     if (!isCodingTaskPrompt(prompt)) return null
 
+    const fallbackChoice = this.pendingCodingFallback ? this.getFallbackProviderChoice(prompt) : null
+    if (this.pendingCodingFallback && fallbackChoice) {
+      if (fallbackChoice === 'cancel') {
+        this.pendingCodingFallback = null
+        return 'Coding fallback request cancelled.'
+      }
+      return this.executeCodingFallback(fallbackChoice)
+    }
+
     const hasGlmKey = await this.getGlmAvailability()
     if (!hasGlmKey) {
-      return 'GLM 5.2 key configured nahi hai. Gemini fallback use karu ya pehle GLM key add karni hai?'
+      this.pendingCodingFallback = {
+        prompt,
+        isProject: isCodingProjectPrompt(prompt),
+        reason: 'GLM 5.2 key configured nahi hai.'
+      }
+      return this.fallbackPickerMessage('GLM 5.2 key configured nahi hai.')
     }
 
     if (isCodingProjectPrompt(prompt)) {
-      const builder = await createBuilderProject(prompt)
+      const builder = await createBuilderProject(prompt, 'glm')
       if (!builder.success || !builder.state) {
-        return builder.message || builder.error || 'Project builder abhi project generate nahi kar paya.'
+        const reason = builder.message || builder.error || 'Project builder abhi project generate nahi kar paya.'
+        this.pendingCodingFallback = { prompt, isProject: true, reason }
+        return this.fallbackPickerMessage(reason)
       }
 
       window.dispatchEvent(
@@ -971,10 +1117,17 @@ export class GeminiLiveService {
         })
       )
 
+      this.pendingCodingFallback = null
       return `Website Builder ready. Project saved at ${builder.state.metadata.projectPath}.`
     }
 
-    return this.consultGlmAgent(prompt)
+    const glmReply = await this.consultGlmAgent(prompt)
+    if (/configured nahi hai|auth failed|invalid lag raha hai|unavailable|provider error/i.test(glmReply)) {
+      this.pendingCodingFallback = { prompt, isProject: false, reason: glmReply }
+      return this.fallbackPickerMessage(glmReply)
+    }
+    this.pendingCodingFallback = null
+    return glmReply
   }
 
   private async handlePrompt(prompt: string, source: 'voice' | 'text' = 'voice') {
@@ -2471,7 +2624,7 @@ ${coreMemory}
                 {
                   name: 'build_animated_website',
                   description:
-                    'ACTION: Spawns the alpha Live Forge and generates a full, highly animated, real-time website using Tailwind CSS and GSAP. Use this when the user asks you to build a landing page, a portfolio, a 3D site, or a complex web interface.',
+                    'ACTION: Opens the integrated Website Builder dashboard inside alpha and generates a real project with preview, files, and coding chat. Use this when the user asks for a landing page, portfolio, calculator site, or complex web interface.',
                   parameters: {
                     type: 'OBJECT',
                     properties: {
@@ -2978,20 +3131,29 @@ ${coreMemory}
       )
       const key = activeGlmKey?.key?.trim() || secureKeys?.glmKey?.trim()
       const activeSlot = activeGlmKey?.slot || secureKeys?.glmSlot || null
+      const baseUrl = activeGlmKey?.baseUrl || secureKeys?.glmBaseUrl || 'https://zenmux.ai/api/v1'
+      const modelId = activeGlmKey?.modelId || secureKeys?.glmModelId || 'z-ai/glm-5.2-free'
+      const providerMode = activeGlmKey?.providerMode || secureKeys?.glmProviderMode || 'zenmux'
       if (!key) {
         return 'GLM 5.2 key configured nahi hai. Gemini fallback use karu ya pehle GLM key add karni hai?'
       }
 
-      const response = await fetch('https://open.bigmodel.cn/api/paas/v4/chat/completions', {
+      const endpoint =
+        providerMode === 'direct-zai'
+          ? `${String(baseUrl).replace(/\/+$/, '')}/chat/completions`
+          : `${String(baseUrl).replace(/\/+$/, '').replace(/\/chat\/completions$/, '')}/chat/completions`
+
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${key}`,
-          'HTTP-Referer': 'https://alpha.local',
-          'X-Title': 'alpha'
+          ...(providerMode === 'direct-zai'
+            ? { 'HTTP-Referer': 'https://alpha.local', 'X-Title': 'alpha' }
+            : {})
         },
         body: JSON.stringify({
-          model: secureKeys?.openrouterModel || 'glm-5.2',
+          model: modelId,
           temperature: 0.45,
           messages: [
             {
@@ -3005,6 +3167,7 @@ ${coreMemory}
       })
 
       if (!response.ok) {
+        const responseText = await response.text()
         if ([401, 403, 429, 500, 502, 503, 504].includes(response.status) && activeSlot) {
           await window.electron.ipcRenderer.invoke(
             response.status === 429 ? 'key-manager-mark-rate-limited' : 'key-manager-mark-failed',
@@ -3017,7 +3180,16 @@ ${coreMemory}
             reason: `GLM status ${response.status}`
           })
         }
-        return `GLM 5.2 abhi unavailable hai (status ${response.status}).`
+        if (response.status === 401 || response.status === 403) {
+          return 'ZenMux/GLM auth failed. API key ya model ID check karo.'
+        }
+        if (response.status === 404) {
+          return 'GLM model ID invalid lag raha hai. Settings me model ID check karo.'
+        }
+        if (response.status === 429) {
+          return 'GLM rate limit/quota hit hua.'
+        }
+        return `GLM provider error ${response.status}: ${responseText.slice(0, 120)}`
       }
       const data = await response.json()
       return data?.choices?.[0]?.message?.content?.trim() || 'No specialized notes returned.'

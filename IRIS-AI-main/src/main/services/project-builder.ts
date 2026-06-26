@@ -16,6 +16,7 @@ type ProjectMetadata = {
   createdAt: string
   updatedAt: string
   modelUsed: string
+  providerUsed: string
   files: string[]
   lastPrompt: string
   projectPath: string
@@ -31,14 +32,25 @@ type KeySlot = {
   key?: string
   enabled: boolean
   status: string
+  baseUrl?: string
+  modelId?: string
+  providerMode?: 'zenmux' | 'custom-compatible' | 'direct-zai'
   lastFailureReason?: string
   lastCheckedAt?: string
   lastUsedAt?: string
 }
 
+type ProviderName = 'glm' | 'gemini' | 'openrouter' | 'kimi' | 'groq'
+
+type ProviderResult =
+  | { success: true; payload: any; providerLabel: string }
+  | { success: false; code: string; message: string; providerLabel: string }
+
 const execFileAsync = promisify(execFile)
 
 const PROJECT_MODEL = 'glm-5.2'
+const ZENMUX_DEFAULT_BASE_URL = 'https://zenmux.ai/api/v1'
+const ZENMUX_DEFAULT_MODEL_ID = 'z-ai/glm-5.2-free'
 
 const projectTypeRules: Array<{ type: string; pattern: RegExp }> = [
   { type: 'website', pattern: /\b(website|landing page|portfolio|frontend|html|css|javascript site)\b/i },
@@ -207,6 +219,17 @@ const safeProjectFilePath = (projectPath: string, relativeFilePath: string) => {
   return resolved
 }
 
+const normalizeCompatibleBaseUrl = (baseUrl: string) => {
+  const trimmed = baseUrl.trim().replace(/\/+$/, '')
+  return trimmed.endsWith('/chat/completions') ? trimmed : `${trimmed}/chat/completions`
+}
+
+const normalizeGeminiText = (data: any) =>
+  (data?.candidates?.[0]?.content?.parts || [])
+    .map((part: any) => part?.text || '')
+    .join('')
+    .trim()
+
 export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }) {
   const userDataPath = app.getPath('userData')
   const projectsRoot = path.resolve(userDataPath, 'projects')
@@ -244,6 +267,18 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
         key: existing.key || '',
         enabled: typeof existing.enabled === 'boolean' ? existing.enabled : true,
         status: existing.status || (existing.key ? 'available' : 'empty'),
+        baseUrl:
+          typeof existing.baseUrl === 'string' && existing.baseUrl.trim()
+            ? existing.baseUrl
+            : ZENMUX_DEFAULT_BASE_URL,
+        modelId:
+          typeof existing.modelId === 'string' && existing.modelId.trim()
+            ? existing.modelId
+            : ZENMUX_DEFAULT_MODEL_ID,
+        providerMode:
+          existing.providerMode === 'custom-compatible' || existing.providerMode === 'direct-zai'
+            ? existing.providerMode
+            : 'zenmux',
         lastFailureReason: existing.lastFailureReason || '',
         lastCheckedAt: existing.lastCheckedAt || '',
         lastUsedAt: existing.lastUsedAt || ''
@@ -312,104 +347,276 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
         : slot
     )
   }
-
-  const callGlm = async (prompt: string, currentFiles?: ProjectFile[]) => {
-    const secureData = readSecureVault()
-    const activeSlot = getActiveGlmSlot(secureData)
-    if (!activeSlot) {
-      writeSecureVault(secureData)
-      return {
-        success: false as const,
-        code: 'MISSING_GLM_KEY',
-        message: 'GLM 5.2 key configured nahi hai. Gemini fallback use karu ya pehle GLM key add karni hai?'
-      }
-    }
-
-    const key = decryptVaultValue(activeSlot.key).trim()
-    writeSecureVault(secureData)
-
-    const systemPrompt = [
-      'You are ALPHA coding engine using GLM 5.2.',
+  const buildProjectSystemPrompt = (providerLabel: string) =>
+    [
+      `You are ALPHA coding engine using ${providerLabel}.`,
       'Return strict JSON only.',
       'Schema:',
       '{"projectName":"string","projectType":"string","summary":"string","files":[{"path":"relative/path","content":"file contents"}]}',
       'Never wrap output in markdown.',
       'For websites include at least index.html, style.css, script.js, README.md.',
+      'For website prompts, make the page visibly functional and previewable immediately.',
+      'For a calculator website, return a working calculator UI with glassmorphism styling and JavaScript interactions.',
       'For non-website projects include a practical starter file and README.md.'
     ].join(' ')
 
-    const userPrompt = currentFiles?.length
+  const buildProjectUserPrompt = (prompt: string, currentFiles?: ProjectFile[]) =>
+    currentFiles?.length
       ? `Update this existing project for the request.\nRequest: ${prompt}\nCurrent files:\n${JSON.stringify(currentFiles)}`
       : `Create a project for this request.\nRequest: ${prompt}`
 
+  const parseProviderPayload = (content: string, providerLabel: string): ProviderResult => {
+    const parsed = extractJson(content)
+    if (!parsed) {
+      return {
+        success: false,
+        code: 'INVALID_RESPONSE',
+        message: `${providerLabel} ne valid project JSON return nahi kiya.`,
+        providerLabel
+      }
+    }
+    return { success: true, payload: parsed, providerLabel }
+  }
+
+  const callGeminiProjectProvider = async (prompt: string, currentFiles?: ProjectFile[]): Promise<ProviderResult> => {
+    const secureData = readSecureVault()
+    const geminiSlot = secureData.keySlots?.geminiBrain?.find((slot: KeySlot) => {
+      const key = decryptVaultValue(slot?.key)
+      return slot?.enabled && key
+    })
+    const geminiKey = decryptVaultValue(geminiSlot?.key) || decryptVaultValue(secureData.gemini)
+    if (!geminiKey) {
+      return {
+        success: false,
+        code: 'GEMINI_MISSING_KEY',
+        message: 'Gemini key missing hai. Gemini key/settings check karo ya OpenRouter/Kimi choose karo.',
+        providerLabel: 'Gemini'
+      }
+    }
+
+    const response = await fetch(
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' +
+        encodeURIComponent(geminiKey),
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: buildProjectSystemPrompt('Gemini 2.5 Flash') }] },
+          contents: [{ role: 'user', parts: [{ text: buildProjectUserPrompt(prompt, currentFiles) }] }],
+          generationConfig: { temperature: 0.35, maxOutputTokens: 4096 }
+        })
+      }
+    )
+
+    if (!response.ok) {
+      const errorBody = await response.text()
+      const exactMessage =
+        response.status === 401 || response.status === 403
+          ? 'Gemini auth failed. Gemini key/settings check karo ya OpenRouter/Kimi choose karo.'
+          : response.status === 429
+            ? 'Gemini rate limit/quota hit hua. Dusra fallback choose karo.'
+            : `Gemini provider error ${response.status}: ${errorBody.slice(0, 180)}`
+      return { success: false, code: `GEMINI_${response.status}`, message: exactMessage, providerLabel: 'Gemini' }
+    }
+
+    const data = await response.json()
+    return parseProviderPayload(normalizeGeminiText(data), 'Gemini')
+  }
+
+  const callCompatibleProvider = async (
+    prompt: string,
+    currentFiles: ProjectFile[] | undefined,
+    config: { endpoint: string; key: string; model: string; providerLabel: string; headers?: Record<string, string> }
+  ): Promise<ProviderResult> => {
+    const response = await fetch(config.endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${config.key}`,
+        ...(config.headers || {})
+      },
+      body: JSON.stringify({
+        model: config.model,
+        temperature: 0.35,
+        messages: [
+          { role: 'system', content: buildProjectSystemPrompt(config.providerLabel) },
+          { role: 'user', content: buildProjectUserPrompt(prompt, currentFiles) }
+        ]
+      })
+    })
+
+    if (!response.ok) {
+      const body = await response.text()
+      let message = `${config.providerLabel} provider error ${response.status}: ${body.slice(0, 180)}`
+      if (response.status === 401 || response.status === 403) {
+        message = `${config.providerLabel} auth failed. API key/settings check karo.`
+      } else if (response.status === 404) {
+        message = `${config.providerLabel} model invalid lag raha hai. Model/settings check karo.`
+      } else if (response.status === 429) {
+        message = `${config.providerLabel} rate limit/quota hit hua.`
+      }
+      return { success: false, code: `${config.providerLabel.toUpperCase()}_${response.status}`, message, providerLabel: config.providerLabel }
+    }
+
+    const data = await response.json()
+    return parseProviderPayload(data?.choices?.[0]?.message?.content?.trim() || '', config.providerLabel)
+  }
+
+  const callGlm = async (prompt: string, currentFiles?: ProjectFile[]): Promise<ProviderResult> => {
+    const secureData = readSecureVault()
+    const activeSlot = getActiveGlmSlot(secureData)
+    if (!activeSlot) {
+      writeSecureVault(secureData)
+      return {
+        success: false,
+        code: 'MISSING_GLM_KEY',
+        message: 'GLM 5.2 key configured nahi hai. Gemini fallback use karu ya pehle GLM key add karni hai?',
+        providerLabel: 'GLM 5.2'
+      }
+    }
+
+    const key = decryptVaultValue(activeSlot.key).trim()
+    const providerMode = activeSlot.providerMode || 'zenmux'
+    const baseUrl = activeSlot.baseUrl || ZENMUX_DEFAULT_BASE_URL
+    const modelId = activeSlot.modelId || ZENMUX_DEFAULT_MODEL_ID
+    writeSecureVault(secureData)
+
     try {
-      const response = await fetch('https://open.bigmodel.cn/api/paas/v4/chat/completions', {
+      const endpoint =
+        providerMode === 'direct-zai'
+          ? `${baseUrl.replace(/\/+$/, '')}/chat/completions`
+          : normalizeCompatibleBaseUrl(baseUrl)
+
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${key}`
+          Authorization: `Bearer ${key}`,
+          ...(providerMode === 'direct-zai'
+            ? {
+                'HTTP-Referer': 'https://alpha.local',
+                'X-Title': 'alpha'
+              }
+            : {})
         },
         body: JSON.stringify({
-          model: PROJECT_MODEL,
+          model: modelId,
           temperature: 0.35,
           messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt }
+            { role: 'system', content: buildProjectSystemPrompt('GLM 5.2') },
+            { role: 'user', content: buildProjectUserPrompt(prompt, currentFiles) }
           ]
         })
       })
 
       if (!response.ok) {
+        const body = await response.text()
         const failureStatus = response.status === 429 ? 'rate-limited' : 'failed'
         const secureDataOnFailure = readSecureVault()
-        markGlmFailure(
-          secureDataOnFailure,
-          activeSlot.slot,
-          failureStatus,
-          `GLM HTTP ${response.status}`
-        )
+        const errorMessage =
+          response.status === 401 || response.status === 403
+            ? 'ZenMux/GLM auth failed. API key ya model ID check karo.'
+            : response.status === 404
+              ? 'GLM model ID invalid lag raha hai. Settings me model ID check karo.'
+              : `GLM provider error ${response.status}: ${body.slice(0, 180)}`
+        markGlmFailure(secureDataOnFailure, activeSlot.slot, failureStatus, errorMessage)
         rotateGlmSlot(secureDataOnFailure)
         writeSecureVault(secureDataOnFailure)
         return {
-          success: false as const,
-          code: 'GLM_REQUEST_FAILED',
-          message: `GLM request failed with status ${response.status}.`
+          success: false,
+          code: response.status === 404 ? 'GLM_MODEL_INVALID' : response.status === 401 || response.status === 403 ? 'GLM_AUTH_FAILED' : 'GLM_REQUEST_FAILED',
+          message: errorMessage,
+          providerLabel: providerMode === 'zenmux' ? 'ZenMux Compatible GLM' : 'GLM 5.2'
         }
       }
 
       const data = await response.json()
       const content = data?.choices?.[0]?.message?.content?.trim() || ''
-      const parsed = extractJson(content)
-      if (!parsed) {
-        return {
-          success: false as const,
-          code: 'GLM_INVALID_RESPONSE',
-          message: 'GLM did not return valid project JSON.'
-        }
-      }
+      const parsed = parseProviderPayload(content, providerMode === 'zenmux' ? 'ZenMux Compatible GLM' : 'GLM 5.2')
+      if (!parsed.success) return parsed
 
       const secureDataOnSuccess = readSecureVault()
       markActiveGlmSlot(secureDataOnSuccess, activeSlot.slot)
       writeSecureVault(secureDataOnSuccess)
-
-      return {
-        success: true as const,
-        payload: parsed
-      }
+      return parsed
     } catch (error: any) {
       const secureDataOnFailure = readSecureVault()
       markGlmFailure(secureDataOnFailure, activeSlot.slot, 'failed', error?.message || 'GLM request failed')
       rotateGlmSlot(secureDataOnFailure)
       writeSecureVault(secureDataOnFailure)
       return {
-        success: false as const,
+        success: false,
         code: 'GLM_NETWORK_ERROR',
-        message: error?.message || 'GLM network request failed.'
+        message: error?.message || 'GLM network request failed.',
+        providerLabel: 'GLM 5.2'
       }
     }
   }
 
-  const writeProjectState = (projectId: string, projectName: string, prompt: string, files: ProjectFile[]) => {
+  const callProvider = async (
+    provider: ProviderName,
+    prompt: string,
+    currentFiles?: ProjectFile[]
+  ): Promise<ProviderResult> => {
+    if (provider === 'glm') return callGlm(prompt, currentFiles)
+    if (provider === 'gemini') return callGeminiProjectProvider(prompt, currentFiles)
+
+    const secureData = readSecureVault()
+    const slots = secureData.keySlots?.[provider] || []
+    const active = slots.find((slot: KeySlot) => slot?.enabled && decryptVaultValue(slot?.key))
+    const key = decryptVaultValue(active?.key)
+    if (!key) {
+      return {
+        success: false,
+        code: `${provider.toUpperCase()}_MISSING_KEY`,
+        message: `${provider} key missing hai. Settings me provider config check karo.`,
+        providerLabel: provider
+      }
+    }
+
+    if (provider === 'openrouter') {
+      return callCompatibleProvider(prompt, currentFiles, {
+        endpoint: 'https://openrouter.ai/api/v1/chat/completions',
+        key,
+        model: secureData.openrouterModel || 'glm-5.2',
+        providerLabel: 'OpenRouter',
+        headers: { 'HTTP-Referer': 'https://alpha.local', 'X-Title': 'alpha' }
+      })
+    }
+
+    if (provider === 'groq') {
+      return callCompatibleProvider(prompt, currentFiles, {
+        endpoint: 'https://api.groq.com/openai/v1/chat/completions',
+        key,
+        model: 'llama-3.1-8b-instant',
+        providerLabel: 'Groq'
+      })
+    }
+
+    if (provider === 'kimi') {
+      return callCompatibleProvider(prompt, currentFiles, {
+        endpoint: 'https://api.moonshot.ai/v1/chat/completions',
+        key,
+        model: 'moonshot-v1-8k',
+        providerLabel: 'Kimi'
+      })
+    }
+
+    return {
+      success: false,
+      code: 'UNSUPPORTED_PROVIDER',
+      message: `${provider} provider currently unsupported.`,
+      providerLabel: provider
+    }
+  }
+
+  const writeProjectState = (
+    projectId: string,
+    projectName: string,
+    prompt: string,
+    files: ProjectFile[],
+    providerUsed: string
+  ) => {
     const projectPath = path.join(projectsRoot, projectId)
     ensureDir(projectPath)
     ensureDir(path.join(projectPath, 'exports'))
@@ -433,6 +640,7 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
       createdAt: existingMeta?.createdAt || now,
       updatedAt: now,
       modelUsed: PROJECT_MODEL,
+      providerUsed,
       files: files.map((file) => file.path),
       lastPrompt: prompt,
       projectPath
@@ -468,15 +676,15 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
     return { metadata, files }
   }
 
-  ipcMain.handle('project-builder-create', async (_, { prompt }) => {
+  ipcMain.handle('project-builder-create', async (_, { prompt, provider = 'glm' }) => {
     const projectType = detectProjectType(prompt || '')
-    const generated = await callGlm(prompt || '')
+    const generated = await callProvider(provider, prompt || '')
     if (!generated.success) return generated
 
     const payload = generated.payload || {}
     const projectName = slugify(payload.projectName || guessProjectName(prompt || '', projectType))
     const files = normalizeFiles(payload, prompt || '', projectType)
-    const state = writeProjectState(projectName, projectName, prompt || '', files)
+    const state = writeProjectState(projectName, projectName, prompt || '', files, generated.providerLabel)
 
     return {
       success: true,
@@ -485,14 +693,32 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
     }
   })
 
-  ipcMain.handle('project-builder-update', async (_, { projectId, prompt }) => {
+  ipcMain.handle('project-builder-update', async (_, { projectId, prompt, provider }) => {
     const existing = readProjectState(projectId)
-    const generated = await callGlm(prompt || '', existing.files)
+    const generated = await callProvider(
+      provider || ((existing.metadata.providerUsed || '').toLowerCase().includes('gemini')
+        ? 'gemini'
+        : (existing.metadata.providerUsed || '').toLowerCase().includes('openrouter')
+          ? 'openrouter'
+          : (existing.metadata.providerUsed || '').toLowerCase().includes('kimi')
+            ? 'kimi'
+            : (existing.metadata.providerUsed || '').toLowerCase().includes('groq')
+              ? 'groq'
+              : 'glm'),
+      prompt || '',
+      existing.files
+    )
     if (!generated.success) return generated
 
     const payload = generated.payload || {}
     const files = normalizeFiles(payload, prompt || '', existing.metadata.type)
-    const state = writeProjectState(projectId, existing.metadata.name, prompt || '', files)
+    const state = writeProjectState(
+      projectId,
+      existing.metadata.name,
+      prompt || '',
+      files,
+      generated.providerLabel
+    )
 
     return {
       success: true,

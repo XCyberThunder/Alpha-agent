@@ -128,7 +128,18 @@ export default function LiveCodingWidget() {
     setChatMessages((prev) => [...prev, { role: 'user', text: prompt }])
 
     try {
-      const response = await updateBuilderProject(projectState.metadata.id, prompt)
+      const provider =
+        (projectState.metadata.providerUsed || '').toLowerCase().includes('gemini')
+          ? 'gemini'
+          : (projectState.metadata.providerUsed || '').toLowerCase().includes('openrouter')
+            ? 'openrouter'
+            : (projectState.metadata.providerUsed || '').toLowerCase().includes('kimi')
+              ? 'kimi'
+              : (projectState.metadata.providerUsed || '').toLowerCase().includes('groq')
+                ? 'groq'
+                : 'glm'
+
+      const response = await updateBuilderProject(projectState.metadata.id, prompt, provider)
       if (response.success && response.state) {
         setProjectState(response.state)
         setPreviewHtml(response.previewHtml || '')
@@ -215,9 +226,12 @@ export default function LiveCodingWidget() {
                   {projectState.metadata.modelUsed}
                 </span>
               </div>
-              <p className="mt-1 text-lg font-semibold text-white">{projectState.metadata.name}</p>
-            </div>
-          </div>
+                  <p className="mt-1 text-lg font-semibold text-white">{projectState.metadata.name}</p>
+                  <p className="mt-1 text-xs text-zinc-400">
+                    Provider: {projectState.metadata.providerUsed || projectState.metadata.modelUsed}
+                  </p>
+                </div>
+              </div>
 
           <div className="flex items-center gap-2">
             <div className="mr-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-zinc-200">
