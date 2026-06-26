@@ -79,7 +79,7 @@ const getSttLatencyProfile = () => {
   const mode = localStorage.getItem('alpha_stt_latency_mode') || 'ULTRA'
   if (mode === 'STABLE') return { chunkMs: 20, maxBacklog: 512 * 1024, bargeInMs: 90 }
   if (mode === 'FAST') return { chunkMs: 10, maxBacklog: 224 * 1024, bargeInMs: 60 }
-  return { chunkMs: 6, maxBacklog: 96 * 1024, bargeInMs: 30 }
+  return { chunkMs: 5, maxBacklog: 80 * 1024, bargeInMs: 24 }
 }
 
 const getCachedRealtime = (key: string) => {
@@ -326,6 +326,7 @@ export class GeminiLiveService {
   private sttBargeInMs: number = 45
   private localAckSpeakText: string | null = null
   private lastTtsStartLogAt: number = 0
+  private lastInputTranscriptAt: number = 0
 
   constructor() {
     this.apiKey = ''
@@ -341,6 +342,7 @@ export class GeminiLiveService {
 
   public stopCurrentSpeech() {
     this.suppressAudioUntil = Date.now() + 650
+    this.localAckSpeakText = null
     this.stopAllAudio()
   }
 
@@ -463,6 +465,14 @@ export class GeminiLiveService {
 
     if (/^(ye|yeh|this|isko|ise|isey)\s+(karo|kar do|do it)$/.test(normalized)) {
       return make('CLARIFY_COMMAND', 'unclear', 'Kya karna hai?', () => undefined)
+    }
+
+    if (/(chrome|google chrome).*(open|kholo|khol|start|launch|chalao)|open\s+(chrome|google chrome)/i.test(normalized)) {
+      return make('OPEN_APP', 'chrome', 'Opening Chrome.', () => openApp('chrome'))
+    }
+
+    if (/brave.*(open|kholo|khol|start|launch|chalao)|open\s+brave/i.test(normalized)) {
+      return make('OPEN_APP', 'brave', 'Opening Brave.', () => openApp('brave'))
     }
 
     if (/(brave|browser).*(close|band|bnd)|close\s+brave|brave\s+band/i.test(normalized)) {
@@ -2440,10 +2450,16 @@ ${coreMemory}
 
           if (serverContent.inputTranscription?.text && !this.localAckSpeakText) {
             console.debug(`[VOICE_TIMING] stt_transcript_received=${Date.now()}`)
-            if (this.activeAudioNodes.length > 0 && Date.now() - this.lastBargeInAt > 350) {
-              this.lastBargeInAt = Date.now()
+            const transcriptNow = Date.now()
+            if (transcriptNow - this.lastInputTranscriptAt > 1200) {
+              this.userInputBuffer = ''
+            }
+            this.lastInputTranscriptAt = transcriptNow
+            if (this.activeAudioNodes.length > 0 && transcriptNow - this.lastBargeInAt > 300) {
+              this.lastBargeInAt = transcriptNow
               this.stopCurrentSpeech()
               this.aiResponseBuffer = ''
+              this.userInputBuffer = ''
               this.rawAudioBuffer = []
               this.rawAudioBufferLength = 0
             }
@@ -2466,6 +2482,11 @@ ${coreMemory}
                 prompt !== this.lastHandledUserPrompt ||
                 now - this.lastHandledPromptAt > 900
               ) {
+                if (this.handleLocalFastRoute(prompt)) {
+                  this.userInputBuffer = ''
+                  this.aiResponseBuffer = ''
+                  return
+                }
                 this.lastHandledUserPrompt = prompt
                 this.lastHandledPromptAt = now
                 this.activeConversationId += 1

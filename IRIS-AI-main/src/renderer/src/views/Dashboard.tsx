@@ -570,16 +570,16 @@ export default function DashboardView({
       </div>
 
       <div
-        className={`hidden lg:flex col-span-3 h-full z-40 transition-all duration-300 ${
+        className={`${
           isChatCollapsed
-            ? 'items-start justify-start overflow-visible pointer-events-none'
-            : 'flex-col overflow-hidden'
-        }`}
+            ? 'hidden lg:flex absolute top-4 right-4 z-50 w-auto h-auto pointer-events-none'
+            : 'hidden lg:flex col-span-3 h-full z-40 flex-col overflow-hidden'
+        } transition-all duration-300`}
       >
         {isChatCollapsed ? (
           <button
             onClick={() => setIsChatCollapsed(false)}
-            className={`${glassPanel} pointer-events-auto mt-1 ml-auto rounded-full px-4 py-3 flex items-center gap-3 text-cyan-200 border-cyan-300/25 hover:border-cyan-200/50 hover:bg-cyan-300/10 transition-all shadow-[0_0_24px_rgba(34,211,238,0.14)]`}
+            className={`${glassPanel} pointer-events-auto rounded-full px-4 py-3 flex items-center gap-3 text-cyan-200 border-cyan-300/25 hover:border-cyan-200/50 hover:bg-cyan-300/10 transition-all shadow-[0_0_24px_rgba(34,211,238,0.14)]`}
             title="Restore Hybrid Chat"
           >
             <RiTerminalBoxLine size={15} className="shrink-0" />
