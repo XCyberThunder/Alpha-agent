@@ -180,7 +180,7 @@ const siteMap: Record<string, string> = {
 
 const normalizeFastCommand = (text: string) =>
   normalizeTranscript(text)
-    .replace(/\b(please|pls|zara|jara|bhai|bro|sir|yaar)\b/g, ' ')
+    .replace(/\b(please|pls|plz|zara|jara|bhai|bro|sir|yaar|thoda|ek baar)\b/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
 
@@ -190,6 +190,8 @@ const getFastOpenSiteRoute = (
   const normalized = normalizeFastCommand(prompt)
   const hasOpenIntent = /\b(open|kholo|khol|launch|start|chalu)\b/i.test(normalized)
   if (!hasOpenIntent) return null
+  if (/\b(chrome|google chrome|brave)\b/i.test(normalized)) return null
+  if (/\bwhatsapp\b/i.test(normalized) && !/\b(web|browser)\b/i.test(normalized)) return null
 
   const aliases: Array<[string, string, string]> = [
     ['youtube', 'YouTube', siteMap.youtube],
@@ -519,6 +521,50 @@ export class GeminiLiveService {
         run: () => Promise<unknown> | unknown
       }
     | null {
+    const normalized = normalizeFastCommand(prompt)
+    const make = (intent: string, target: string, ack: string, run: () => Promise<unknown> | unknown) => ({
+      intent,
+      target,
+      ack,
+      normalized,
+      run
+    })
+
+    if (/(chrome|google chrome).*(open|kholo|khol|start|launch|chalao)|open\s+(chrome|google chrome)|chrome\s+browser\s+(kholo|open)/i.test(normalized)) {
+      return make('OPEN_APP', 'chrome', 'Opening Chrome.', () => openApp('chrome'))
+    }
+
+    if (/brave.*(open|kholo|khol|start|launch|chalao)|open\s+brave|brave\s+browser\s+(kholo|open)/i.test(normalized)) {
+      return make('OPEN_APP', 'brave', 'Opening Brave.', () => openApp('brave'))
+    }
+
+    if (/whatsapp(?!\s+web).*(open|kholo|khol|start|launch|chalao|app)|open\s+whatsapp(?!\s+web)/i.test(normalized)) {
+      return make('OPEN_APP', 'whatsapp', 'Opening WhatsApp app.', async () => {
+        const result = await openApp('whatsapp')
+        if (/installed nahi mila|error/i.test(result)) await saveMessage('alpha', 'WhatsApp app installed nahi mila. WhatsApp Web open karu?')
+      })
+    }
+
+    if (/(vs code|vscode|code).*(open|kholo|khol|start|launch|chalao)|open\s+(vs code|vscode|code)/i.test(normalized)) {
+      return make('OPEN_APP', 'vscode', 'Opening VS Code.', () => openApp('vscode'))
+    }
+
+    if (/(powershell).*(open|kholo|start|launch|chalao)|open\s+powershell/i.test(normalized)) {
+      return make('OPEN_APP', 'powershell', 'Opening PowerShell.', () => openApp('powershell'))
+    }
+
+    if (/(cmd|command prompt).*(open|kholo|start|launch|chalao)|open\s+(cmd|command prompt)/i.test(normalized)) {
+      return make('OPEN_APP', 'cmd', 'Opening CMD.', () => openApp('cmd'))
+    }
+
+    if (/(terminal).*(open|kholo|start|launch|chalao)|open\s+terminal/i.test(normalized)) {
+      return make('OPEN_APP', 'terminal', 'Opening terminal.', () => openApp('terminal'))
+    }
+
+    if (/(kali|kali linux|wsl).*(open|kholo|start|launch|chalao)|open\s+(kali|wsl)/i.test(normalized)) {
+      return make('OPEN_APP', 'kali', 'Opening Kali terminal.', () => openApp(normalized.includes('wsl') && !normalized.includes('kali') ? 'wsl' : 'kali'))
+    }
+
     const siteRoute = getFastOpenSiteRoute(prompt)
     if (siteRoute) {
       return {
@@ -529,15 +575,6 @@ export class GeminiLiveService {
         run: () => openUrl(siteRoute.url)
       }
     }
-
-    const normalized = normalizeFastCommand(prompt)
-    const make = (intent: string, target: string, ack: string, run: () => Promise<unknown> | unknown) => ({
-      intent,
-      target,
-      ack,
-      normalized,
-      run
-    })
 
     if (/(notes?|memory bank).*(dikhao|show|list)|meri notes? dikhao/i.test(normalized)) {
       const query = extractNoteQuery(prompt)
@@ -615,15 +652,7 @@ export class GeminiLiveService {
       return make('CLARIFY_COMMAND', 'unclear', 'Kya karna hai?', () => undefined)
     }
 
-    if (/(chrome|google chrome).*(open|kholo|khol|start|launch|chalao)|open\s+(chrome|google chrome)/i.test(normalized)) {
-      return make('OPEN_APP', 'chrome', 'Opening Chrome.', () => openApp('chrome'))
-    }
-
-    if (/brave.*(open|kholo|khol|start|launch|chalao)|open\s+brave/i.test(normalized)) {
-      return make('OPEN_APP', 'brave', 'Opening Brave.', () => openApp('brave'))
-    }
-
-    if (/(brave|browser).*(close|band|bnd)|close\s+brave|brave\s+band/i.test(normalized)) {
+    if (/(brave|browser).*(close|band|bnd)|close\\s+brave|brave\\s+band/i.test(normalized)) {
       return make('CLOSE_APP', 'brave', 'Closing Brave.', () => closeApp('brave'))
     }
 
