@@ -390,12 +390,28 @@ const parseReminderDate = (prompt: string): { scheduledAt: Date | null; message:
   const lower = normalizeTranscript(prompt)
   const now = new Date()
   let scheduledAt: Date | null = null
+  let parseMeta: { type: string; amount?: number; unit?: string } | null = null
+
+  const secondMatch = lower.match(/(\d{1,3})\s*(second|seconds|sec)\s*(baad|later|after)/i)
+  if (secondMatch) {
+    const seconds = Math.max(3, Number(secondMatch[1]))
+    scheduledAt = new Date(now.getTime() + seconds * 1000)
+    parseMeta = { type: 'relative', amount: seconds, unit: 'second' }
+  }
 
   const minuteMatch = lower.match(/(\d{1,3})\s*(minute|min|minutes)\s*(baad|later|after)/i)
-  if (minuteMatch) scheduledAt = new Date(now.getTime() + Number(minuteMatch[1]) * 60 * 1000)
+  if (!scheduledAt && minuteMatch) {
+    const minutes = Number(minuteMatch[1])
+    scheduledAt = new Date(now.getTime() + minutes * 60 * 1000)
+    parseMeta = { type: 'relative', amount: minutes, unit: 'minute' }
+  }
 
   const hourMatch = lower.match(/(\d{1,2})\s*(hour|hours|ghante|ghanta)\s*(baad|later|after)/i)
-  if (!scheduledAt && hourMatch) scheduledAt = new Date(now.getTime() + Number(hourMatch[1]) * 60 * 60 * 1000)
+  if (!scheduledAt && hourMatch) {
+    const hours = Number(hourMatch[1])
+    scheduledAt = new Date(now.getTime() + hours * 60 * 60 * 1000)
+    parseMeta = { type: 'relative', amount: hours, unit: 'hour' }
+  }
 
   const timeMatch = lower.match(/(?:(aaj|today|kal|tomorrow|subah|morning|shaam|evening|raat|night)\s*)?(\d{1,2})(?::(\d{2}))?\s*(am|pm|baje)?/i)
   if (!scheduledAt && timeMatch) {
@@ -416,9 +432,11 @@ const parseReminderDate = (prompt: string): { scheduledAt: Date | null; message:
     if (scheduledAt.getTime() <= now.getTime() && context !== 'aaj' && context !== 'today') {
       scheduledAt.setDate(scheduledAt.getDate() + 1)
     }
+    parseMeta = { type: 'clock' }
   }
 
   const message = prompt
+    .replace(/\d{1,3}\s*(second|seconds|sec)\s*(baad|later|after)/gi, ' ')
     .replace(/\d{1,3}\s*(minute|min|minutes)\s*(baad|later|after)/gi, ' ')
     .replace(/\d{1,2}\s*(hour|hours|ghante|ghanta)\s*(baad|later|after)/gi, ' ')
     .replace(/\b(aaj|today|kal|tomorrow|subah|morning|shaam|evening|raat|night)?\s*\d{1,2}(?::\d{2})?\s*(am|pm|baje)?\b/gi, ' ')
@@ -426,6 +444,10 @@ const parseReminderDate = (prompt: string): { scheduledAt: Date | null; message:
     .replace(/[:\-]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
+
+  console.debug(
+    `[REMINDER_PARSE] input="${prompt}" type="${parseMeta?.type || 'unknown'}" amount=${parseMeta?.amount ?? 'null'} unit="${parseMeta?.unit || ''}" scheduledAt="${scheduledAt?.toISOString?.() || 'null'}" message="${message || 'Reminder from alpha'}"`
+  )
 
   return { scheduledAt, message: message || 'Reminder from alpha' }
 }
@@ -454,6 +476,17 @@ const getYouTubeRoute = (prompt: string): { url: string; label: string } | null 
 }
 
 const shortcut = (key: string, modifiers: string[] = ['ctrl']) => pressShortcut(key, modifiers)
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+const runBrowserControlAction = async <T>(action: () => Promise<T> | T) => {
+  try {
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+    if (typeof window.blur === 'function') window.blur()
+  } catch {}
+
+  await wait(140)
+  return action()
+}
 
 export class GeminiLiveService {
   public socket: WebSocket | null = null
@@ -496,9 +529,98 @@ export class GeminiLiveService {
   private localAckSpeakText: string | null = null
   private lastTtsStartLogAt: number = 0
   private lastInputTranscriptAt: number = 0
+  private lastAudioSentAt: number = 0
+  private lastSpeechDetectedAt: number = 0
+  private lastSttRecoveryAt: number = 0
+  private sttState:
+    | 'idle'
+    | 'connecting'
+    | 'listening'
+    | 'receiving'
+    | 'finalizing'
+    | 'speaking'
+    | 'error'
+    | 'reconnecting' = 'idle'
+  private sttHealthTimer: NodeJS.Timeout | null = null
+  private reconnectTimer: NodeJS.Timeout | null = null
+  private manualDisconnectRequested: boolean = false
 
   constructor() {
     this.apiKey = ''
+  }
+
+  private setSttState(
+    state:
+      | 'idle'
+      | 'connecting'
+      | 'listening'
+      | 'receiving'
+      | 'finalizing'
+      | 'speaking'
+      | 'error'
+      | 'reconnecting'
+  ) {
+    if (this.sttState === state) return
+    this.sttState = state
+    console.debug(
+      `[STT_HEALTH] mic=${!!this.mediaStream} audioContext="${this.audioContext?.state || 'none'}" socket="${this.socket ? WebSocket[this.socket.readyState] || this.socket.readyState : 'none'}" state="${state}"`
+    )
+  }
+
+  private clearSttHealthWatchdog() {
+    if (this.sttHealthTimer) {
+      clearInterval(this.sttHealthTimer)
+      this.sttHealthTimer = null
+    }
+  }
+
+  private startSttHealthWatchdog() {
+    this.clearSttHealthWatchdog()
+    this.sttHealthTimer = setInterval(async () => {
+      if (this.manualDisconnectRequested) return
+
+      try {
+        if (this.audioContext?.state === 'suspended') {
+          await this.audioContext.resume()
+        }
+      } catch {}
+
+      const socketState =
+        !this.socket ? 'none' : this.socket.readyState === WebSocket.OPEN ? 'open' : this.socket.readyState === WebSocket.CONNECTING ? 'connecting' : 'closed'
+
+      if (this.mediaStream && socketState !== 'open' && !this.reconnectTimer) {
+        void this.recoverVoiceSession(`socket ${socketState}`)
+        return
+      }
+
+      const now = Date.now()
+      const speechLooksStuck =
+        this.lastSpeechDetectedAt > 0 &&
+        now - this.lastSpeechDetectedAt < 3500 &&
+        now - this.lastInputTranscriptAt > 3500 &&
+        now - this.lastSttRecoveryAt > 5000
+
+      if (speechLooksStuck) {
+        console.debug(`[STT_TIMEOUT] noTranscriptMs=${now - this.lastInputTranscriptAt} state="${this.sttState}"`)
+        void this.recoverVoiceSession('no transcript after speech')
+      }
+    }, 1500)
+  }
+
+  private async recoverVoiceSession(reason: string) {
+    if (this.reconnectTimer || this.manualDisconnectRequested) return
+    this.lastSttRecoveryAt = Date.now()
+    this.setSttState('reconnecting')
+    console.debug(`[STT_RECONNECT] reason="${reason}"`)
+    this.teardownConnection(false)
+    this.reconnectTimer = setTimeout(async () => {
+      this.reconnectTimer = null
+      try {
+        await this.connect()
+      } catch (error) {
+        this.setSttState('error')
+      }
+    }, 700)
   }
 
   setMute(muted: boolean) {
@@ -513,6 +635,7 @@ export class GeminiLiveService {
     this.suppressAudioUntil = Date.now() + 650
     this.localAckSpeakText = null
     this.stopAllAudio()
+    if (this.isConnected) this.setSttState('listening')
   }
 
   private stopAllAudio() {
@@ -550,6 +673,7 @@ export class GeminiLiveService {
     if (!this.vadSpeechStartedAt) {
       this.vadSpeechStartedAt = now
     }
+    this.lastSpeechDetectedAt = now
 
     const speechAge = now - this.vadSpeechStartedAt
     const canInterrupt =
@@ -566,6 +690,8 @@ export class GeminiLiveService {
     this.aiResponseBuffer = ''
     this.rawAudioBuffer = []
     this.rawAudioBufferLength = 0
+    this.userInputBuffer = ''
+    this.setSttState('listening')
     window.dispatchEvent(new CustomEvent('alpha-chat-typing', { detail: { active: false } }))
   }
 
@@ -579,6 +705,7 @@ export class GeminiLiveService {
     this.localAckSpeakText = ack
     this.aiResponseBuffer = ''
     this.suppressAudioUntil = Date.now() + 80
+    this.setSttState('speaking')
 
     try {
       this.socket.send(
@@ -762,8 +889,10 @@ export class GeminiLiveService {
       return make('BROWSER_SHORTCUT', 'new-tab', 'Opening a new tab.', () => shortcut('t'))
     }
 
-    if (/(close current tab|current tab close|ye tab close|tab close|sirf tab close)/i.test(normalized)) {
-      return make('BROWSER_SHORTCUT', 'close-tab', 'Tab closed.', () => shortcut('w'))
+    if (/(close current tab|current tab close|ye tab close|current close tab|tab close|tab band|close this tab|sirf tab close)/i.test(normalized)) {
+      return make('BROWSER_SHORTCUT', 'close-tab', 'Tab closed.', () =>
+        runBrowserControlAction(() => shortcut('w'))
+      )
     }
 
     if (/(next tab|agle tab|agla tab)/i.test(normalized)) {
@@ -774,8 +903,10 @@ export class GeminiLiveService {
       return make('BROWSER_SHORTCUT', 'previous-tab', 'Moving to the previous tab.', () => shortcut('tab', ['ctrl', 'shift']))
     }
 
-    if (/(back jao|go back|browser back|peeche jao|piche jao)/i.test(normalized)) {
-      return make('BROWSER_SHORTCUT', 'back', 'Going back.', () => shortcut('left', ['alt']))
+    if (/(back jao|go back|browser back|peeche jao|piche jao|wapas jao|back|peeche|piche|wapas)/i.test(normalized)) {
+      return make('BROWSER_SHORTCUT', 'back', 'Going back.', () =>
+        runBrowserControlAction(() => shortcut('left', ['alt']))
+      )
     }
 
     if (/(forward jao|go forward|browser forward|aage jao)/i.test(normalized)) {
@@ -794,12 +925,16 @@ export class GeminiLiveService {
       return make('SCROLL', 'bottom', 'Going to the bottom.', () => shortcut('end', []))
     }
 
-    if (/(upar|up).*scroll|scroll.*(upar|up)/i.test(normalized)) {
-      return make('SCROLL', 'up', 'Scrolling up.', () => scrollScreen('up', 800))
+    if (/(scroll up|up scroll|upar scroll|upar jao|up jao|upar|scroll upar)/i.test(normalized)) {
+      return make('SCROLL', 'up', 'Scrolling up.', () =>
+        runBrowserControlAction(() => shortcut('pageup', []))
+      )
     }
 
-    if (/(scroll down|down scroll|neeche|niche|aur neeche|aur niche)/i.test(normalized)) {
-      return make('SCROLL', 'down', 'Scrolling down.', () => scrollScreen('down', 800))
+    if (/(scroll down|down scroll|neeche scroll|niche scroll|neeche jao|niche jao|neeche|niche|scroll neeche|scroll niche|aur neeche|aur niche)/i.test(normalized)) {
+      return make('SCROLL', 'down', 'Scrolling down.', () =>
+        runBrowserControlAction(() => shortcut('pagedown', []))
+      )
     }
 
     if (/(app minimize|alpha minimize|emba minimize|window minimize|minimize karo)/i.test(normalized)) {
@@ -1258,6 +1393,9 @@ export class GeminiLiveService {
   }
 
   async connect(): Promise<void> {
+    this.manualDisconnectRequested = false
+    this.setSttState('connecting')
+
     if (window.electron?.ipcRenderer) {
       const secureKeys = await window.electron.ipcRenderer.invoke('secure-get-keys')
       this.apiKey = secureKeys?.geminiKey || localStorage?.getItem('alpha_custom_api_key') || ''
@@ -1452,6 +1590,11 @@ ${coreMemory}
       this.suppressAudioUntil = 0
       this.vadSpeechStartedAt = 0
       this.vadInterruptCooldownUntil = 0
+      this.lastSpeechDetectedAt = 0
+      this.lastInputTranscriptAt = 0
+      this.lastAudioSentAt = 0
+      this.setSttState('listening')
+      this.startSttHealthWatchdog()
       const setupMsg = {
         setup: {
           model: this.model,
@@ -2442,7 +2585,7 @@ ${coreMemory}
 
       this.socket?.send(JSON.stringify(setupMsg))
 
-      this.startMicrophone()
+      await this.startMicrophone()
       this.startAppWatcher()
     }
 
@@ -2451,6 +2594,8 @@ ${coreMemory}
         const data = JSON.parse(event.data instanceof Blob ? await event.data.text() : event.data)
 
         if (data.error) {
+          this.setSttState('error')
+          void this.recoverVoiceSession('server error frame')
           return
         }
 
@@ -2459,6 +2604,7 @@ ${coreMemory}
         if (serverContent?.interrupted) {
           this.stopCurrentSpeech()
           this.aiResponseBuffer = ''
+          this.setSttState('listening')
         }
 
         if (data.toolCall) {
@@ -2728,6 +2874,7 @@ ${coreMemory}
           if (serverContent.modelTurn?.parts) {
             serverContent.modelTurn.parts.forEach((part: any) => {
               if (part.inlineData && Date.now() > this.suppressAudioUntil) {
+                this.setSttState('speaking')
                 this.scheduleAudioChunk(part.inlineData.data)
               }
             })
@@ -2740,6 +2887,7 @@ ${coreMemory}
           if (serverContent.inputTranscription?.text && !this.localAckSpeakText) {
             console.debug(`[VOICE_TIMING] stt_transcript_received=${Date.now()}`)
             const transcriptNow = Date.now()
+            this.setSttState('receiving')
             if (transcriptNow - this.lastInputTranscriptAt > 1200) {
               this.userInputBuffer = ''
             }
@@ -2756,10 +2904,12 @@ ${coreMemory}
           }
 
           if (serverContent.turnComplete || serverContent.interrupted) {
+            this.setSttState('finalizing')
             if (this.localAckSpeakText) {
               this.localAckSpeakText = null
               this.aiResponseBuffer = ''
               window.dispatchEvent(new CustomEvent('alpha-chat-typing', { detail: { active: false } }))
+              this.setSttState('listening')
               return
             }
 
@@ -2774,6 +2924,7 @@ ${coreMemory}
                 if (this.handleLocalFastRoute(prompt)) {
                   this.userInputBuffer = ''
                   this.aiResponseBuffer = ''
+                  this.setSttState('listening')
                   return
                 }
                 this.lastHandledUserPrompt = prompt
@@ -2788,13 +2939,27 @@ ${coreMemory}
               window.dispatchEvent(new CustomEvent('alpha-chat-typing', { detail: { active: false } }))
               this.aiResponseBuffer = ''
             }
+            this.setSttState('listening')
           }
         }
-      } catch (err) {}
+      } catch (err) {
+        this.setSttState('error')
+      }
+    }
+
+    this.socket.onerror = async () => {
+      if (!this.manualDisconnectRequested) {
+        this.setSttState('error')
+        void this.recoverVoiceSession('socket error')
+      }
     }
 
     this.socket.onclose = async () => {
-      this.disconnect()
+      if (this.manualDisconnectRequested) {
+        this.teardownConnection(true)
+        return
+      }
+      void this.recoverVoiceSession('socket closed')
     }
   }
 
@@ -2957,10 +3122,29 @@ ${coreMemory}
   async startMicrophone(): Promise<void> {
     if (!this.audioContext) return
     try {
+      if (this.audioContext.state === 'suspended') {
+        await this.audioContext.resume()
+      }
+
+      if (this.mediaStream) {
+        this.mediaStream.getTracks().forEach((track) => track.stop())
+        this.mediaStream = null
+      }
+      if (this.workletNode) {
+        this.workletNode.disconnect()
+        this.workletNode = null
+      }
+
       const latencyProfile = getSttLatencyProfile()
       this.sttChunkMs = latencyProfile.chunkMs
       this.sttMaxBacklog = latencyProfile.maxBacklog
       this.sttBargeInMs = latencyProfile.bargeInMs
+      this.rawAudioBuffer = []
+      this.rawAudioBufferLength = 0
+      this.userInputBuffer = ''
+      this.lastInputTranscriptAt = 0
+      this.lastAudioSentAt = 0
+      this.lastSpeechDetectedAt = 0
 
       this.mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -2977,6 +3161,7 @@ ${coreMemory}
       const inputSampleRate = this.audioContext.sampleRate
 
       this.workletNode = new AudioWorkletNode(this.audioContext, 'pcm-processor')
+      this.setSttState('listening')
 
       this.workletNode.port.onmessage = (event) => {
         if (!this.socket || this.socket.readyState !== WebSocket.OPEN || this.isMicMuted) return
@@ -3008,6 +3193,7 @@ ${coreMemory}
           const downsampledData = downsampleTo16000(combined, inputSampleRate)
 
           const base64Audio = float32ToBase64PCM(downsampledData)
+          this.lastAudioSentAt = Date.now()
 
           this.socket.send(
             JSON.stringify({
@@ -3025,6 +3211,7 @@ ${coreMemory}
       this.workletNode.connect(silentGain)
       silentGain.connect(this.audioContext.destination)
     } catch (err) {
+      this.setSttState('error')
       alert('Microphone access denied or failed to initialize.')
     }
   }
@@ -3039,6 +3226,7 @@ ${coreMemory}
 
     const source = this.audioContext.createBufferSource()
     source.buffer = buffer
+    this.setSttState('speaking')
 
     if (this.activeAudioNodes.length === 0 && Date.now() - this.lastTtsStartLogAt > 250) {
       this.lastTtsStartLogAt = Date.now()
@@ -3072,6 +3260,12 @@ ${coreMemory}
   }
 
   disconnect(): void {
+    this.teardownConnection(true)
+  }
+
+  private teardownConnection(markManual: boolean): void {
+    this.manualDisconnectRequested = markManual
+    this.clearSttHealthWatchdog()
     if (this.appWatcherInterval) {
       clearInterval(this.appWatcherInterval)
       this.appWatcherInterval = null
@@ -3079,9 +3273,11 @@ ${coreMemory}
 
     this.isConnected = false
     this.stopAllAudio()
+    this.setSttState(markManual ? 'idle' : 'reconnecting')
 
     if (this.socket) {
       this.socket.onclose = null
+      this.socket.onerror = null
       this.socket.close()
       this.socket = null
     }
