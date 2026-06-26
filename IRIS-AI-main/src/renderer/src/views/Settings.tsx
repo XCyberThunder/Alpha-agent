@@ -31,7 +31,25 @@ interface SettingsProps {
 }
 
 type TabType = 'updates' | 'general' | 'keys' | 'security'
-type KeyGroup = 'geminiBrain' | 'geminiAgent' | 'openrouter'
+type KeyGroup =
+  | 'geminiBrain'
+  | 'geminiAgent'
+  | 'tavily'
+  | 'exa'
+  | 'firecrawl'
+  | 'groq'
+  | 'glm'
+  | 'kimi'
+  | 'openrouter'
+type PlaywrightBrowser = 'chromium' | 'chrome' | 'edge'
+type PlaywrightSettings = {
+  enabled: boolean
+  browser: PlaywrightBrowser
+  profilePath: string
+  headless: boolean
+  lastTestedAt?: string
+  lastStatus?: string
+}
 type KeySlotStatus = {
   slot: number
   enabled: boolean
@@ -54,22 +72,85 @@ const keyGroupLabels: Record<KeyGroup, { title: string; description: string; acc
     description: 'Reserved for future parallel agent subtasks.',
     accent: 'text-violet-300 border-violet-500/20 bg-violet-500/5'
   },
+  tavily: {
+    title: 'Tavily API Keys',
+    description: 'Realtime web search provider slots.',
+    accent: 'text-sky-300 border-sky-500/20 bg-sky-500/5'
+  },
+  exa: {
+    title: 'Exa API Keys',
+    description: 'Semantic search and deep research provider slots.',
+    accent: 'text-fuchsia-300 border-fuchsia-500/20 bg-fuchsia-500/5'
+  },
+  firecrawl: {
+    title: 'Firecrawl API Keys',
+    description: 'Website and documentation crawling provider slots.',
+    accent: 'text-red-300 border-red-500/20 bg-red-500/5'
+  },
+  groq: {
+    title: 'Groq API Keys',
+    description: 'Fast response layer provider slots.',
+    accent: 'text-lime-300 border-lime-500/20 bg-lime-500/5'
+  },
+  glm: {
+    title: 'GLM 5.2 API Keys',
+    description: 'Coding brain provider slots.',
+    accent: 'text-cyan-300 border-cyan-500/20 bg-cyan-500/5'
+  },
+  kimi: {
+    title: 'Kimi API Keys',
+    description: 'Long-context research provider slots.',
+    accent: 'text-pink-300 border-pink-500/20 bg-pink-500/5'
+  },
   openrouter: {
-    title: 'GLM 5.2 Complex Keys',
-    description: 'Used only for complex coding, website, planning, and reasoning tasks.',
+    title: 'OpenRouter API Keys',
+    description: 'Complex task and fallback brain provider slots.',
     accent: 'text-orange-300 border-orange-500/20 bg-orange-500/5'
   }
+}
+
+const keyGroups: KeyGroup[] = [
+  'geminiBrain',
+  'geminiAgent',
+  'tavily',
+  'exa',
+  'firecrawl',
+  'groq',
+  'glm',
+  'kimi',
+  'openrouter'
+]
+
+const defaultPlaywrightSettings: PlaywrightSettings = {
+  enabled: false,
+  browser: 'chromium',
+  profilePath: '',
+  headless: false,
+  lastStatus: 'unknown',
+  lastTestedAt: ''
 }
 
 const emptySlotInputs = (): Record<KeyGroup, string[]> => ({
   geminiBrain: ['', '', ''],
   geminiAgent: ['', '', ''],
+  tavily: ['', '', ''],
+  exa: ['', '', ''],
+  firecrawl: ['', '', ''],
+  groq: ['', '', ''],
+  glm: ['', '', ''],
+  kimi: ['', '', ''],
   openrouter: ['', '', '']
 })
 
 const emptySlotStatuses = (): Record<KeyGroup, KeySlotStatus[]> => ({
   geminiBrain: [],
   geminiAgent: [],
+  tavily: [],
+  exa: [],
+  firecrawl: [],
+  groq: [],
+  glm: [],
+  kimi: [],
   openrouter: []
 })
 
@@ -98,6 +179,8 @@ const SettingsView = ({ isSystemActive }: SettingsProps) => {
   const [visibleKeySlots, setVisibleKeySlots] = useState<Record<string, boolean>>({})
   const [keySlotMessage, setKeySlotMessage] = useState('')
   const [launchOnStartup, setLaunchOnStartup] = useState(false)
+  const [playwrightSettings, setPlaywrightSettings] = useState<PlaywrightSettings>(defaultPlaywrightSettings)
+  const [playwrightMessage, setPlaywrightMessage] = useState('')
 
   const [isSecurityUnlocked, setIsSecurityUnlocked] = useState(false)
   const [authPin, setAuthPin] = useState('')
@@ -137,6 +220,7 @@ const SettingsView = ({ isSystemActive }: SettingsProps) => {
       window.electron.ipcRenderer.invoke('key-manager-list-statuses').then((res) => {
         if (res?.statuses) setKeySlotStatuses(res.statuses)
         if (res?.openrouterModel) setOpenRouterModel(res.openrouterModel)
+        if (res?.playwrightSettings) setPlaywrightSettings({ ...defaultPlaywrightSettings, ...res.playwrightSettings })
       })
       window.electron.ipcRenderer
         .invoke('get-launch-on-startup')
@@ -242,6 +326,7 @@ const SettingsView = ({ isSystemActive }: SettingsProps) => {
     const res = await window.electron.ipcRenderer.invoke('key-manager-list-statuses')
     if (res?.statuses) setKeySlotStatuses(res.statuses)
     if (res?.openrouterModel) setOpenRouterModel(res.openrouterModel)
+    if (res?.playwrightSettings) setPlaywrightSettings({ ...defaultPlaywrightSettings, ...res.playwrightSettings })
   }
 
   const updateKeySlotInput = (group: KeyGroup, slot: number, value: string) => {
@@ -287,6 +372,30 @@ const SettingsView = ({ isSystemActive }: SettingsProps) => {
     setKeySlotMessage(`${keyGroupLabels[group].title} slot ${slot} ${enabled ? 'enabled' : 'disabled'}.`)
   }
 
+  const updatePlaywrightSetting = <K extends keyof PlaywrightSettings>(key: K, value: PlaywrightSettings[K]) => {
+    setPlaywrightSettings((prev) => ({ ...prev, [key]: value }))
+  }
+
+  const savePlaywrightSettings = async () => {
+    if (!window.electron?.ipcRenderer) return
+    const res = await window.electron.ipcRenderer.invoke('playwright-settings-save', playwrightSettings)
+    if (res?.settings) setPlaywrightSettings({ ...defaultPlaywrightSettings, ...res.settings })
+    setPlaywrightMessage(res?.success ? 'Playwright settings saved.' : `Save failed: ${res?.error || 'unknown error'}`)
+  }
+
+  const testPlaywrightLaunch = async () => {
+    if (!window.electron?.ipcRenderer) return
+    const res = await window.electron.ipcRenderer.invoke('playwright-settings-test-launch')
+    if (res?.settings) setPlaywrightSettings({ ...defaultPlaywrightSettings, ...res.settings })
+    setPlaywrightMessage(res?.message || (res?.success ? 'Playwright launch test ready.' : `Test failed: ${res?.error || 'unknown error'}`))
+  }
+
+  const clearPlaywrightProfile = async () => {
+    if (!window.electron?.ipcRenderer) return
+    const res = await window.electron.ipcRenderer.invoke('playwright-settings-clear-profile')
+    if (res?.settings) setPlaywrightSettings({ ...defaultPlaywrightSettings, ...res.settings })
+    setPlaywrightMessage(res?.success ? 'Playwright profile path cleared.' : `Clear failed: ${res?.error || 'unknown error'}`)
+  }
   const toggleLaunchOnStartup = async () => {
     const next = !launchOnStartup
     setLaunchOnStartup(next)
@@ -790,9 +899,7 @@ const SettingsView = ({ isSystemActive }: SettingsProps) => {
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    {renderKeySlotGroup('geminiBrain')}
-                    {renderKeySlotGroup('geminiAgent')}
-                    {renderKeySlotGroup('openrouter')}
+                    {keyGroups.map((group) => renderKeySlotGroup(group))}
 
                     <div className="flex flex-col gap-3 md:col-span-2 bg-cyan-500/5 border border-cyan-500/20 rounded-xl p-5">
                       <label className="text-[10px] text-cyan-300 font-mono tracking-widest uppercase flex items-center gap-2">
@@ -818,6 +925,79 @@ const SettingsView = ({ isSystemActive }: SettingsProps) => {
                       )}
                     </div>
 
+
+                    <div className="flex flex-col gap-4 md:col-span-2 border border-blue-500/20 rounded-xl p-5 bg-blue-500/5">
+                      <div className="flex flex-col md:flex-row md:items-center justify-between gap-2">
+                        <label className="text-[10px] text-blue-300 font-mono tracking-widest uppercase flex items-center gap-2">
+                          <RiTerminalWindowLine size={14} /> Playwright Browser Automation
+                        </label>
+                        <span className="text-[10px] text-zinc-400 font-mono">
+                          No API key required. Stores browser/profile preferences only.
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <button
+                          onClick={() => updatePlaywrightSetting('enabled', !playwrightSettings.enabled)}
+                          className={`rounded-lg border px-4 py-3 text-[11px] font-bold tracking-widest transition-all ${
+                            playwrightSettings.enabled
+                              ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+                              : 'border-white/10 bg-black/20 text-zinc-500'
+                          }`}
+                        >
+                          {playwrightSettings.enabled ? 'PLAYWRIGHT ENABLED' : 'PLAYWRIGHT DISABLED'}
+                        </button>
+                        <select
+                          value={playwrightSettings.browser}
+                          onChange={(e) => updatePlaywrightSetting('browser', e.target.value as PlaywrightBrowser)}
+                          className="bg-[#050505] border border-white/10 rounded-lg px-4 py-3 text-sm font-mono text-zinc-100 outline-none focus:border-white/30"
+                        >
+                          <option value="chromium">Chromium</option>
+                          <option value="chrome">Chrome</option>
+                          <option value="edge">Edge</option>
+                        </select>
+                        <div className="md:col-span-2 flex flex-col gap-2">
+                          <label className="text-[10px] text-zinc-500 font-mono tracking-widest uppercase">
+                            Persistent profile path
+                          </label>
+                          <input
+                            type="text"
+                            value={playwrightSettings.profilePath}
+                            onChange={(e) => updatePlaywrightSetting('profilePath', e.target.value)}
+                            placeholder="Optional profile folder path..."
+                            className="bg-[#050505] border border-white/10 rounded-lg px-4 py-3 text-sm font-mono text-zinc-100 outline-none focus:border-white/30 placeholder:text-zinc-700"
+                          />
+                        </div>
+                        <button
+                          onClick={() => updatePlaywrightSetting('headless', !playwrightSettings.headless)}
+                          className="rounded-lg border border-white/10 px-4 py-3 text-[11px] font-bold tracking-widest text-zinc-300 hover:text-white hover:bg-white/5 transition-all"
+                        >
+                          {playwrightSettings.headless ? 'HEADLESS MODE' : 'HEADED MODE'}
+                        </button>
+                        <button
+                          onClick={savePlaywrightSettings}
+                          className="rounded-lg bg-white text-black px-4 py-3 text-[11px] font-bold tracking-widest hover:bg-zinc-200 transition-all"
+                        >
+                          SAVE PLAYWRIGHT
+                        </button>
+                        <button
+                          onClick={testPlaywrightLaunch}
+                          className="rounded-lg border border-cyan-500/30 px-4 py-3 text-[11px] font-bold tracking-widest text-cyan-300 hover:bg-cyan-500/10 transition-all"
+                        >
+                          TEST BROWSER LAUNCH
+                        </button>
+                        <button
+                          onClick={clearPlaywrightProfile}
+                          className="rounded-lg border border-orange-500/30 px-4 py-3 text-[11px] font-bold tracking-widest text-orange-300 hover:bg-orange-500/10 transition-all"
+                        >
+                          CLEAR PROFILE PATH
+                        </button>
+                      </div>
+                      <p className="text-[10px] text-zinc-500 font-mono">
+                        Status: {playwrightSettings.lastStatus || 'unknown'}
+                        {playwrightSettings.lastTestedAt ? ` | Last tested: ${playwrightSettings.lastTestedAt}` : ''}
+                      </p>
+                      {playwrightMessage && <p className="text-[10px] text-emerald-300 font-mono">{playwrightMessage}</p>}
+                    </div>
                     <div className="flex flex-col gap-2 md:col-span-2 border border-white/10 rounded-xl p-5 bg-white/[0.02]">
                       <label className="text-[10px] text-zinc-400 font-mono tracking-widest uppercase flex items-center gap-2">
                         <RiBrainLine size={14} /> Legacy Single Gemini Key Fallback
@@ -832,8 +1012,7 @@ const SettingsView = ({ isSystemActive }: SettingsProps) => {
                         />
                       </div>
                       <p className="text-[10px] text-zinc-500 font-mono">
-                        Saved here only as backward-compatible fallback. Use Gemini Brain and Live
-                        Audio slots above for rotation.
+                        Saved here only as backward-compatible fallback. Use Gemini Brain slots above for rotation.
                       </p>
                     </div>
 

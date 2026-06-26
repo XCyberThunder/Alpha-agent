@@ -100,7 +100,16 @@ function readSecureVault(): Record<string, any> {
   }
 }
 
-type ApiKeyGroup = 'geminiBrain' | 'geminiAgent' | 'openrouter'
+type ApiKeyGroup =
+  | 'geminiBrain'
+  | 'geminiAgent'
+  | 'tavily'
+  | 'exa'
+  | 'firecrawl'
+  | 'groq'
+  | 'glm'
+  | 'kimi'
+  | 'openrouter'
 type ApiKeyStatus = 'empty' | 'active' | 'available' | 'disabled' | 'failed' | 'rate-limited'
 type ApiKeySlot = {
   slot: number
@@ -112,7 +121,17 @@ type ApiKeySlot = {
   lastUsedAt?: string
 }
 
-const apiKeyGroups: ApiKeyGroup[] = ['geminiBrain', 'geminiAgent', 'openrouter']
+const apiKeyGroups: ApiKeyGroup[] = [
+  'geminiBrain',
+  'geminiAgent',
+  'tavily',
+  'exa',
+  'firecrawl',
+  'groq',
+  'glm',
+  'kimi',
+  'openrouter'
+]
 
 const maskApiKey = (key = '') => {
   if (!key) return ''
@@ -196,6 +215,30 @@ const markActiveKeySlot = (secureData: Record<string, any>, group: ApiKeyGroup, 
   }))
 }
 
+
+const defaultPlaywrightSettings = {
+  enabled: false,
+  browser: 'chromium',
+  profilePath: '',
+  headless: false,
+  lastTestedAt: '',
+  lastStatus: 'unknown'
+}
+
+const normalizePlaywrightSettings = (secureData: Record<string, any>) => {
+  const current = secureData.playwrightSettings || {}
+  secureData.playwrightSettings = {
+    ...defaultPlaywrightSettings,
+    ...current,
+    browser: ['chromium', 'chrome', 'edge'].includes(current.browser)
+      ? current.browser
+      : defaultPlaywrightSettings.browser,
+    enabled: Boolean(current.enabled),
+    headless: Boolean(current.headless),
+    profilePath: typeof current.profilePath === 'string' ? current.profilePath : ''
+  }
+  return secureData.playwrightSettings
+}
 const rotateKeySlot = (secureData: Record<string, any>, group: ApiKeyGroup) => {
   const keySlots = normalizeKeySlots(secureData)
   const slots = keySlots[group].filter(
@@ -495,6 +538,7 @@ app.whenReady().then(() => {
         openrouterKey: decryptKeySlot(openRouterSlot || ({} as ApiKeySlot)) || decryptVaultValue(data.openrouter),
         openrouterSlot: openRouterSlot?.slot || null,
         openrouterModel: data.openrouterModel || 'glm-5.2',
+        playwrightSettings: normalizePlaywrightSettings(data),
         keySlots: getKeyStatuses(data)
       }
     } catch (err) {
@@ -507,7 +551,8 @@ app.whenReady().then(() => {
     return {
       success: true,
       statuses: getKeyStatuses(secureData),
-      openrouterModel: secureData.openrouterModel || 'glm-5.2'
+      openrouterModel: secureData.openrouterModel || 'glm-5.2',
+      playwrightSettings: normalizePlaywrightSettings(secureData)
     }
   })
 
@@ -645,6 +690,63 @@ app.whenReady().then(() => {
       target.lastFailureReason = ''
       fs.writeFileSync(secureConfigPath, JSON.stringify(secureData))
       return { success: true, status: target.status, maskedKey: maskApiKey(key), statuses: getKeyStatuses(secureData) }
+    } catch (error: any) {
+      return { success: false, error: error.message }
+    }
+  })
+
+
+  ipcMain.handle('playwright-settings-get', async () => {
+    const secureData = readSecureVault()
+    return { success: true, settings: normalizePlaywrightSettings(secureData) }
+  })
+
+  ipcMain.handle('playwright-settings-save', async (_, settings) => {
+    try {
+      const secureData = readSecureVault()
+      secureData.playwrightSettings = {
+        ...normalizePlaywrightSettings(secureData),
+        enabled: Boolean(settings?.enabled),
+        browser: ['chromium', 'chrome', 'edge'].includes(settings?.browser) ? settings.browser : 'chromium',
+        profilePath: typeof settings?.profilePath === 'string' ? settings.profilePath : '',
+        headless: Boolean(settings?.headless)
+      }
+      fs.writeFileSync(secureConfigPath, JSON.stringify(secureData))
+      return { success: true, settings: secureData.playwrightSettings }
+    } catch (error: any) {
+      return { success: false, error: error.message }
+    }
+  })
+
+  ipcMain.handle('playwright-settings-clear-profile', async () => {
+    try {
+      const secureData = readSecureVault()
+      const settings = normalizePlaywrightSettings(secureData)
+      settings.profilePath = ''
+      settings.lastStatus = 'profile-cleared'
+      secureData.playwrightSettings = settings
+      fs.writeFileSync(secureConfigPath, JSON.stringify(secureData))
+      return { success: true, settings }
+    } catch (error: any) {
+      return { success: false, error: error.message }
+    }
+  })
+
+  ipcMain.handle('playwright-settings-test-launch', async () => {
+    try {
+      const secureData = readSecureVault()
+      const settings = normalizePlaywrightSettings(secureData)
+      settings.lastTestedAt = new Date().toISOString()
+      settings.lastStatus = settings.enabled ? 'ready' : 'disabled'
+      secureData.playwrightSettings = settings
+      fs.writeFileSync(secureConfigPath, JSON.stringify(secureData))
+      return {
+        success: true,
+        settings,
+        message: settings.enabled
+          ? `${settings.browser} automation profile is ready.`
+          : 'Playwright is disabled. Enable it before launch tests.'
+      }
     } catch (error: any) {
       return { success: false, error: error.message }
     }
