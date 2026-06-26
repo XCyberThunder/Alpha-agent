@@ -107,9 +107,11 @@ const setCachedRealtime = (key: string, response: string) => {
 
 const classifyPrompt = (prompt: string): 'general' | 'realtime' | 'automation' | 'complex' => {
   const lower = normalizeTranscript(prompt)
+  const normalized = normalizeFastCommand(prompt)
 
   if (
-    /(reverse engineering|malware analysis|deep debugging|architecture planning|large code generation|debug this code|debugging|write .*code)/i.test(lower)
+    /(reverse engineering|malware analysis|deep debugging|architecture planning|large code generation|debug this code|debugging|write .*code)/i.test(lower) ||
+    /(website build|build website|python script|code fix|fix code|debug error|c\+\+ code|nmap output|ctf continue|burp notes|react build|electron build)/i.test(normalized)
   ) {
     return 'complex'
   }
@@ -121,6 +123,7 @@ const classifyPrompt = (prompt: string): 'general' | 'realtime' | 'automation' |
   }
 
   if (
+    /(open|close|search|scroll|tab|video|youtube|google|instagram|facebook|downloads|folder|screenshot|copy|paste|type|minimize|maximize|restore|fullscreen|floating|terminal|kali|wsl|vscode|code|brave|browser|reminder|note|memory|remember|previous task|continue previous|volume|mute|unmute|back|forward|refresh|up|down|new tab|close tab|app minimize|app maximize|main window)/i.test(normalized) ||
     /(open|kholo|karo|search|scroll|tab|video|youtube|google|instagram|facebook|downloads|folder|screenshot|copy|paste|type|minimize|maximize|restore|fullscreen|floating|terminal|kali|wsl|vscode|code|brave|browser|band|remind|reminder|note|memory|yaad|remember|sikh lo|seekh lo|previous task|continue previous|volume|mute|unmute|back|forward|refresh|upar|neeche|niche|new tab|close tab|app minimize|app maximize|main window)/i.test(lower)
   ) {
     return 'automation'
@@ -128,7 +131,6 @@ const classifyPrompt = (prompt: string): 'general' | 'realtime' | 'automation' |
 
   return 'general'
 }
-
 const extractCommand = (prompt: string) => {
   const lower = normalizeTranscript(prompt)
   const prefixes = [
@@ -178,12 +180,101 @@ const siteMap: Record<string, string> = {
   whatsapp: 'https://web.whatsapp.com'
 }
 
-const normalizeFastCommand = (text: string) =>
-  normalizeTranscript(text)
-    .replace(/\b(please|pls|plz|zara|jara|bhai|bro|sir|yaar|thoda|ek baar)\b/g, ' ')
+const hinglishDictionaryWords = [
+  'ha', 'haa', 'haan', 'han', 'hanji', 'haanji', 'hm', 'hmm', 'hmmm', 'kya', 'kyu', 'kyun',
+  'kaise', 'kab', 'kaha', 'kahan', 'kis', 'kisko', 'konsa', 'kaunsa', 'ye', 'yeh', 'isko',
+  'usko', 'isme', 'usme', 'mera', 'meri', 'mere', 'mujhe', 'mereko', 'tu', 'tum', 'alpha',
+  'bhai', 'bhaiya', 'bro', 'yaar', 'zara', 'jara', 'please', 'plz', 'thoda', 'thora',
+  'ek baar', 'suno', 'sun', 'ruk', 'ruko', 'stop', 'chalu', 'chalao', 'start', 'kholo',
+  'khol', 'open', 'band', 'bandh', 'close', 'banao', 'bana', 'banaye', 'save', 'yaad',
+  'yaad rakhna', 'yaad rakho', 'likh', 'likho', 'likh lo', 'type', 'bhejo', 'send', 'search',
+  'dhoondo', 'dhundo', 'find', 'dikhao', 'show', 'batao', 'samjhao', 'explain', 'neeche',
+  'niche', 'upar', 'scroll', 'aage', 'piche', 'peeche', 'wapas', 'back', 'forward', 'refresh',
+  'reload', 'tab', 'window', 'browser', 'chrome', 'brave', 'whatsapp', 'youtube', 'yt', 'insta',
+  'instagram', 'facebook', 'fb', 'google', 'github', 'gmail', 'terminal', 'kali', 'vscode', 'code',
+  'file', 'folder', 'download', 'export', 'zip', 'note', 'notes', 'reminder', 'remind', 'kal',
+  'aaj', 'abhi', 'baad', 'baad me', 'minute', 'hour', 'ghanta', 'baje', 'subah', 'shaam',
+  'raat', 'jaldi', 'fast', 'dheere', 'continue', 'previous', 'pichla', 'same', 'website', 'app',
+  'coding', 'project', 'html', 'css', 'js', 'javascript', 'ts', 'typescript', 'python', 'java',
+  'c', 'cpp', 'c++', 'android', 'windows', 'linux', 'nmap', 'burp', 'ctf', 'bug', 'bounty',
+  'scan', 'recon', 'report', 'debug', 'error', 'fix', 'install', 'run', 'build', 'test'
+]
+
+const commandFillers = [
+  'bhai', 'bhaiya', 'bro', 'yaar', 'zara', 'jara', 'please', 'plz', 'thoda', 'thora', 'ek baar',
+  'suno', 'sun', 'alpha', 'oye', 'are', 'arre', 'accha', 'achha', 'acha', 'ok', 'okay', 'ha',
+  'haa', 'haan', 'han', 'hanji', 'haanji', 'hmm', 'hm', 'hmmm', 'matlab', 'basically', 'actually'
+]
+
+const commandPhraseReplacements: Array<[RegExp, string]> = [
+  [/\bkhol\s*(do|de|na)?\b/g, 'open'],
+  [/\bkholo\b/g, 'open'],
+  [/\bchalao\b/g, 'open'],
+  [/\bchalu\s*(karo|kar do|kr do)?\b/g, 'open'],
+  [/\b(start|launch)\s*(karo|kar do|kr do)?\b/g, 'open'],
+  [/\bopen\s*(karo|kar do|kr do)?\b/g, 'open'],
+  [/\bbandh?\s*(karo|kar do|kr do|kar)?\b/g, 'close'],
+  [/\bclose\s*(karo|kar do|kr do)?\b/g, 'close'],
+  [/\bhatao\b/g, 'remove'],
+  [/\bsave\s*(karo|kar do|kr do)?\b/g, 'save'],
+  [/\byaad\s*(rakhna|rakho)\b/g, 'remember'],
+  [/\bmemory\s*(me|mein|mai)\s*save\s*(karo|kar do|kr do)?\b/g, 'remember'],
+  [/\bnote\s*(me|mein|mai)\s*save\s*(karo|kar do|kr do)?\b/g, 'save note'],
+  [/\blik(h|ho)?\s*(lo|do)?\b/g, 'save note'],
+  [/\b(search|find)\s*(karo|kar do|kr do)?\b/g, 'search'],
+  [/\b(dhoondo|dhundo)\b/g, 'search'],
+  [/\bgoogle\s*(pe|par)\s*(search|dhoondo|dhundo)\b/g, 'google search'],
+  [/\baur\s*(neeche|niche)\b/g, 'scroll down'],
+  [/\baur\s*upar\b/g, 'scroll up'],
+  [/\b(neeche|niche)\b/g, 'down'],
+  [/\bupar\b/g, 'up'],
+  [/\baage\b/g, 'forward'],
+  [/\b(piche|peeche|wapas)\b/g, 'back'],
+  [/\breload\b/g, 'refresh'],
+  [/\brefresh\s*(karo|kar do|kr do)?\b/g, 'refresh'],
+  [/\b(chhota|chota)\s*(karo|kar do|kr do)?\b/g, 'minimize'],
+  [/\bbada\s*(karo|kar do|kr do)?\b/g, 'maximize'],
+  [/\bfull\s*screen\s*(karo|kar do|kr do)?\b/g, 'fullscreen'],
+  [/\brestore\s*(karo|kar do|kr do)?\b/g, 'restore'],
+  [/\bnaya\s+tab\b/g, 'new tab'],
+  [/\bye\s+tab\s+close\b/g, 'current tab close'],
+  [/\bye\s+tab\s+band\b/g, 'current tab close'],
+  [/\bremind\s*(karna|karo|kar do)?\b/g, 'reminder'],
+  [/\byaad\s*dilana\b/g, 'reminder'],
+  [/\byaad\s*dilao\b/g, 'reminder'],
+  [/\bbaad\s*me\b/g, 'later'],
+  [/\bghanta\b/g, 'hour'],
+  [/\bkr\b/g, 'kar'],
+  [/\bkro\b/g, 'karo']
+]
+
+const normalizeFastCommand = (text: string) => {
+  const original = normalizeTranscript(text)
+  let normalized = ` ${original} `
+
+  for (const filler of commandFillers.sort((a, b) => b.length - a.length)) {
+    const escaped = filler.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+')
+    normalized = normalized.replace(new RegExp(`\\b${escaped}\\b`, 'g'), ' ')
+  }
+
+  normalized = normalized.replace(/\s+/g, ' ').trim()
+  for (const [pattern, replacement] of commandPhraseReplacements) {
+    normalized = normalized.replace(pattern, replacement)
+  }
+
+  normalized = normalized
+    .replace(/\b(banao|bana|banaye)\b/g, 'build')
+    .replace(/\bkar\s*(do|dena|na)?\b/g, ' ')
+    .replace(/\bkaro\b/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
 
+  if (normalized !== original) {
+    console.debug(`[NORMALIZE] input="${text}" normalized="${normalized}" dictionarySize=${hinglishDictionaryWords.length}`)
+  }
+
+  return normalized
+}
 const getFastOpenSiteRoute = (
   prompt: string
 ): { intent: 'OPEN_SITE'; target: string; url: string; ack: string; normalized: string } | null => {
@@ -648,15 +739,26 @@ export class GeminiLiveService {
         await saveMessage('alpha', result)
       })
     }
-    if (/^(ye|yeh|this|isko|ise|isey)\s+(karo|kar do|do it)$/.test(normalized)) {
+    if (/^(ye|yeh|this|isko|ise|isey)\s*(karo|kar do|do it)?$/.test(normalized)) {
+      console.debug(`[AMBIGUOUS] input="${prompt}" reason="missing action"`)
       return make('CLARIFY_COMMAND', 'unclear', 'Kya karna hai?', () => undefined)
+    }
+
+    if (/^(isko|usko|ise|isey)\s+open$/.test(normalized)) {
+      console.debug(`[AMBIGUOUS] input="${prompt}" reason="missing open target"`)
+      return make('CLARIFY_COMMAND', 'missing-target', 'Kisko open karna hai?', () => undefined)
+    }
+
+    if (/^close$/.test(normalized)) {
+      console.debug(`[AMBIGUOUS] input="${prompt}" reason="missing close target"`)
+      return make('CLARIFY_COMMAND', 'missing-target', 'Kya band karna hai?', () => undefined)
     }
 
     if (/(brave|browser).*(close|band|bnd)|close\\s+brave|brave\\s+band/i.test(normalized)) {
       return make('CLOSE_APP', 'brave', 'Closing Brave.', () => closeApp('brave'))
     }
 
-    if (/(new tab|naya tab|tab kholo)/i.test(normalized)) {
+    if (/(new tab|naya tab|tab kholo|tab open)/i.test(normalized)) {
       return make('BROWSER_SHORTCUT', 'new-tab', 'Opening a new tab.', () => shortcut('t'))
     }
 
