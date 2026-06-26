@@ -38,6 +38,7 @@ import registerLocationHandlers from './logic/live-location'
 import registerAdbHandlers from './logic/adb-manager'
 import registerRealityHacker from './logic/reality-hacker'
 import registerAlphaCoder from './services/alpha-coder'
+import registerProjectBuilder from './services/project-builder'
 import registerTelekinesis from './logic/telekinesis'
 import registerPermanentMemory from './logic/permanent-memory'
 import registerWormhole from './services/wormhole'
@@ -805,6 +806,7 @@ app.whenReady().then(() => {
   registerPermanentMemory({ ipcMain, app })
   registerTelekinesis({ ipcMain })
   registerAlphaCoder({ ipcMain, app })
+  registerProjectBuilder({ ipcMain })
   registerRealityHacker(ipcMain)
   registerAdbHandlers(ipcMain)
   registerLocationHandlers(ipcMain)

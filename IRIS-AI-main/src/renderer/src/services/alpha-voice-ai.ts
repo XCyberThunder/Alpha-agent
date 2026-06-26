@@ -34,6 +34,7 @@ import { runDeepResearch } from '@renderer/tools/deepSearch-rag'
 import { runIndexDirectory, runSmartSearch } from '@renderer/tools/semantic-search-api'
 import { closeWidgets, createWidget } from '@renderer/tools/widget-creator'
 import { buildAnimatedWebsite } from '@renderer/code/website-builder-api'
+import { createBuilderProject } from '@renderer/services/project-builder'
 import { getMacroSequence } from '@renderer/code/macro-executor'
 import {
   createFolder,
@@ -152,6 +153,20 @@ const classifyPrompt = (prompt: string): 'general' | 'realtime' | 'automation' |
   }
 
   return 'general'
+}
+
+const isCodingProjectPrompt = (prompt: string) => {
+  const normalized = normalizeFastCommand(prompt)
+  return /\b(website|portfolio|landing page|frontend|web app|project|dashboard|hero section|navbar|responsive|react app|electron app)\b/i.test(
+    normalized
+  )
+}
+
+const isCodingTaskPrompt = (prompt: string) => {
+  const normalized = normalizeFastCommand(prompt)
+  return /\b(website|portfolio|landing page|frontend|web app|project|python script|html|css|javascript|typescript|react|electron|node|java|c\+\+|cpp|c code|debug|fix code|fix error|code fix|build app|generate files)\b/i.test(
+    normalized
+  )
 }
 const extractCommand = (prompt: string) => {
   const lower = normalizeTranscript(prompt)
@@ -927,6 +942,41 @@ export class GeminiLiveService {
 
     return true
   }
+  private async getGlmAvailability() {
+    const activeGlmKey = await window.electron.ipcRenderer.invoke('key-manager-get-active-key', 'glm')
+    return Boolean(activeGlmKey?.key?.trim())
+  }
+
+  private async routeCodingTask(prompt: string): Promise<string | null> {
+    if (!isCodingTaskPrompt(prompt)) return null
+
+    const hasGlmKey = await this.getGlmAvailability()
+    if (!hasGlmKey) {
+      return 'GLM 5.2 key configured nahi hai. Gemini fallback use karu ya pehle GLM key add karni hai?'
+    }
+
+    if (isCodingProjectPrompt(prompt)) {
+      const builder = await createBuilderProject(prompt)
+      if (!builder.success || !builder.state) {
+        return builder.message || builder.error || 'Project builder abhi project generate nahi kar paya.'
+      }
+
+      window.dispatchEvent(
+        new CustomEvent('alpha-open-project-builder', {
+          detail: {
+            state: builder.state,
+            previewHtml: builder.previewHtml,
+            prompt
+          }
+        })
+      )
+
+      return `Website Builder ready. Project saved at ${builder.state.metadata.projectPath}.`
+    }
+
+    return this.consultGlmAgent(prompt)
+  }
+
   private async handlePrompt(prompt: string, source: 'voice' | 'text' = 'voice') {
     const trimmed = prompt.trim()
     if (!trimmed) return false
@@ -944,6 +994,15 @@ export class GeminiLiveService {
     this.activeConversationId += 1
 
     await saveMessage('user', trimmed)
+
+    const codingRouteResponse = await this.routeCodingTask(trimmed)
+    if (codingRouteResponse) {
+      this.aiResponseBuffer = ''
+      this.userInputBuffer = ''
+      await saveMessage('alpha', codingRouteResponse)
+      window.dispatchEvent(new CustomEvent('alpha-chat-typing', { detail: { active: false } }))
+      return true
+    }
 
     const routeType = classifyPrompt(trimmed)
     const fallbackResponse =
@@ -2915,11 +2974,13 @@ ${coreMemory}
       const secureKeys = await window.electron.ipcRenderer.invoke('secure-get-keys')
       const activeGlmKey = await window.electron.ipcRenderer.invoke(
         'key-manager-get-active-key',
-        'openrouter'
+        'glm'
       )
-      const key = activeGlmKey?.key?.trim() || secureKeys?.openrouterKey?.trim()
-      const activeSlot = activeGlmKey?.slot || secureKeys?.openrouterSlot || null
-      if (!key) return 'GLM agent is not configured. Continue with Gemini-only reasoning.'
+      const key = activeGlmKey?.key?.trim() || secureKeys?.glmKey?.trim()
+      const activeSlot = activeGlmKey?.slot || secureKeys?.glmSlot || null
+      if (!key) {
+        return 'GLM 5.2 key configured nahi hai. Gemini fallback use karu ya pehle GLM key add karni hai?'
+      }
 
       const response = await fetch('https://open.bigmodel.cn/api/paas/v4/chat/completions', {
         method: 'POST',
@@ -2948,20 +3009,20 @@ ${coreMemory}
           await window.electron.ipcRenderer.invoke(
             response.status === 429 ? 'key-manager-mark-rate-limited' : 'key-manager-mark-failed',
             response.status === 429
-              ? { group: 'openrouter', slot: activeSlot }
-              : { group: 'openrouter', slot: activeSlot, reason: `GLM status ${response.status}` }
+              ? { group: 'glm', slot: activeSlot }
+              : { group: 'glm', slot: activeSlot, reason: `GLM status ${response.status}` }
           )
           await window.electron.ipcRenderer.invoke('key-manager-rotate-next-key', {
-            group: 'openrouter',
+            group: 'glm',
             reason: `GLM status ${response.status}`
           })
         }
-        return 'Specialized agent unavailable. Continue with Gemini-only reasoning.'
+        return `GLM 5.2 abhi unavailable hai (status ${response.status}).`
       }
       const data = await response.json()
       return data?.choices?.[0]?.message?.content?.trim() || 'No specialized notes returned.'
     } catch (err) {
-      return 'Specialized agent unavailable. Continue with Gemini-only reasoning.'
+      return 'GLM 5.2 abhi unavailable hai.'
     }
   }
 
