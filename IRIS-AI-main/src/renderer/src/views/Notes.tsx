@@ -91,7 +91,8 @@ const NotesView = ({ glassPanel }: { glassPanel?: string }) => {
 
     await window.electron.ipcRenderer.invoke('save-note', {
       title: newTitle,
-      content: newContent
+      content: newContent,
+      filename: editOriginalFilename || undefined
     })
 
     setIsEditorOpen(false)

@@ -44,7 +44,16 @@ import {
   writeFile
 } from '@renderer/functions/file-manager-api'
 import { closeApp, openApp, openUrl, performWebSearch } from '@renderer/functions/apps-manager-api'
-import { readSystemNotes, saveNote } from '@renderer/functions/notes-manager-api'
+import {
+  cancelReminder,
+  completeReminder,
+  deleteNoteByQuery,
+  listNotesSummary,
+  listRemindersSummary,
+  readSystemNotes,
+  saveNote,
+  saveReminder
+} from '@renderer/functions/notes-manager-api'
 import { executeGhostSequence, ghostType } from '@renderer/functions/keyboard-manger-api'
 import {
   scheduleWhatsAppMessage,
@@ -260,6 +269,73 @@ const cleanSearchQuery = (prompt: string, provider: 'google' | 'youtube') => {
   return prompt.replace(pattern, ' ').replace(/\s+/g, ' ').trim()
 }
 
+const extractNoteContent = (prompt: string) => {
+  const raw = prompt.trim()
+  const colonContent = raw.match(/[:\-]\s*(.+)$/)?.[1]?.trim()
+  if (colonContent) return colonContent
+
+  return raw
+    .replace(/^(ye|yeh|isko|ise|isey|this)?\s*(note\s*(me|mein|mai)?\s*)?(save|likh|likho|write|add|remember)?\s*(karo|kar do|kr do|rakhna|rakho)?\s*/i, '')
+    .replace(/\b(note|notes|me|mein|mai|save|karo|kar do|kr do|likh lo|likho|yaad rakhna|remember this|quick note)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+const extractNoteQuery = (prompt: string) =>
+  prompt
+    .replace(/\b(notes?|dikhao|show|search|karo|karna|wali|wala|open|last|delete|update|meri|mere|me|mein|mai)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+const makeNoteTitle = (content: string) => {
+  const cleaned = content.replace(/[^a-zA-Z0-9\s-]/g, ' ').replace(/\s+/g, ' ').trim()
+  if (!cleaned) return 'Quick Note'
+  return cleaned.split(' ').slice(0, 6).join(' ')
+}
+
+const parseReminderDate = (prompt: string): { scheduledAt: Date | null; message: string } => {
+  const lower = normalizeTranscript(prompt)
+  const now = new Date()
+  let scheduledAt: Date | null = null
+
+  const minuteMatch = lower.match(/(\d{1,3})\s*(minute|min|minutes)\s*(baad|later|after)/i)
+  if (minuteMatch) scheduledAt = new Date(now.getTime() + Number(minuteMatch[1]) * 60 * 1000)
+
+  const hourMatch = lower.match(/(\d{1,2})\s*(hour|hours|ghante|ghanta)\s*(baad|later|after)/i)
+  if (!scheduledAt && hourMatch) scheduledAt = new Date(now.getTime() + Number(hourMatch[1]) * 60 * 60 * 1000)
+
+  const timeMatch = lower.match(/(?:(aaj|today|kal|tomorrow|subah|morning|shaam|evening|raat|night)\s*)?(\d{1,2})(?::(\d{2}))?\s*(am|pm|baje)?/i)
+  if (!scheduledAt && timeMatch) {
+    const [, dayWord = '', hourRaw, minuteRaw = '0', ampmRaw = ''] = timeMatch
+    let hour = Number(hourRaw)
+    const minute = Number(minuteRaw)
+    const ampm = ampmRaw.toLowerCase()
+    const context = dayWord.toLowerCase()
+
+    if (ampm === 'pm' && hour < 12) hour += 12
+    if (ampm === 'am' && hour === 12) hour = 0
+    if (!ampm && (context === 'shaam' || context === 'evening' || context === 'raat' || context === 'night') && hour < 12) hour += 12
+    if (!ampm && (context === 'subah' || context === 'morning') && hour === 12) hour = 0
+
+    scheduledAt = new Date(now)
+    scheduledAt.setHours(hour, minute, 0, 0)
+    if (context === 'kal' || context === 'tomorrow') scheduledAt.setDate(scheduledAt.getDate() + 1)
+    if (scheduledAt.getTime() <= now.getTime() && context !== 'aaj' && context !== 'today') {
+      scheduledAt.setDate(scheduledAt.getDate() + 1)
+    }
+  }
+
+  const message = prompt
+    .replace(/\d{1,3}\s*(minute|min|minutes)\s*(baad|later|after)/gi, ' ')
+    .replace(/\d{1,2}\s*(hour|hours|ghante|ghanta)\s*(baad|later|after)/gi, ' ')
+    .replace(/\b(aaj|today|kal|tomorrow|subah|morning|shaam|evening|raat|night)?\s*\d{1,2}(?::\d{2})?\s*(am|pm|baje)?\b/gi, ' ')
+    .replace(/\b(mujhe|remind|reminder|yaad|dilana|dilao|karna|karo|lagao|set|create|schedule|baad|ke liye)\b/gi, ' ')
+    .replace(/[:\-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  return { scheduledAt, message: message || 'Reminder from alpha' }
+}
 const getYouTubeRoute = (prompt: string): { url: string; label: string } | null => {
   const lower = normalizeTranscript(prompt)
   const mentionsYouTube = /\b(youtube|yt)\b|यूट्यूब/i.test(prompt)
@@ -463,6 +539,78 @@ export class GeminiLiveService {
       run
     })
 
+    if (/(notes?|memory bank).*(dikhao|show|list)|meri notes? dikhao/i.test(normalized)) {
+      const query = extractNoteQuery(prompt)
+      return make('LIST_NOTES', query || 'all-notes', 'Loading notes.', async () => {
+        const summary = await listNotesSummary(query)
+        await saveMessage('alpha', summary)
+      })
+    }
+
+    if (/(notes?|note).*(search|open|dikhao)|wali note|last note/i.test(normalized) && !/(save|likh|write|delete|update)/i.test(normalized)) {
+      const query = normalized.includes('last note') ? '' : extractNoteQuery(prompt)
+      return make('SEARCH_NOTES', query || 'latest-note', 'Searching notes.', async () => {
+        const summary = await listNotesSummary(query)
+        await saveMessage('alpha', summary)
+      })
+    }
+
+    if (/(note|notes).*(delete|remove|hatao)|ye note delete karo/i.test(normalized)) {
+      const query = extractNoteQuery(prompt)
+      return make('DELETE_NOTE', query || 'latest-note', 'Deleting note.', async () => {
+        const result = await deleteNoteByQuery(query)
+        await saveMessage('alpha', result)
+      })
+    }
+
+    if (/(note|notes|yaad).*(save|likh|likho|rakhna|rakho)|save note|quick note|ye note/i.test(normalized)) {
+      const content = extractNoteContent(prompt)
+      return make(
+        'SAVE_NOTE',
+        makeNoteTitle(content),
+        content ? `Note saved: ${content.slice(0, 80)}${content.length > 80 ? '...' : ''}` : 'Saving note.',
+        async () => {
+          const result = await saveNote(makeNoteTitle(content || prompt), content || prompt)
+          await saveMessage('alpha', result)
+          if (/python|cyber|project|coding|bug bounty|ctf|website/i.test(content)) {
+            await saveCoreMemory(`Note context: ${content}`)
+          }
+        }
+      )
+    }
+
+    if (/(reminders?|upcoming reminders?).*(dikhao|show|list)|reminders? dikhao/i.test(normalized)) {
+      return make('LIST_REMINDERS', 'upcoming-reminders', 'Loading reminders.', async () => {
+        const summary = await listRemindersSummary()
+        await saveMessage('alpha', summary)
+      })
+    }
+
+    if (/(last reminder|reminder).*(cancel|delete|remove|hatao)|last reminder cancel/i.test(normalized)) {
+      const query = normalized.includes('last reminder') ? '' : normalized.replace(/\b(reminder|cancel|delete|remove|hatao|karo|kar do)\b/g, ' ').trim()
+      return make('CANCEL_REMINDER', query || 'latest-reminder', 'Cancelling reminder.', async () => {
+        const result = await cancelReminder(query)
+        await saveMessage('alpha', result)
+      })
+    }
+
+    if (/(reminder).*(complete|done|mark)|reminder complete mark/i.test(normalized)) {
+      return make('COMPLETE_REMINDER', 'latest-reminder', 'Marking reminder complete.', async () => {
+        const result = await completeReminder()
+        await saveMessage('alpha', result)
+      })
+    }
+
+    if (/(remind|reminder|yaad dilana|yaad dilao|remind karna|reminder lagao)/i.test(normalized)) {
+      const parsed = parseReminderDate(prompt)
+      if (!parsed.scheduledAt) {
+        return make('REMINDER_CLARIFY', 'missing-time', 'Reminder kis time ke liye lagana hai?', () => undefined)
+      }
+      return make('SAVE_REMINDER', parsed.scheduledAt.toISOString(), `Reminder set: ${parsed.message}`, async () => {
+        const result = await saveReminder(makeNoteTitle(parsed.message), parsed.message, parsed.scheduledAt as Date)
+        await saveMessage('alpha', result)
+      })
+    }
     if (/^(ye|yeh|this|isko|ise|isey)\s+(karo|kar do|do it)$/.test(normalized)) {
       return make('CLARIFY_COMMAND', 'unclear', 'Kya karna hai?', () => undefined)
     }
@@ -914,26 +1062,36 @@ export class GeminiLiveService {
       return await openApp('vscode')
     }
 
-    if (lower.includes('create reminder') || lower.includes('schedule reminder')) {
-      const reminderText = prompt.replace(/create reminder\s*[:\-]?\s*/i, '').replace(/schedule reminder\s*[:\-]?\s*/i, '').trim()
-      const noteContent = reminderText || 'Reminder created from alpha.'
-      await saveNote('alpha Reminder', noteContent)
-      return `Reminder saved: ${noteContent}`
+    if (/(reminders?|upcoming reminders?).*(dikhao|show|list)|reminders? dikhao/i.test(lower)) {
+      return await listRemindersSummary()
     }
 
-    if (/(remind|reminder|yaad dilana| याद )/i.test(lower)) {
-      const reminderText = prompt.replace(/.*?(?:remind|reminder|yaad dilana)\s*/i, '').trim()
-      const noteContent = reminderText || prompt
-      await saveNote('alpha Reminder', noteContent)
-      return `Reminder saved: ${noteContent}`
+    if (/(last reminder|reminder).*(cancel|delete|remove|hatao)|last reminder cancel/i.test(lower)) {
+      return await cancelReminder(lower.includes('last reminder') ? '' : prompt)
     }
 
-    if (/(save note|note save|ye note|quick note)/i.test(lower)) {
-      const note = prompt.replace(/.*?(?:save note|note save|ye note|quick note)\s*[:\-]?\s*/i, '').trim()
-      await saveNote('Quick Note', note || prompt)
-      return 'Saved the note.'
+    if (/(reminder).*(complete|done|mark)|reminder complete mark/i.test(lower)) {
+      return await completeReminder()
     }
 
+    if (lower.includes('create reminder') || lower.includes('schedule reminder') || /(remind|reminder|yaad dilana|yaad dilao)/i.test(lower)) {
+      const parsed = parseReminderDate(prompt)
+      if (!parsed.scheduledAt) return 'Reminder kis time ke liye lagana hai?'
+      return await saveReminder(makeNoteTitle(parsed.message), parsed.message, parsed.scheduledAt)
+    }
+
+    if (/(notes?|memory bank).*(dikhao|show|list)|meri notes? dikhao/i.test(lower)) {
+      return await listNotesSummary(extractNoteQuery(prompt))
+    }
+
+    if (/(note|notes).*(delete|remove|hatao)|ye note delete karo/i.test(lower)) {
+      return await deleteNoteByQuery(extractNoteQuery(prompt))
+    }
+
+    if (/(save note|note save|ye note|quick note|notes me likh|note me save|yaad rakhna)/i.test(lower)) {
+      const note = extractNoteContent(prompt)
+      return await saveNote(makeNoteTitle(note || prompt), note || prompt)
+    }
     if (lower.includes('generate image')) {
       const imagePrompt = prompt.replace(/generate image\s*[:\-]?\s*/i, '').trim()
       return await handleImageGeneration(imagePrompt || prompt)
