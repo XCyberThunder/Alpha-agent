@@ -36,7 +36,7 @@ export type BuilderProjectResponse = {
 
 export const createBuilderProject = async (
   prompt: string,
-  provider: 'glm' | 'gemini' | 'openrouter' | 'kimi' | 'groq' = 'glm'
+  provider: 'glm' | 'zai' | 'gemini' | 'openrouter' | 'kimi' | 'groq' = 'glm'
 ): Promise<BuilderProjectResponse> => {
   return window.electron.ipcRenderer.invoke('project-builder-create', { prompt, provider })
 }
@@ -44,7 +44,7 @@ export const createBuilderProject = async (
 export const updateBuilderProject = async (
   projectId: string,
   prompt: string,
-  provider?: 'glm' | 'gemini' | 'openrouter' | 'kimi' | 'groq'
+  provider?: 'glm' | 'zai' | 'gemini' | 'openrouter' | 'kimi' | 'groq'
 ): Promise<BuilderProjectResponse> => {
   return window.electron.ipcRenderer.invoke('project-builder-update', { projectId, prompt, provider })
 }
@@ -75,4 +75,21 @@ export const copyBuilderProjectPath = async (
   projectId: string
 ): Promise<BuilderProjectResponse> => {
   return window.electron.ipcRenderer.invoke('project-builder-copy-path', { projectId })
+}
+
+export const saveBuilderProjectFile = async (
+  projectId: string,
+  filePath: string,
+  content: string
+): Promise<BuilderProjectResponse> => {
+  return window.electron.ipcRenderer.invoke('project-builder-save-file', { projectId, filePath, content })
+}
+
+export const openBuilderWindow = async (payload: {
+  state: BuilderProjectState
+  previewHtml?: string
+  prompt?: string
+  providerError?: string
+}) => {
+  return window.electron.ipcRenderer.invoke('builder-window-open', payload)
 }

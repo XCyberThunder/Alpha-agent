@@ -2,6 +2,7 @@ import { IpcMain, shell } from 'electron'
 import puppeteer from 'puppeteer-extra'
 import StealthPlugin from 'puppeteer-extra-plugin-stealth'
 import { load } from 'cheerio'
+import { getYouTubeUrl as resolveYouTubeUrl } from '../../shared/youtube-routing'
 
 puppeteer.use(StealthPlugin())
 
@@ -10,14 +11,6 @@ const USER_BOOKMARKS: Record<string, string> = {
   reddit: 'https://reddit.com',
   claude: 'https://claude.ai',
   linkedin: 'https://linkedin.com'
-}
-
-const getYouTubeUrl = (intent: 'open' | 'search', query = '') => {
-  const cleanedQuery = query.replace(/\s+/g, ' ').trim()
-  if (intent === 'search' && cleanedQuery) {
-    return `https://www.youtube.com/results?search_query=${encodeURIComponent(cleanedQuery)}`
-  }
-  return 'https://www.youtube.com'
 }
 
 const getSmartUrl = (
@@ -51,13 +44,9 @@ const getSmartUrl = (
   }
 
   if (lower.includes('youtube') || lower.includes('watch')) {
-    const hasSearchIntent = /\b(search|find|dhundo|dhoondo|watch)\b/.test(lower)
-    const term = lower
-      .replace(/(youtube|yt|watch|search|find|dhundo|dhoondo|open|kholo|karo|karna|pe|par)/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim()
+    const route = resolveYouTubeUrl(lower)
     return {
-      url: getYouTubeUrl(hasSearchIntent ? 'search' : 'open', term),
+      url: route?.url || 'https://www.youtube.com',
       source: 'YouTube',
       skipScrape: true
     }

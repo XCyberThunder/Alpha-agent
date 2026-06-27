@@ -9,6 +9,7 @@ import LoginPage from './auth/Login'
 import { useAuthStore } from './store/auth-store'
 import AuthInitializer from './auth/AuthToken'
 import IndexRoot from './IndexRoot'
+import BuilderWindow from './views/BuilderWindow'
 
 const electronAPI = (window as any).electron?.ipcRenderer
 
@@ -134,6 +135,8 @@ const AppRouter = () => {
           </ProtectedRoute>
         }
       />
+
+      <Route path="/builder" element={<BuilderWindow />} />
 
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

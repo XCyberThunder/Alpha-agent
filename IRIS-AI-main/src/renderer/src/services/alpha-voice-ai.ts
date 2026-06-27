@@ -1,5 +1,6 @@
 import { handleNavigation, handleOpenMap } from '@renderer/tools/Earth-View'
 import { base64ToFloat32, downsampleTo16000, float32ToBase64PCM } from '../utils/audioUtils'
+import { getYouTubeUrl as resolveYouTubeUrl } from '../../../shared/youtube-routing'
 import { getRunningApps } from './get-apps'
 import {
   deleteLocalMemory,
@@ -34,7 +35,7 @@ import { runDeepResearch } from '@renderer/tools/deepSearch-rag'
 import { runIndexDirectory, runSmartSearch } from '@renderer/tools/semantic-search-api'
 import { closeWidgets, createWidget } from '@renderer/tools/widget-creator'
 import { buildAnimatedWebsite } from '@renderer/code/website-builder-api'
-import { createBuilderProject, updateBuilderProject } from '@renderer/services/project-builder'
+import { createBuilderProject, openBuilderWindow, updateBuilderProject } from '@renderer/services/project-builder'
 import { getMacroSequence } from '@renderer/code/macro-executor'
 import {
   createFolder,
@@ -217,14 +218,6 @@ const siteMap: Record<string, string> = {
   whatsapp: 'https://web.whatsapp.com'
 }
 
-const getYouTubeUrl = (intent: 'open' | 'search', query = '') => {
-  const cleanedQuery = query.replace(/\s+/g, ' ').trim()
-  if (intent === 'search' && cleanedQuery) {
-    return `https://www.youtube.com/results?search_query=${encodeURIComponent(cleanedQuery)}`
-  }
-  return siteMap.youtube
-}
-
 const hinglishDictionaryWords = [
   'ha', 'haa', 'haan', 'han', 'hanji', 'haanji', 'hm', 'hmm', 'hmmm', 'kya', 'kyu', 'kyun',
   'kaise', 'kab', 'kaha', 'kahan', 'kis', 'kisko', 'konsa', 'kaunsa', 'ye', 'yeh', 'isko',
@@ -330,8 +323,8 @@ const getFastOpenSiteRoute = (
   if (/\bwhatsapp\b/i.test(normalized) && !/\b(web|browser)\b/i.test(normalized)) return null
 
   const aliases: Array<[string, string, string]> = [
-    ['youtube', 'YouTube', getYouTubeUrl('open')],
-    ['yt', 'YouTube', getYouTubeUrl('open')],
+    ['youtube', 'YouTube', siteMap.youtube],
+    ['yt', 'YouTube', siteMap.youtube],
     ['instagram', 'Instagram', siteMap.instagram],
     ['insta', 'Instagram', siteMap.instagram],
     ['facebook', 'Facebook', siteMap.facebook],
@@ -495,29 +488,16 @@ const parseReminderDate = (prompt: string): { scheduledAt: Date | null; message:
   return { scheduledAt, message: message || 'Reminder from alpha' }
 }
 const getYouTubeRoute = (prompt: string): { url: string; label: string } | null => {
-  const lower = normalizeTranscript(prompt)
-  const mentionsYouTube = /\b(youtube|yt)\b|यूट्यूब/i.test(prompt)
-  if (!mentionsYouTube) return null
-
-  const hasSearchIntent =
-    /\b(search|find|dhundo|dhoondo)\b/i.test(lower) ||
-    /(?:\bpe\b|\bpar\b|पर)\s+.+\b(search|dhundo|dhoondo|karo|karna)\b/i.test(lower)
-
-  if (!hasSearchIntent) {
-    return { url: getYouTubeUrl('open'), label: 'Opening YouTube.' }
+  const route = resolveYouTubeUrl(prompt)
+  if (!route) return null
+  if (route.intent === 'search' && route.query) {
+    return {
+      url: route.url,
+      label: `Searching YouTube for: ${route.query}`
+    }
   }
-
-  const query = cleanSearchQuery(prompt, 'youtube')
-  if (!query) {
-    return { url: getYouTubeUrl('open'), label: 'Opening YouTube.' }
-  }
-
-  return {
-    url: getYouTubeUrl('search', query),
-    label: `Searching YouTube for: ${query}`
-  }
+  return { url: siteMap.youtube, label: 'Opening YouTube.' }
 }
-
 const shortcut = (key: string, modifiers: string[] = ['ctrl']) => pressShortcut(key, modifiers)
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -1046,11 +1026,12 @@ export class GeminiLiveService {
           ? await updateBuilderProject(pending.currentProjectId, pending.prompt, 'gemini')
           : await createBuilderProject(pending.prompt, 'gemini')
         if (builder.success && builder.state) {
-          window.dispatchEvent(
-            new CustomEvent('alpha-open-project-builder', {
-          detail: { state: builder.state, previewHtml: builder.previewHtml, prompt: pending.prompt }
-            })
-          )
+          await openBuilderWindow({
+            state: builder.state,
+            previewHtml: builder.previewHtml,
+            prompt: pending.prompt,
+            providerError: builder.providerError
+          })
           this.pendingCodingFallback = null
           return `Website Builder ready with Gemini fallback. Project saved at ${builder.state.metadata.projectPath}.`
         }
@@ -1073,11 +1054,12 @@ export class GeminiLiveService {
         ? await updateBuilderProject(pending.currentProjectId, pending.prompt, provider)
         : await createBuilderProject(pending.prompt, provider)
       if (builder.success && builder.state) {
-        window.dispatchEvent(
-          new CustomEvent('alpha-open-project-builder', {
-            detail: { state: builder.state, previewHtml: builder.previewHtml, prompt: pending.prompt }
-          })
-        )
+        await openBuilderWindow({
+          state: builder.state,
+          previewHtml: builder.previewHtml,
+          prompt: pending.prompt,
+          providerError: builder.providerError
+        })
         this.pendingCodingFallback = null
         return `Website Builder ready with ${provider} fallback. Project saved at ${builder.state.metadata.projectPath}.`
       }
@@ -1106,16 +1088,12 @@ export class GeminiLiveService {
     if (isCodingProjectPrompt(prompt)) {
       const builder = await createBuilderProject(prompt, 'glm')
       if (builder.success && builder.state) {
-        window.dispatchEvent(
-          new CustomEvent('alpha-open-project-builder', {
-            detail: {
-              state: builder.state,
-              previewHtml: builder.previewHtml,
-              prompt,
-              providerError: builder.providerError
-            }
-          })
-        )
+        await openBuilderWindow({
+          state: builder.state,
+          previewHtml: builder.previewHtml,
+          prompt,
+          providerError: builder.providerError
+        })
 
         if (builder.providerError) {
           this.pendingCodingFallback = {
@@ -3420,3 +3398,7 @@ ${coreMemory}
 }
 
 export const alphaService = new GeminiLiveService()
+
+
+
+
