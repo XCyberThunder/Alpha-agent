@@ -120,6 +120,97 @@ const extractJson = (raw: string) => {
   return null
 }
 
+const extractCodeBlockFiles = (raw: string): ProjectFile[] => {
+  const files: ProjectFile[] = []
+  const blockPattern = /```([a-zA-Z0-9+#.-]*)\s*([\s\S]*?)```/g
+  let match: RegExpExecArray | null
+  let index = 0
+
+  while ((match = blockPattern.exec(raw))) {
+    const language = (match[1] || '').toLowerCase()
+    const content = (match[2] || '').trim()
+    if (!content) continue
+    const extension =
+      language.includes('html')
+        ? 'html'
+        : language.includes('css')
+          ? 'css'
+          : language.includes('javascript') || language === 'js'
+            ? 'js'
+            : language.includes('typescript') || language === 'ts'
+              ? 'ts'
+              : language.includes('python') || language === 'py'
+                ? 'py'
+                : language.includes('java')
+                  ? 'java'
+                  : language.includes('cpp') || language.includes('c++')
+                    ? 'cpp'
+                    : language === 'c'
+                      ? 'c'
+                      : 'txt'
+    const defaultName =
+      extension === 'html'
+        ? 'index.html'
+        : extension === 'css'
+          ? 'style.css'
+          : extension === 'js'
+            ? 'script.js'
+            : `generated-${index + 1}.${extension}`
+    files.push({ path: defaultName, content })
+    index += 1
+  }
+
+  return files
+}
+
+const createFallbackWebsiteFiles = (prompt: string): ProjectFile[] => [
+  {
+    path: 'index.html',
+    content: `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ALPHA Builder Preview</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main class="stage">
+      <section class="hero">
+        <div class="orb orb-a"></div>
+        <div class="orb orb-b"></div>
+        <p class="eyebrow">ALPHA Website Builder</p>
+        <h1>3D Glassmorphism AI Presentation</h1>
+        <p class="lede">${prompt.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>
+        <div class="actions">
+          <button id="pulseBtn">Start Demo</button>
+          <span class="status">Local preview ready</span>
+        </div>
+      </section>
+      <section class="cards">
+        <article><strong>3D Motion</strong><span>Layered cards with tilt-style depth.</span></article>
+        <article><strong>Glass UI</strong><span>Blurred panels with cyan neon accents.</span></article>
+        <article><strong>AI Flow</strong><span>Presentation blocks ready for provider edits.</span></article>
+      </section>
+    </main>
+    <script src="script.js"></script>
+  </body>
+</html>`
+  },
+  {
+    path: 'style.css',
+    content: `*{box-sizing:border-box}body{margin:0;min-height:100vh;font-family:Inter,Segoe UI,system-ui,sans-serif;background:radial-gradient(circle at 20% 10%,rgba(34,211,238,.22),transparent 32%),radial-gradient(circle at 85% 15%,rgba(99,102,241,.2),transparent 30%),#020617;color:#eaf6ff;overflow-x:hidden}.stage{min-height:100vh;padding:clamp(28px,5vw,72px);display:grid;align-content:center;gap:28px}.hero{position:relative;overflow:hidden;min-height:54vh;border:1px solid rgba(125,211,252,.22);background:linear-gradient(145deg,rgba(15,23,42,.62),rgba(8,13,28,.34));backdrop-filter:blur(24px);border-radius:32px;padding:clamp(32px,6vw,74px);box-shadow:0 28px 100px rgba(0,0,0,.42),inset 0 1px rgba(255,255,255,.12);transform-style:preserve-3d}.orb{position:absolute;width:260px;height:260px;border-radius:50%;filter:blur(26px);opacity:.38;animation:float 8s ease-in-out infinite}.orb-a{right:8%;top:8%;background:#22d3ee}.orb-b{left:10%;bottom:4%;background:#a855f7;animation-delay:-3s}.eyebrow{letter-spacing:.28em;text-transform:uppercase;color:#67e8f9;font-size:12px}h1{font-size:clamp(42px,8vw,96px);line-height:.92;margin:18px 0;max-width:920px}.lede{max-width:780px;color:#bfd8ee;font-size:clamp(16px,2vw,22px);line-height:1.7}.actions{display:flex;align-items:center;gap:18px;margin-top:30px;flex-wrap:wrap}button{border:1px solid rgba(103,232,249,.35);background:linear-gradient(135deg,rgba(34,211,238,.28),rgba(168,85,247,.22));color:white;padding:14px 22px;border-radius:18px;font-weight:800;cursor:pointer;box-shadow:0 0 30px rgba(34,211,238,.18)}.status{color:#93c5fd}.cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}.cards article{min-height:150px;border:1px solid rgba(255,255,255,.12);background:rgba(15,23,42,.42);backdrop-filter:blur(18px);border-radius:24px;padding:24px;display:flex;flex-direction:column;gap:12px;box-shadow:inset 0 1px rgba(255,255,255,.08)}.cards strong{color:#67e8f9;font-size:20px}.cards span{color:#cbd5e1;line-height:1.6}@keyframes float{50%{transform:translate3d(20px,-24px,40px) scale(1.08)}}@media(max-width:760px){.cards{grid-template-columns:1fr}h1{font-size:44px}}`
+  },
+  {
+    path: 'script.js',
+    content: `const button=document.getElementById('pulseBtn');let active=false;button?.addEventListener('click',()=>{active=!active;button.textContent=active?'Demo Running':'Start Demo';document.body.style.setProperty('--pulse',active?'1':'0');});`
+  },
+  {
+    path: 'README.md',
+    content: `# ALPHA Builder Project\n\nPrompt: ${prompt}\n\nThis project shell is created immediately so the Builder can open even while provider selection or fallback is pending.\n`
+  }
+]
+
 const inlinePreviewHtml = (files: ProjectFile[]) => {
   const htmlFile =
     files.find((file) => file.path === 'index.html') ||
@@ -163,44 +254,24 @@ const normalizeFiles = (payload: any, prompt: string, projectType: string): Proj
 
   if (files.length) return files
 
+  if (typeof payload?.rawText === 'string') {
+    const codeBlockFiles = extractCodeBlockFiles(payload.rawText)
+    if (codeBlockFiles.length) {
+      const hasReadme = codeBlockFiles.some((file) => file.path.toLowerCase() === 'readme.md')
+      return hasReadme
+        ? codeBlockFiles
+        : [
+            ...codeBlockFiles,
+            {
+              path: 'README.md',
+              content: `# ALPHA generated project\n\nPrompt: ${prompt}\n`
+            }
+          ]
+    }
+  }
+
   if (projectType === 'website') {
-    return [
-      {
-        path: 'index.html',
-        content: `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>alpha project</title>
-    <link rel="stylesheet" href="style.css" />
-  </head>
-  <body>
-    <main class="shell">
-      <section class="hero">
-        <p class="eyebrow">alpha builder fallback</p>
-        <h1>${prompt}</h1>
-        <p>A minimal project scaffold was created because the GLM response did not include files.</p>
-      </section>
-    </main>
-    <script src="script.js"></script>
-  </body>
-</html>`
-      },
-      {
-        path: 'style.css',
-        content:
-          'body{margin:0;font-family:Inter,system-ui;background:#07111f;color:#e6f2ff}.shell{min-height:100vh;display:grid;place-items:center;padding:48px}.hero{max-width:720px;background:rgba(9,22,42,.72);border:1px solid rgba(103,232,249,.18);border-radius:24px;padding:32px;backdrop-filter:blur(18px)}.eyebrow{text-transform:uppercase;letter-spacing:.16em;color:#67e8f9;font-size:12px}'
-      },
-      {
-        path: 'script.js',
-        content: "console.log('alpha project scaffold ready')"
-      },
-      {
-        path: 'README.md',
-        content: `# alpha project\n\nPrompt: ${prompt}\n`
-      }
-    ]
+    return createFallbackWebsiteFiles(prompt)
   }
 
   return [
@@ -369,9 +440,14 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
     const parsed = extractJson(content)
     if (!parsed) {
       return {
-        success: false,
-        code: 'INVALID_RESPONSE',
-        message: `${providerLabel} ne valid project JSON return nahi kiya.`,
+        success: true,
+        payload: {
+          projectName: 'alpha-builder-project',
+          projectType: 'website',
+          summary: `${providerLabel} returned text instead of project JSON.`,
+          rawText: content,
+          files: extractCodeBlockFiles(content)
+        },
         providerLabel
       }
     }
@@ -679,7 +755,18 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
   ipcMain.handle('project-builder-create', async (_, { prompt, provider = 'glm' }) => {
     const projectType = detectProjectType(prompt || '')
     const generated = await callProvider(provider, prompt || '')
-    if (!generated.success) return generated
+    if (!generated.success) {
+      const projectName = guessProjectName(prompt || 'website builder', projectType)
+      const files = normalizeFiles({ files: [] }, prompt || '', projectType)
+      const state = writeProjectState(projectName, projectName, prompt || '', files, generated.providerLabel)
+      return {
+        success: true,
+        state,
+        previewHtml: inlinePreviewHtml(state.files),
+        providerError: generated.message,
+        providerCode: generated.code
+      }
+    }
 
     const payload = generated.payload || {}
     const projectName = slugify(payload.projectName || guessProjectName(prompt || '', projectType))
@@ -708,7 +795,23 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
       prompt || '',
       existing.files
     )
-    if (!generated.success) return generated
+    if (!generated.success) {
+      const fallbackFiles = normalizeFiles({ files: existing.files }, prompt || '', existing.metadata.type)
+      const state = writeProjectState(
+        projectId,
+        existing.metadata.name,
+        prompt || '',
+        fallbackFiles.length ? fallbackFiles : existing.files,
+        existing.metadata.providerUsed || generated.providerLabel
+      )
+      return {
+        success: true,
+        state,
+        previewHtml: inlinePreviewHtml(state.files),
+        providerError: generated.message,
+        providerCode: generated.code
+      }
+    }
 
     const payload = generated.payload || {}
     const files = normalizeFiles(payload, prompt || '', existing.metadata.type)

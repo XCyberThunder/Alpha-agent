@@ -34,7 +34,7 @@ import { runDeepResearch } from '@renderer/tools/deepSearch-rag'
 import { runIndexDirectory, runSmartSearch } from '@renderer/tools/semantic-search-api'
 import { closeWidgets, createWidget } from '@renderer/tools/widget-creator'
 import { buildAnimatedWebsite } from '@renderer/code/website-builder-api'
-import { createBuilderProject } from '@renderer/services/project-builder'
+import { createBuilderProject, updateBuilderProject } from '@renderer/services/project-builder'
 import { getMacroSequence } from '@renderer/code/macro-executor'
 import {
   createFolder,
@@ -217,6 +217,14 @@ const siteMap: Record<string, string> = {
   whatsapp: 'https://web.whatsapp.com'
 }
 
+const getYouTubeUrl = (intent: 'open' | 'search', query = '') => {
+  const cleanedQuery = query.replace(/\s+/g, ' ').trim()
+  if (intent === 'search' && cleanedQuery) {
+    return `https://www.youtube.com/results?search_query=${encodeURIComponent(cleanedQuery)}`
+  }
+  return siteMap.youtube
+}
+
 const hinglishDictionaryWords = [
   'ha', 'haa', 'haan', 'han', 'hanji', 'haanji', 'hm', 'hmm', 'hmmm', 'kya', 'kyu', 'kyun',
   'kaise', 'kab', 'kaha', 'kahan', 'kis', 'kisko', 'konsa', 'kaunsa', 'ye', 'yeh', 'isko',
@@ -322,8 +330,8 @@ const getFastOpenSiteRoute = (
   if (/\bwhatsapp\b/i.test(normalized) && !/\b(web|browser)\b/i.test(normalized)) return null
 
   const aliases: Array<[string, string, string]> = [
-    ['youtube', 'YouTube', siteMap.youtube],
-    ['yt', 'YouTube', siteMap.youtube],
+    ['youtube', 'YouTube', getYouTubeUrl('open')],
+    ['yt', 'YouTube', getYouTubeUrl('open')],
     ['instagram', 'Instagram', siteMap.instagram],
     ['insta', 'Instagram', siteMap.instagram],
     ['facebook', 'Facebook', siteMap.facebook],
@@ -496,16 +504,16 @@ const getYouTubeRoute = (prompt: string): { url: string; label: string } | null 
     /(?:\bpe\b|\bpar\b|पर)\s+.+\b(search|dhundo|dhoondo|karo|karna)\b/i.test(lower)
 
   if (!hasSearchIntent) {
-    return { url: siteMap.youtube, label: 'Opening YouTube.' }
+    return { url: getYouTubeUrl('open'), label: 'Opening YouTube.' }
   }
 
   const query = cleanSearchQuery(prompt, 'youtube')
   if (!query) {
-    return { url: siteMap.youtube, label: 'Opening YouTube.' }
+    return { url: getYouTubeUrl('open'), label: 'Opening YouTube.' }
   }
 
   return {
-    url: `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`,
+    url: getYouTubeUrl('search', query),
     label: `Searching YouTube for: ${query}`
   }
 }
@@ -568,6 +576,7 @@ export class GeminiLiveService {
         prompt: string
         isProject: boolean
         reason: string
+        currentProjectId?: string
       }
     | null = null
 
@@ -1033,11 +1042,13 @@ export class GeminiLiveService {
     const pending = this.pendingCodingFallback
     if (provider === 'gemini') {
       if (pending.isProject) {
-        const builder = await createBuilderProject(pending.prompt, 'gemini')
+        const builder = pending.currentProjectId
+          ? await updateBuilderProject(pending.currentProjectId, pending.prompt, 'gemini')
+          : await createBuilderProject(pending.prompt, 'gemini')
         if (builder.success && builder.state) {
           window.dispatchEvent(
             new CustomEvent('alpha-open-project-builder', {
-              detail: { state: builder.state, previewHtml: builder.previewHtml, prompt: pending.prompt }
+          detail: { state: builder.state, previewHtml: builder.previewHtml, prompt: pending.prompt }
             })
           )
           this.pendingCodingFallback = null
@@ -1058,7 +1069,9 @@ export class GeminiLiveService {
     }
 
     if (pending.isProject) {
-      const builder = await createBuilderProject(pending.prompt, provider)
+      const builder = pending.currentProjectId
+        ? await updateBuilderProject(pending.currentProjectId, pending.prompt, provider)
+        : await createBuilderProject(pending.prompt, provider)
       if (builder.success && builder.state) {
         window.dispatchEvent(
           new CustomEvent('alpha-open-project-builder', {
@@ -1078,8 +1091,6 @@ export class GeminiLiveService {
   }
 
   private async routeCodingTask(prompt: string): Promise<string | null> {
-    if (!isCodingTaskPrompt(prompt)) return null
-
     const fallbackChoice = this.pendingCodingFallback ? this.getFallbackProviderChoice(prompt) : null
     if (this.pendingCodingFallback && fallbackChoice) {
       if (fallbackChoice === 'cancel') {
@@ -1089,36 +1100,42 @@ export class GeminiLiveService {
       return this.executeCodingFallback(fallbackChoice)
     }
 
-    const hasGlmKey = await this.getGlmAvailability()
-    if (!hasGlmKey) {
-      this.pendingCodingFallback = {
-        prompt,
-        isProject: isCodingProjectPrompt(prompt),
-        reason: 'GLM 5.2 key configured nahi hai.'
-      }
-      return this.fallbackPickerMessage('GLM 5.2 key configured nahi hai.')
-    }
+    if (this.pendingCodingFallback && !isCodingTaskPrompt(prompt)) return null
+    if (!isCodingTaskPrompt(prompt)) return null
 
     if (isCodingProjectPrompt(prompt)) {
       const builder = await createBuilderProject(prompt, 'glm')
+      if (builder.success && builder.state) {
+        window.dispatchEvent(
+          new CustomEvent('alpha-open-project-builder', {
+            detail: {
+              state: builder.state,
+              previewHtml: builder.previewHtml,
+              prompt,
+              providerError: builder.providerError
+            }
+          })
+        )
+
+        if (builder.providerError) {
+          this.pendingCodingFallback = {
+            prompt,
+            isProject: true,
+            reason: builder.providerError,
+            currentProjectId: builder.state.metadata.id
+          }
+          return this.fallbackPickerMessage(builder.providerError)
+        }
+
+        this.pendingCodingFallback = null
+        return `Builder open kar raha hoon. Provider: ${builder.state.metadata.providerUsed || 'GLM'}.`
+      }
+
       if (!builder.success || !builder.state) {
         const reason = builder.message || builder.error || 'Project builder abhi project generate nahi kar paya.'
         this.pendingCodingFallback = { prompt, isProject: true, reason }
         return this.fallbackPickerMessage(reason)
       }
-
-      window.dispatchEvent(
-        new CustomEvent('alpha-open-project-builder', {
-          detail: {
-            state: builder.state,
-            previewHtml: builder.previewHtml,
-            prompt
-          }
-        })
-      )
-
-      this.pendingCodingFallback = null
-      return `Website Builder ready. Project saved at ${builder.state.metadata.projectPath}.`
     }
 
     const glmReply = await this.consultGlmAgent(prompt)
@@ -3050,6 +3067,13 @@ ${coreMemory}
                 this.lastHandledPromptAt = now
                 this.activeConversationId += 1
                 await saveMessage('user', prompt)
+                const codingRouteResponse = await this.routeCodingTask(prompt)
+                if (codingRouteResponse) {
+                  this.aiResponseBuffer = ''
+                  await saveMessage('alpha', codingRouteResponse)
+                  window.dispatchEvent(new CustomEvent('alpha-chat-typing', { detail: { active: false } }))
+                  return
+                }
               }
             }
 

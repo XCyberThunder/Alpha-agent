@@ -10,10 +10,12 @@ export const buildAnimatedWebsite = async (prompt: string) => {
           detail: {
             state: res.state,
             previewHtml: res.previewHtml,
-            prompt
+            prompt,
+            providerError: res.providerError
           }
         })
       )
+      if (res.providerError) return res.providerError
       return `Website Builder ready. Project saved at ${res.state.metadata.projectPath}.`
     }
 

@@ -29,6 +29,7 @@ type BuilderOpenDetail = {
   state: BuilderProjectState
   previewHtml?: string
   prompt?: string
+  providerError?: string
 }
 
 type ProjectChatMessage = {
@@ -90,12 +91,16 @@ export default function LiveCodingWidget() {
       setProjectState(detail.state)
       setPreviewHtml(detail.previewHtml || '')
       setSelectedFile(detail.state.files[0]?.path || '')
-      setStatus('saved')
-      setStatusMessage(detail.prompt ? `Generated from: ${detail.prompt}` : 'Project ready.')
+      setStatus(detail.providerError ? 'error' : 'saved')
+      setStatusMessage(
+        detail.providerError || (detail.prompt ? `Generated from: ${detail.prompt}` : 'Project ready.')
+      )
       setChatMessages([
         {
           role: 'assistant',
-          text: 'Builder ready. Project-specific changes yahin se kar sakte ho.'
+          text: detail.providerError
+            ? `Builder shell ready. ${detail.providerError}`
+            : 'Builder ready. Project-specific changes yahin se kar sakte ho.'
         }
       ])
       setIsVisible(true)

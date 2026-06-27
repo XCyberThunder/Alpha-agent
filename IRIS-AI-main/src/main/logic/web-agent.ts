@@ -12,6 +12,14 @@ const USER_BOOKMARKS: Record<string, string> = {
   linkedin: 'https://linkedin.com'
 }
 
+const getYouTubeUrl = (intent: 'open' | 'search', query = '') => {
+  const cleanedQuery = query.replace(/\s+/g, ' ').trim()
+  if (intent === 'search' && cleanedQuery) {
+    return `https://www.youtube.com/results?search_query=${encodeURIComponent(cleanedQuery)}`
+  }
+  return 'https://www.youtube.com'
+}
+
 const getSmartUrl = (
   query: string
 ): { url: string; source: string; skipScrape: boolean } | null => {
@@ -43,9 +51,13 @@ const getSmartUrl = (
   }
 
   if (lower.includes('youtube') || lower.includes('watch')) {
-    const term = lower.replace(/(youtube|watch)/g, '').trim()
+    const hasSearchIntent = /\b(search|find|dhundo|dhoondo|watch)\b/.test(lower)
+    const term = lower
+      .replace(/(youtube|yt|watch|search|find|dhundo|dhoondo|open|kholo|karo|karna|pe|par)/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
     return {
-      url: `https://www.youtube.com/results?search_query=${encodeURIComponent(term)}`,
+      url: getYouTubeUrl(hasSearchIntent ? 'search' : 'open', term),
       source: 'YouTube',
       skipScrape: true
     }

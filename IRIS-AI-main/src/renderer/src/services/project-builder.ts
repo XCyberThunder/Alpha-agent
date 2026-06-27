@@ -28,6 +28,8 @@ export type BuilderProjectResponse = {
   message?: string
   error?: string
   code?: string
+  providerError?: string
+  providerCode?: string
   exportPath?: string
   projectPath?: string
 }
