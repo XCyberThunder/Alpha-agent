@@ -141,6 +141,7 @@
     "mammoth": "^1.12.0",
     "node-window-manager": "^2.2.4",
     "pdf-parse": "^2.4.5",
+    "playwright-core": "^1.61.1",
     "prismjs": "^1.30.0",
     "puppeteer": "^25.0.4",
     "puppeteer-extra": "^3.3.6",

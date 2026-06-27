@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import * as faceapi from 'face-api.js'
+import type { BrowserAutomationState } from '@renderer/services/browser-automation'
 import { GiArtificialIntelligence } from 'react-icons/gi'
 import {
   RiKey2Line,
@@ -221,6 +222,7 @@ const SettingsView = ({ isSystemActive }: SettingsProps) => {
   const [launchOnStartup, setLaunchOnStartup] = useState(false)
   const [playwrightSettings, setPlaywrightSettings] = useState<PlaywrightSettings>(defaultPlaywrightSettings)
   const [playwrightMessage, setPlaywrightMessage] = useState('')
+  const [browserAutomationState, setBrowserAutomationState] = useState<BrowserAutomationState | null>(null)
 
   const [isSecurityUnlocked, setIsSecurityUnlocked] = useState(false)
   const [authPin, setAuthPin] = useState('')
@@ -285,6 +287,9 @@ const SettingsView = ({ isSystemActive }: SettingsProps) => {
         }
         if (res?.openrouterModel) setOpenRouterModel(res.openrouterModel)
         if (res?.playwrightSettings) setPlaywrightSettings({ ...defaultPlaywrightSettings, ...res.playwrightSettings })
+      })
+      window.electron.ipcRenderer.invoke('browser:get-state').then((res) => {
+        if (res?.state) setBrowserAutomationState(res.state)
       })
       window.electron.ipcRenderer
         .invoke('get-launch-on-startup')
@@ -487,6 +492,8 @@ const SettingsView = ({ isSystemActive }: SettingsProps) => {
     const res = await window.electron.ipcRenderer.invoke('playwright-settings-save', playwrightSettings)
     if (res?.settings) setPlaywrightSettings({ ...defaultPlaywrightSettings, ...res.settings })
     setPlaywrightMessage(res?.success ? 'Playwright settings saved.' : `Save failed: ${res?.error || 'unknown error'}`)
+    const state = await window.electron.ipcRenderer.invoke('browser:get-state')
+    if (state?.state) setBrowserAutomationState(state.state)
   }
 
   const testPlaywrightLaunch = async () => {
@@ -494,6 +501,8 @@ const SettingsView = ({ isSystemActive }: SettingsProps) => {
     const res = await window.electron.ipcRenderer.invoke('playwright-settings-test-launch')
     if (res?.settings) setPlaywrightSettings({ ...defaultPlaywrightSettings, ...res.settings })
     setPlaywrightMessage(res?.message || (res?.success ? 'Playwright launch test ready.' : `Test failed: ${res?.error || 'unknown error'}`))
+    const state = await window.electron.ipcRenderer.invoke('browser:get-state')
+    if (state?.state) setBrowserAutomationState(state.state)
   }
 
   const clearPlaywrightProfile = async () => {
@@ -501,6 +510,14 @@ const SettingsView = ({ isSystemActive }: SettingsProps) => {
     const res = await window.electron.ipcRenderer.invoke('playwright-settings-clear-profile')
     if (res?.settings) setPlaywrightSettings({ ...defaultPlaywrightSettings, ...res.settings })
     setPlaywrightMessage(res?.success ? 'Playwright profile path cleared.' : `Clear failed: ${res?.error || 'unknown error'}`)
+    const state = await window.electron.ipcRenderer.invoke('browser:get-state')
+    if (state?.state) setBrowserAutomationState(state.state)
+  }
+
+  const refreshBrowserAutomationState = async () => {
+    if (!window.electron?.ipcRenderer) return
+    const res = await window.electron.ipcRenderer.invoke('browser:get-state')
+    if (res?.state) setBrowserAutomationState(res.state)
   }
   const toggleLaunchOnStartup = async () => {
     const next = !launchOnStartup
@@ -1161,6 +1178,25 @@ const SettingsView = ({ isSystemActive }: SettingsProps) => {
                         {playwrightSettings.lastTestedAt ? ` | Last tested: ${playwrightSettings.lastTestedAt}` : ''}
                       </p>
                       {playwrightMessage && <p className="text-[10px] text-emerald-300 font-mono">{playwrightMessage}</p>}
+                      <div className="rounded-lg border border-white/10 bg-black/20 p-3 text-[10px] font-mono text-zinc-400">
+                        <div className="mb-2 flex items-center justify-between gap-2">
+                          <span className="uppercase tracking-widest text-zinc-500">Browser Automation Status</span>
+                          <button
+                            onClick={refreshBrowserAutomationState}
+                            className="rounded border border-white/10 px-2 py-1 text-[9px] uppercase tracking-widest text-cyan-300 hover:bg-cyan-500/10"
+                          >
+                            Refresh State
+                          </button>
+                        </div>
+                        <p>Enabled: {browserAutomationState?.enabled ? 'yes' : 'no'}</p>
+                        <p>Launched: {browserAutomationState?.launched ? 'yes' : 'no'}</p>
+                        <p>Browser: {browserAutomationState?.browser || playwrightSettings.browser}</p>
+                        <p>Current URL: {browserAutomationState?.currentUrl || 'n/a'}</p>
+                        <p>Page title: {browserAutomationState?.title || 'n/a'}</p>
+                        <p>Last action: {browserAutomationState?.lastAction || 'n/a'}</p>
+                        <p>Error/status: {browserAutomationState?.lastError || playwrightSettings.lastStatus || 'n/a'}</p>
+                        <p>Screenshot path: {browserAutomationState?.screenshotPath || 'n/a'}</p>
+                      </div>
                     </div>
                     <div className="flex flex-col gap-2 md:col-span-2 border border-white/10 rounded-xl p-5 bg-white/[0.02]">
                       <label className="text-[10px] text-zinc-400 font-mono tracking-widest uppercase flex items-center gap-2">

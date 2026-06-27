@@ -35,6 +35,19 @@ import { runDeepResearch } from '@renderer/tools/deepSearch-rag'
 import { runIndexDirectory, runSmartSearch } from '@renderer/tools/semantic-search-api'
 import { closeWidgets, createWidget } from '@renderer/tools/widget-creator'
 import { buildAnimatedWebsite } from '@renderer/code/website-builder-api'
+import {
+  browserClickText,
+  browserFillField,
+  browserGetState,
+  browserOpenSearchResult,
+  browserOpenYouTubeResult,
+  browserReadPage,
+  browserScreenshot,
+  browserSearchGoogle,
+  browserSearchYouTube,
+  browserOpenUrl,
+  launchBrowserAutomation
+} from '@renderer/services/browser-automation'
 import { createBuilderProject, openBuilderWindow, updateBuilderProject } from '@renderer/services/project-builder'
 import { getMacroSequence } from '@renderer/code/macro-executor'
 import {
@@ -129,7 +142,22 @@ const setCachedRealtime = (key: string, response: string) => {
   return response
 }
 
-const classifyPrompt = (prompt: string): 'general' | 'realtime' | 'automation' | 'complex' => {
+const isBrowserAutomationPrompt = (prompt: string) => {
+  const lower = normalizeTranscript(prompt)
+  const normalized = normalizeFastCommand(prompt)
+
+  if (
+    /(youtube|yt).*(video|first result|first video|official docs|github result|stackoverflow result|click|button|form|field|screenshot|summary|visible links|page text|read page)/i.test(normalized) ||
+    /(google).*(official docs|first result|github result|stackoverflow result|search)/i.test(normalized) ||
+    /(browser automation mode|browser kholo|page ka summary|visible links|page ka text|read page|screenshot lo|name field me|email field me|search box me|submit button pe click|form fill)/i.test(lower)
+  ) {
+    return true
+  }
+
+  return false
+}
+
+const classifyPrompt = (prompt: string): 'general' | 'realtime' | 'automation' | 'browser-automation' | 'complex' => {
   const lower = normalizeTranscript(prompt)
   const normalized = normalizeFastCommand(prompt)
 
@@ -144,6 +172,10 @@ const classifyPrompt = (prompt: string): 'general' | 'realtime' | 'automation' |
     /(weather|outside|latest ai news|latest cve|latest cybersecurity|cybersecurity update|framework update|elon musk news|stock price|compare .*stock|news)/i.test(lower)
   ) {
     return 'realtime'
+  }
+
+  if (isBrowserAutomationPrompt(prompt)) {
+    return 'browser-automation'
   }
 
   if (
@@ -321,6 +353,9 @@ const getFastOpenSiteRoute = (
   if (!hasOpenIntent) return null
   if (/\b(chrome|google chrome|brave)\b/i.test(normalized)) return null
   if (/\bwhatsapp\b/i.test(normalized) && !/\b(web|browser)\b/i.test(normalized)) return null
+  const youtubeRoute = resolveYouTubeUrl(prompt)
+  if (youtubeRoute?.intent === 'search') return null
+  if (/\b(youtube|yt)\b.*\b(video|result|song|music|tutorial)\b/i.test(normalized)) return null
 
   const aliases: Array<[string, string, string]> = [
     ['youtube', 'YouTube', siteMap.youtube],
@@ -557,6 +592,12 @@ export class GeminiLiveService {
         isProject: boolean
         reason: string
         currentProjectId?: string
+      }
+    | null = null
+  private pendingBrowserConfirmation:
+    | {
+        type: 'submit'
+        text: string
       }
     | null = null
 
@@ -1086,34 +1127,12 @@ export class GeminiLiveService {
     if (!isCodingTaskPrompt(prompt)) return null
 
     if (isCodingProjectPrompt(prompt)) {
-      const builder = await createBuilderProject(prompt, 'glm')
-      if (builder.success && builder.state) {
-        await openBuilderWindow({
-          state: builder.state,
-          previewHtml: builder.previewHtml,
-          prompt,
-          providerError: builder.providerError
-        })
-
-        if (builder.providerError) {
-          this.pendingCodingFallback = {
-            prompt,
-            isProject: true,
-            reason: builder.providerError,
-            currentProjectId: builder.state.metadata.id
-          }
-          return this.fallbackPickerMessage(builder.providerError)
-        }
-
-        this.pendingCodingFallback = null
-        return `Builder open kar raha hoon. Provider: ${builder.state.metadata.providerUsed || 'GLM'}.`
-      }
-
-      if (!builder.success || !builder.state) {
-        const reason = builder.message || builder.error || 'Project builder abhi project generate nahi kar paya.'
-        this.pendingCodingFallback = { prompt, isProject: true, reason }
-        return this.fallbackPickerMessage(reason)
-      }
+      await openBuilderWindow({
+        prompt,
+        autoStart: true
+      })
+      this.pendingCodingFallback = null
+      return 'Builder open kar diya. Coding Agent is prompt par kaam kar raha hai.'
     }
 
     const glmReply = await this.consultGlmAgent(prompt)
@@ -1158,6 +1177,8 @@ export class GeminiLiveService {
         ? await this.consultGlmAgent(trimmed)
         : routeType === 'realtime'
           ? await this.executeRealtimeRoute(trimmed)
+          : routeType === 'browser-automation'
+            ? await this.executeBrowserAutomationRoute(trimmed)
           : routeType === 'automation'
             ? await this.executeAutomationRoute(trimmed)
             : null
@@ -1262,6 +1283,181 @@ export class GeminiLiveService {
       const cached = getCachedRealtime(cacheKey)
       if (cached) return cached
       return setCachedRealtime(cacheKey, await runDeepResearch(prompt))
+    }
+
+    return null
+  }
+
+  private async summarizeBrowserContent(title: string, url: string, content: string) {
+    const activeBrainKey = await window.electron.ipcRenderer.invoke('key-manager-get-active-key', 'geminiBrain')
+    const secureKeys = await window.electron.ipcRenderer.invoke('secure-get-keys')
+    const key = activeBrainKey?.key?.trim() || secureKeys?.geminiBrainKey?.trim() || secureKeys?.geminiKey?.trim()
+    if (!key) {
+      return `Page title: ${title}\nURL: ${url}\n\n${content.slice(0, 1400)}`
+    }
+
+    try {
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(key)}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [
+              {
+                role: 'user',
+                parts: [
+                  {
+                    text:
+                      `Summarize this visible webpage content in 6-8 concise bullet points. ` +
+                      `Keep it practical, mention title and key takeaways only.\n\nTitle: ${title}\nURL: ${url}\n\nVisible text:\n${content.slice(0, 10000)}`
+                  }
+                ]
+              }
+            ],
+            generationConfig: { temperature: 0.2, maxOutputTokens: 900 }
+          })
+        }
+      )
+
+      if (!response.ok) {
+        return `Page title: ${title}\nURL: ${url}\n\n${content.slice(0, 1400)}`
+      }
+
+      const data = await response.json()
+      const text =
+        data?.candidates?.[0]?.content?.parts?.map((part: any) => part?.text || '').join('').trim() || ''
+      return text || `Page title: ${title}\nURL: ${url}\n\n${content.slice(0, 1400)}`
+    } catch {
+      return `Page title: ${title}\nURL: ${url}\n\n${content.slice(0, 1400)}`
+    }
+  }
+
+  private async executeBrowserAutomationRoute(prompt: string): Promise<string | null> {
+    const lower = normalizeTranscript(prompt)
+    const normalized = normalizeFastCommand(prompt)
+
+    if (this.pendingBrowserConfirmation && /\b(yes|haan|ha|confirm|submit|karo)\b/i.test(normalized)) {
+      const action = this.pendingBrowserConfirmation
+      this.pendingBrowserConfirmation = null
+      const result = await browserClickText(action.text)
+      return result.success ? 'Submit button clicked.' : result.error || 'Submit click failed.'
+    }
+
+    if (!isBrowserAutomationPrompt(prompt)) return null
+
+    if (/(browser automation mode start|browser automation start|browser kholo|browser start)/i.test(lower)) {
+      const result = await launchBrowserAutomation()
+      return result.success
+        ? `Browser automation ready. ${result.title ? `Current page: ${result.title}` : 'Browser launched.'}`
+        : result.error || 'Browser launch failed.'
+    }
+
+    if (/\b(youtube|yt)\b.*\b(video|first video|first result)\b/i.test(normalized)) {
+      const query = cleanSearchQuery(prompt, 'youtube')
+      if (query) {
+        const result = await browserOpenYouTubeResult({
+          query,
+          index: /\bfirst|1st|pehla\b/i.test(normalized) ? 0 : 0,
+          matchText: /networkchuck/i.test(lower) ? 'networkchuck' : undefined
+        })
+        return result.success
+          ? `Opened YouTube video: ${result.title || result.currentUrl}`
+          : result.error || 'YouTube video open failed.'
+      }
+
+      const result = await browserOpenYouTubeResult({ index: 0 })
+      return result.success ? `Opened video: ${result.title || result.currentUrl}` : result.error || 'Video open failed.'
+    }
+
+    if (/\b(youtube|yt)\b.*\b(search|dhoondo|dhundo)\b/i.test(normalized)) {
+      const query = cleanSearchQuery(prompt, 'youtube')
+      const result = await browserSearchYouTube(query || prompt)
+      return result.success ? `YouTube search ready for: ${query || prompt}` : result.error || 'YouTube search failed.'
+    }
+
+    if (/\bgoogle\b.*\b(search|docs|result|official)\b/i.test(normalized)) {
+      const query = cleanSearchQuery(prompt, 'google')
+      const result = await browserSearchGoogle(query || prompt)
+      return result.success ? `Google search ready for: ${query || prompt}` : result.error || 'Google search failed.'
+    }
+
+    if (/\bofficial docs open\b/i.test(normalized)) {
+      const result = await browserOpenSearchResult({ domainHint: 'playwright.dev', index: 0 })
+      return result.success ? `Opened official docs: ${result.title || result.currentUrl}` : result.error || 'Official docs result nahi mila.'
+    }
+
+    if (/\bgithub result open\b/i.test(normalized)) {
+      const result = await browserOpenSearchResult({ domainHint: 'github.com', index: 0 })
+      return result.success ? `Opened GitHub result: ${result.title || result.currentUrl}` : result.error || 'GitHub result nahi mila.'
+    }
+
+    if (/\bstack\s*overflow result open\b|\bstackoverflow result open\b/i.test(normalized)) {
+      const result = await browserOpenSearchResult({ domainHint: 'stackoverflow.com', index: 0 })
+      return result.success ? `Opened StackOverflow result: ${result.title || result.currentUrl}` : result.error || 'StackOverflow result nahi mila.'
+    }
+
+    if (/\bfirst result open\b/i.test(normalized)) {
+      const result = await browserOpenSearchResult({ index: 0 })
+      return result.success ? `Opened first result: ${result.title || result.currentUrl}` : result.error || 'First result nahi mila.'
+    }
+
+    if (/\b(page ka summary|is page ka summary|summary do)\b/i.test(lower)) {
+      const result = await browserReadPage()
+      if (!result.success) return result.error || 'Page read failed.'
+      return this.summarizeBrowserContent(result.title || 'Untitled page', result.currentUrl || '', result.visibleTextSnippet || '')
+    }
+
+    if (/\b(visible links dikhao|links dikhao)\b/i.test(lower)) {
+      const result = await browserReadPage()
+      if (!result.success) return result.error || 'Page read failed.'
+      const links = (result.links || []).slice(0, 12)
+      if (!links.length) return 'Visible links nahi mile.'
+      return links.map((link, index) => `${index + 1}. ${link.text || link.href}\n   ${link.href}`).join('\n')
+    }
+
+    if (/\b(page ka text read karo|read page text|page text)\b/i.test(lower)) {
+      const result = await browserReadPage()
+      if (!result.success) return result.error || 'Page read failed.'
+      return result.visibleTextSnippet?.slice(0, 4000) || 'Visible page text nahi mila.'
+    }
+
+    if (/\bscreenshot lo\b|\bpage screenshot\b/i.test(lower)) {
+      const result = await browserScreenshot()
+      return result.success ? `Screenshot saved: ${result.screenshotPath}` : result.error || 'Screenshot failed.'
+    }
+
+    const fillMatch =
+      prompt.match(/(.+?)\s+field\s+me\s+(.+?)\s+likho/i) ||
+      prompt.match(/(.+?)\s+field\s+me\s+(.+?)\s+likho/i) ||
+      prompt.match(/(.+?)\s+box\s+me\s+(.+?)\s+likho/i)
+    if (fillMatch) {
+      const field = fillMatch[1].trim()
+      const value = fillMatch[2].trim()
+      const result = await browserFillField(field, value)
+      return result.success ? `${field} field filled.` : result.error || 'Field fill failed.'
+    }
+
+    if (/\bsubmit button pe click\b|\bsubmit karo\b/i.test(lower)) {
+      this.pendingBrowserConfirmation = { type: 'submit', text: 'submit' }
+      return 'Submit sensitive action ho sakta hai. Confirm karo to main submit button click kar doon.'
+    }
+
+    if (/\bbutton pe click karo\b/i.test(lower)) {
+      const label = prompt.replace(/.*button pe click karo\s*/i, '').trim() || 'button'
+      const result = await browserClickText(label === 'button' ? 'button' : label)
+      return result.success ? `Clicked ${label}.` : result.error || 'Button click failed.'
+    }
+
+    if (/\bopen url\b/i.test(normalized)) {
+      const url = prompt.replace(/.*open url\s*/i, '').trim()
+      const result = await browserOpenUrl(url)
+      return result.success ? `Opened ${result.currentUrl || url}` : result.error || 'URL open failed.'
+    }
+
+    const currentState = await browserGetState()
+    if (currentState?.state?.currentUrl) {
+      return `Browser automation ready on ${currentState.state.currentUrl}. Specific action bolo.`
     }
 
     return null

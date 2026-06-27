@@ -40,6 +40,7 @@ import registerRealityHacker from './logic/reality-hacker'
 import registerAlphaCoder from './services/alpha-coder'
 import registerBuilderWindow from './services/builder-window'
 import registerProjectBuilder from './services/project-builder'
+import registerPlaywrightBrowser from './services/playwright-browser'
 import registerTelekinesis from './logic/telekinesis'
 import registerPermanentMemory from './logic/permanent-memory'
 import registerWormhole from './services/wormhole'
@@ -100,6 +101,10 @@ function readSecureVault(): Record<string, any> {
   } catch (err) {
     return {}
   }
+}
+
+function writeSecureVault(data: Record<string, any>) {
+  fs.writeFileSync(secureConfigPath, JSON.stringify(data))
 }
 
 type ApiKeyGroup =
@@ -883,62 +888,6 @@ app.whenReady().then(() => {
   })
 
 
-  ipcMain.handle('playwright-settings-get', async () => {
-    const secureData = readSecureVault()
-    return { success: true, settings: normalizePlaywrightSettings(secureData) }
-  })
-
-  ipcMain.handle('playwright-settings-save', async (_, settings) => {
-    try {
-      const secureData = readSecureVault()
-      secureData.playwrightSettings = {
-        ...normalizePlaywrightSettings(secureData),
-        enabled: Boolean(settings?.enabled),
-        browser: ['chromium', 'chrome', 'edge'].includes(settings?.browser) ? settings.browser : 'chromium',
-        profilePath: typeof settings?.profilePath === 'string' ? settings.profilePath : '',
-        headless: Boolean(settings?.headless)
-      }
-      fs.writeFileSync(secureConfigPath, JSON.stringify(secureData))
-      return { success: true, settings: secureData.playwrightSettings }
-    } catch (error: any) {
-      return { success: false, error: error.message }
-    }
-  })
-
-  ipcMain.handle('playwright-settings-clear-profile', async () => {
-    try {
-      const secureData = readSecureVault()
-      const settings = normalizePlaywrightSettings(secureData)
-      settings.profilePath = ''
-      settings.lastStatus = 'profile-cleared'
-      secureData.playwrightSettings = settings
-      fs.writeFileSync(secureConfigPath, JSON.stringify(secureData))
-      return { success: true, settings }
-    } catch (error: any) {
-      return { success: false, error: error.message }
-    }
-  })
-
-  ipcMain.handle('playwright-settings-test-launch', async () => {
-    try {
-      const secureData = readSecureVault()
-      const settings = normalizePlaywrightSettings(secureData)
-      settings.lastTestedAt = new Date().toISOString()
-      settings.lastStatus = settings.enabled ? 'ready' : 'disabled'
-      secureData.playwrightSettings = settings
-      fs.writeFileSync(secureConfigPath, JSON.stringify(secureData))
-      return {
-        success: true,
-        settings,
-        message: settings.enabled
-          ? `${settings.browser} automation profile is ready.`
-          : 'Playwright is disabled. Enable it before launch tests.'
-      }
-    } catch (error: any) {
-      return { success: false, error: error.message }
-    }
-  })
-
   ipcMain.handle('check-keys-exist', () => {
     return fs.existsSync(secureConfigPath)
   })
@@ -998,6 +947,12 @@ app.whenReady().then(() => {
     rendererUrl: process.env['ELECTRON_RENDERER_URL'],
     icon,
     preloadPath: join(__dirname, '../preload/index.js')
+  })
+  registerPlaywrightBrowser({
+    ipcMain,
+    readSecureVault,
+    writeSecureVault,
+    normalizePlaywrightSettings
   })
   registerRealityHacker(ipcMain)
   registerAdbHandlers(ipcMain)
