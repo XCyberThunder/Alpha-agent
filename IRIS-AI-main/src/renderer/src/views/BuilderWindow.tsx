@@ -3,23 +3,29 @@ import {
   useMemo,
   useRef,
   useState,
-  type ChangeEvent,
   type ReactNode
 } from 'react'
 import Editor, { useMonaco } from '@monaco-editor/react'
 import {
   ArrowUp,
   Bot,
+  CheckCircle2,
   ChevronDown,
   Code2,
   Copy,
   Download,
   ExternalLink,
   Eye,
+  FileCode2,
   FileImage,
+  FileJson2,
+  FileText,
   FileUp,
+  Folder,
+  FolderOpen,
   FolderTree,
   FolderUp,
+  Globe,
   Laptop,
   LayoutGrid,
   MessageSquare,
@@ -41,17 +47,25 @@ import {
   X
 } from 'lucide-react'
 import {
+  closeBuilderWindow,
   type BuilderProjectFile,
   type BuilderProjectState,
+  type BuilderAttachmentDescriptor,
   copyBuilderProjectPath,
   createBuilderProject,
   exportBuilderProjectZip,
+  getBuilderModelStatuses,
+  getBuilderWindowState,
   openBuilderProjectFolder,
   openBuilderProjectInVsCode,
+  pickBuilderAttachments,
   readBuilderProject,
   runBuilderProjectCommand,
   saveBuilderProjectFile,
+  saveBuilderModelSlot,
   stopBuilderProjectCommand,
+  setBuilderModelEnabled,
+  testBuilderModelSlot,
   updateBuilderProject
 } from '@renderer/services/project-builder'
 
@@ -81,9 +95,19 @@ type AttachmentItem = {
   name: string
   kind: 'image' | 'file' | 'folder'
   size: number
+  path?: string
   fileCount?: number
   previewUrl?: string
   content?: string
+  skippedCount?: number
+}
+
+type FileTreeNode = {
+  id: string
+  name: string
+  path: string
+  kind: 'file' | 'folder'
+  children: FileTreeNode[]
 }
 
 type EditableTextNode = {
@@ -221,6 +245,97 @@ const applyVisualEditsToHtml = (html: string, edits: EditableTextNode[]) => {
 const isTextFile = (name: string) =>
   /\.(txt|md|json|html|css|js|ts|tsx|py|java|c|cpp|jsx|yml|yaml)$/i.test(name)
 
+const formatBytes = (size: number) => {
+  if (!Number.isFinite(size) || size <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB']
+  let value = size
+  let unitIndex = 0
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024
+    unitIndex += 1
+  }
+  return `${value >= 100 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`
+}
+
+const buildFileTree = (files: BuilderProjectFile[]): FileTreeNode[] => {
+  const root: FileTreeNode[] = []
+  const folderMap = new Map<string, FileTreeNode>()
+
+  const ensureFolder = (folderPath: string) => {
+    if (!folderPath) return root
+    if (folderMap.has(folderPath)) return folderMap.get(folderPath)!.children
+
+    const segments = folderPath.split('/').filter(Boolean)
+    let currentPath = ''
+    let currentLevel = root
+
+    for (const segment of segments) {
+      currentPath = currentPath ? `${currentPath}/${segment}` : segment
+      let existing = folderMap.get(currentPath)
+      if (!existing) {
+        existing = {
+          id: `folder-${currentPath}`,
+          name: segment,
+          path: currentPath,
+          kind: 'folder',
+          children: []
+        }
+        currentLevel.push(existing)
+        folderMap.set(currentPath, existing)
+      }
+      currentLevel = existing.children
+    }
+
+    return currentLevel
+  }
+
+  files.forEach((file) => {
+    const parts = file.path.split('/').filter(Boolean)
+    const fileName = parts.pop() || file.path
+    const parentLevel = ensureFolder(parts.join('/'))
+    parentLevel.push({
+      id: `file-${file.path}`,
+      name: fileName,
+      path: file.path,
+      kind: 'file',
+      children: []
+    })
+  })
+
+  const sortNodes = (nodes: FileTreeNode[]) => {
+    nodes.sort((left, right) => {
+      if (left.kind !== right.kind) return left.kind === 'folder' ? -1 : 1
+      return left.name.localeCompare(right.name)
+    })
+    nodes.forEach((node) => sortNodes(node.children))
+    return nodes
+  }
+
+  return sortNodes(root)
+}
+
+const getFileIcon = (targetPath: string) => {
+  const lower = targetPath.toLowerCase()
+  if (lower.endsWith('.json')) return <FileJson2 className="h-3.5 w-3.5" />
+  if (lower.endsWith('.md') || lower.endsWith('.txt')) return <FileText className="h-3.5 w-3.5" />
+  if (/\.(html|css|js|jsx|ts|tsx|py|java|c|cpp|cc|cxx)$/i.test(lower)) {
+    return <FileCode2 className="h-3.5 w-3.5" />
+  }
+  return <FileText className="h-3.5 w-3.5" />
+}
+
+const attachmentFromDescriptor = (item: BuilderAttachmentDescriptor): AttachmentItem => ({
+  id: item.id,
+  name: item.name,
+  path: item.path,
+  kind: item.kind,
+  size: item.size,
+  fileCount: item.fileCount,
+  previewUrl: item.previewUrl,
+  content: item.content,
+  skippedCount: item.skippedCount
+})
+
 const summarizeAttachments = (attachments: AttachmentItem[]) =>
   attachments
     .map((item) => {
@@ -270,10 +385,7 @@ export default function BuilderWindow() {
   const [showModelModal, setShowModelModal] = useState(false)
   const [addModelDraft, setAddModelDraft] = useState<AddModelDraft>(defaultAddModelDraft)
   const [addModelMessage, setAddModelMessage] = useState('')
-
-  const imageInputRef = useRef<HTMLInputElement | null>(null)
-  const fileInputRef = useRef<HTMLInputElement | null>(null)
-  const folderInputRef = useRef<HTMLInputElement | null>(null)
+  const [activeSidebarTab, setActiveSidebarTab] = useState<'chat' | 'agent'>('chat')
   const consumedPromptRef = useRef<string>('')
 
   useEffect(() => {
@@ -294,7 +406,7 @@ export default function BuilderWindow() {
   }, [monaco])
 
   const refreshModelOptions = async () => {
-    const response = await window.electron.ipcRenderer.invoke('key-manager-list-statuses')
+    const response = await getBuilderModelStatuses()
     const statuses = response?.statuses || {}
     const options: ModelOption[] = [
       {
@@ -342,6 +454,10 @@ export default function BuilderWindow() {
   const applyIncomingPayload = (payload?: BuilderPayload | null) => {
     if (!payload) return
 
+    if (payload.selectedProvider && payload.selectedProvider !== 'auto') {
+      setSelectedModel(payload.selectedProvider as ModelProvider)
+    }
+
     if (payload.state) {
       const state = payload.state
       setProjectState(state)
@@ -381,7 +497,7 @@ export default function BuilderWindow() {
   }
 
   useEffect(() => {
-    window.electron.ipcRenderer.invoke('builder-window-get-state').then((res) => applyIncomingPayload(res?.payload))
+    getBuilderWindowState().then((res) => applyIncomingPayload(res?.payload))
     const listener = (_event: unknown, payload: BuilderPayload) => applyIncomingPayload(payload)
     window.electron.ipcRenderer.on('builder-window-state', listener)
     return () => {
@@ -595,11 +711,21 @@ export default function BuilderWindow() {
 
   const refreshProject = async () => {
     if (!projectState?.metadata.id) return
-    const response = await readBuilderProject(projectState.metadata.id)
-    if (response.success && response.state) {
-      setProjectState(response.state)
-      setPreviewHtml(response.previewHtml || '')
-      setStatusMessage('Project refreshed.')
+    setIsBusy(true)
+    setStatusMessage('Refreshing preview...')
+    try {
+      const response = await readBuilderProject(projectState.metadata.id)
+      if (response.success && response.state) {
+        setProjectState(response.state)
+        setPreviewHtml(response.previewHtml || '')
+        setStatus('saved')
+        setStatusMessage('Project refreshed.')
+      } else {
+        setStatus('error')
+        setStatusMessage(response.error || 'Project refresh failed.')
+      }
+    } finally {
+      setIsBusy(false)
     }
   }
 
@@ -633,47 +759,19 @@ export default function BuilderWindow() {
     await stopBuilderProjectCommand(projectState.metadata.id)
   }
 
-  const readAttachmentFiles = async (files: FileList | File[], kind: AttachmentItem['kind']) => {
-    const nextAttachments: AttachmentItem[] = []
-    for (const file of Array.from(files)) {
-      const attachment: AttachmentItem = {
-        id: safeId(),
-        name: file.webkitRelativePath || file.name,
-        kind,
-        size: file.size
-      }
-      if (kind === 'image') attachment.previewUrl = URL.createObjectURL(file)
-      if (isTextFile(file.name)) attachment.content = await file.text()
-      nextAttachments.push(attachment)
-    }
-
-    if (kind === 'folder') {
-      const totalSize = nextAttachments.reduce((sum, item) => sum + item.size, 0)
-      setAttachments((prev) => [
-        ...prev,
-        {
-          id: safeId(),
-          name: 'Folder Attachment',
-          kind: 'folder',
-          size: totalSize,
-          fileCount: nextAttachments.length,
-          content: nextAttachments
-            .filter((item) => item.content)
-            .map((item) => `FILE: ${item.name}\n${item.content}`)
-            .join('\n\n')
-        }
-      ])
+  const handlePickAttachments = async (kind: AttachmentItem['kind']) => {
+    const response = await pickBuilderAttachments(kind)
+    if (!response.success) {
+      setStatusMessage(response.error || 'Attachment pick failed.')
       return
     }
-
-    setAttachments((prev) => [...prev, ...nextAttachments])
-  }
-
-  const handleFileInput = async (event: ChangeEvent<HTMLInputElement>, kind: AttachmentItem['kind']) => {
-    const files = event.target.files
-    if (!files?.length) return
-    await readAttachmentFiles(files, kind)
-    event.target.value = ''
+    if (response.cancelled || !response.attachments?.length) return
+    setAttachments((prev) => [...prev, ...response.attachments!.map(attachmentFromDescriptor)])
+    setStatusMessage(
+      kind === 'folder'
+        ? `Folder attached (${response.attachments[0]?.fileCount || 0} files).`
+        : `${response.attachments.length} attachment${response.attachments.length > 1 ? 's' : ''} added.`
+    )
   }
 
   const openPreviewWindow = () => {
@@ -685,8 +783,20 @@ export default function BuilderWindow() {
     win.document.close()
   }
 
+  const handleTopAction = async (action: () => Promise<void> | void, busyLabel?: string) => {
+    if (busyLabel) {
+      setIsBusy(true)
+      setStatusMessage(busyLabel)
+    }
+    try {
+      await action()
+    } finally {
+      if (busyLabel) setIsBusy(false)
+    }
+  }
+
   const saveModelDraft = async () => {
-    const result = await window.electron.ipcRenderer.invoke('key-manager-save-slot', {
+    const result = await saveBuilderModelSlot({
       group: addModelDraft.group,
       slot: addModelDraft.slot,
       key: addModelDraft.apiKey,
@@ -696,7 +806,7 @@ export default function BuilderWindow() {
     })
     if (result?.success) {
       if (!addModelDraft.enabled) {
-        await window.electron.ipcRenderer.invoke('key-manager-set-enabled', {
+        await setBuilderModelEnabled({
           group: addModelDraft.group,
           slot: addModelDraft.slot,
           enabled: false
@@ -710,7 +820,7 @@ export default function BuilderWindow() {
   }
 
   const testModelDraft = async () => {
-    const result = await window.electron.ipcRenderer.invoke('key-manager-test-key', {
+    const result = await testBuilderModelSlot({
       group: addModelDraft.group,
       slot: addModelDraft.slot
     })
@@ -730,6 +840,9 @@ export default function BuilderWindow() {
   }
 
   const activeFiles = projectState?.files || []
+  const fileTree = useMemo(() => buildFileTree(activeFiles), [activeFiles])
+  const selectedFileEntry = activeFiles.find((item) => item.path === selectedFile) || null
+  const selectedFileDirty = Boolean(selectedFileEntry && selectedFileEntry.content !== draftContent)
   const currentModelLabel =
     modelOptions.find((option) => option.provider === currentProvider)?.label ||
     modelOptions.find((option) => option.provider === selectedModel)?.label ||
@@ -747,6 +860,10 @@ export default function BuilderWindow() {
     [...chatMessages].reverse().find((message) => message.role === 'user')?.text || 'Start a new website brief'
   const projectDisplayName = projectState?.metadata.name || 'Untitled workspace'
   const workspacePath = projectState?.metadata.projectPath || '/workspace'
+  const currentModelStatus =
+    modelOptions.find((option) => option.provider === currentProvider)?.status ||
+    modelOptions.find((option) => option.provider === selectedModel)?.status ||
+    'ready'
 
   const modeButtons: ModeButtonMeta[] = [
     { value: 'preview', label: 'Preview', icon: <Eye className="h-3.5 w-3.5" /> },
@@ -760,6 +877,53 @@ export default function BuilderWindow() {
     ['npm run build', 'Build'],
     ['npm run dev', 'Start dev server']
   ]
+
+  const renderFileTreeNodes = (nodes: FileTreeNode[], depth = 0): ReactNode =>
+    nodes.map((node) => {
+      if (node.kind === 'folder') {
+        return (
+          <div key={node.id} className="space-y-1">
+            <div
+              className="flex items-center gap-2 rounded-xl px-2.5 py-1.5 text-[11px] font-medium text-[#cbd5e1]"
+              style={{ paddingLeft: `${10 + depth * 14}px` }}
+            >
+              {depth === 0 ? (
+                <FolderOpen className="h-3.5 w-3.5 text-amber-300" />
+              ) : (
+                <Folder className="h-3.5 w-3.5 text-amber-300/80" />
+              )}
+              <span className="truncate">{node.name}</span>
+            </div>
+            <div className="space-y-1">{renderFileTreeNodes(node.children, depth + 1)}</div>
+          </div>
+        )
+      }
+
+      const isActive = selectedFile === node.path
+      return (
+        <button
+          key={node.id}
+          onClick={() => setSelectedFile(node.path)}
+          className={`flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left text-[11px] transition ${
+            isActive
+              ? 'border border-cyan-400/40 bg-[#10151f] text-white shadow-[0_0_0_1px_rgba(34,211,238,0.12)]'
+              : 'border border-white/5 bg-[#12161f] text-[#c3c9d4] hover:bg-[#151b26]'
+          }`}
+          style={{ paddingLeft: `${10 + depth * 14}px` }}
+        >
+          <span className={isActive ? 'text-cyan-200' : 'text-[#94a3b8]'}>{getFileIcon(node.path)}</span>
+          <div className="min-w-0 flex-1">
+            <div className="truncate font-medium">{node.name}</div>
+            <div className={`truncate text-[10px] ${isActive ? 'text-white/55' : 'text-[#70829b]'}`}>{node.path}</div>
+          </div>
+          {selectedFileDirty && selectedFile === node.path && (
+            <span className="rounded-full bg-amber-400/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.18em] text-amber-200">
+              Edited
+            </span>
+          )}
+        </button>
+      )
+    })
 
   return (
     <div className="h-screen w-screen overflow-hidden bg-[#06070b] text-[#f5f7fb]">
@@ -794,7 +958,7 @@ export default function BuilderWindow() {
               <Settings2 className="h-[16px] w-[16px]" />
             </button>
             <button
-              onClick={() => window.electron.ipcRenderer.invoke('builder-window-close')}
+              onClick={() => void closeBuilderWindow()}
               className="grid h-[36px] w-[36px] place-items-center rounded-[12px] border border-red-500/15 bg-red-500/8 text-red-300"
             >
               <X className="h-[16px] w-[16px]" />
@@ -817,13 +981,23 @@ export default function BuilderWindow() {
             </div>
 
             <div className="mt-3 grid grid-cols-2 gap-1 rounded-[14px] border border-white/8 bg-white/5 p-1">
-              <button className="rounded-[10px] bg-cyan-400/12 px-2.5 py-1.5 text-left text-[11px] font-medium text-cyan-200">
+              <button
+                onClick={() => setActiveSidebarTab('chat')}
+                className={`rounded-[10px] px-2.5 py-1.5 text-left text-[11px] font-medium ${
+                  activeSidebarTab === 'chat' ? 'bg-cyan-400/12 text-cyan-200' : 'text-[#94a3b8]'
+                }`}
+              >
                 <span className="inline-flex items-center gap-2">
                   <MessageSquare className="h-3.5 w-3.5" />
                   Chat
                 </span>
               </button>
-              <button className="rounded-[10px] px-2.5 py-1.5 text-left text-[11px] font-medium text-[#94a3b8]">
+              <button
+                onClick={() => setActiveSidebarTab('agent')}
+                className={`rounded-[10px] px-2.5 py-1.5 text-left text-[11px] font-medium ${
+                  activeSidebarTab === 'agent' ? 'bg-cyan-400/12 text-cyan-200' : 'text-[#94a3b8]'
+                }`}
+              >
                 <span className="inline-flex items-center gap-2">
                   <Bot className="h-3.5 w-3.5" />
                   Agent
@@ -934,7 +1108,18 @@ export default function BuilderWindow() {
                         key={attachment.id}
                         className="inline-flex items-center gap-2 rounded-full border border-white/8 bg-white/5 px-2.5 py-1 text-[10px] text-[#dbe4f0]"
                       >
-                        <span>{attachment.name}</span>
+                        {attachment.kind === 'folder' ? (
+                          <Folder className="h-3 w-3 text-amber-300" />
+                        ) : attachment.kind === 'image' ? (
+                          <FileImage className="h-3 w-3 text-cyan-300" />
+                        ) : (
+                          <FileText className="h-3 w-3 text-violet-300" />
+                        )}
+                        <span>
+                          {attachment.name}
+                          {attachment.fileCount ? ` (${attachment.fileCount} files)` : ''}
+                        </span>
+                        <span className="text-[#70829b]">{formatBytes(attachment.size)}</span>
                         <button
                           onClick={() => setAttachments((prev) => prev.filter((item) => item.id !== attachment.id))}
                           className="rounded-full p-1 text-[#9ca3af] hover:bg-[#f3f4f6] hover:text-[#111418]"
@@ -993,28 +1178,28 @@ export default function BuilderWindow() {
           <div className="border-t border-white/8 px-3 py-3">
             <div className="mb-2 flex flex-wrap gap-1.5">
               <button
-                onClick={() => imageInputRef.current?.click()}
+                onClick={() => void handlePickAttachments('image')}
                 className="rounded-lg border border-white/8 bg-white/5 px-2 py-1.5 text-[10px] text-[#dbe4f0]"
               >
                 <FileImage className="mr-1.5 inline h-3.5 w-3.5" />
                 Image
               </button>
               <button
-                onClick={() => fileInputRef.current?.click()}
+                onClick={() => void handlePickAttachments('file')}
                 className="rounded-lg border border-white/8 bg-white/5 px-2 py-1.5 text-[10px] text-[#dbe4f0]"
               >
                 <FileUp className="mr-1.5 inline h-3.5 w-3.5" />
                 File
               </button>
               <button
-                onClick={() => folderInputRef.current?.click()}
+                onClick={() => void handlePickAttachments('folder')}
                 className="rounded-lg border border-white/8 bg-white/5 px-2 py-1.5 text-[10px] text-[#dbe4f0]"
               >
                 <FolderUp className="mr-1.5 inline h-3.5 w-3.5" />
                 Folder
               </button>
               <button
-                onClick={() => setAttachments((prev) => prev.filter((item) => item.kind !== 'file' && item.kind !== 'image'))}
+                onClick={() => setAttachments([])}
                 className="rounded-lg border border-white/8 bg-white/5 px-2 py-1.5 text-[10px] text-[#dbe4f0]"
               >
                 <Upload className="mr-1.5 inline h-3.5 w-3.5" />
@@ -1032,6 +1217,12 @@ export default function BuilderWindow() {
               <textarea
                 value={chatInput}
                 onChange={(event) => setChatInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && !event.shiftKey) {
+                    event.preventDefault()
+                    void handleAgentPrompt(chatInput)
+                  }
+                }}
                 placeholder="Describe your page, ask for file edits, or refine the design..."
                 className="min-h-[72px] w-full resize-none bg-transparent text-[12px] text-white outline-none placeholder:text-[#70829b]"
               />
@@ -1051,22 +1242,6 @@ export default function BuilderWindow() {
             </form>
           </div>
 
-          <input
-            ref={imageInputRef}
-            type="file"
-            accept="image/png,image/jpeg,image/webp,image/svg+xml"
-            className="hidden"
-            onChange={(event) => void handleFileInput(event, 'image')}
-          />
-          <input ref={fileInputRef} type="file" className="hidden" onChange={(event) => void handleFileInput(event, 'file')} />
-          <input
-            ref={folderInputRef}
-            type="file"
-            className="hidden"
-            multiple
-            {...({ webkitdirectory: '' } as any)}
-            onChange={(event) => void handleFileInput(event, 'folder')}
-          />
         </section>
 
         <section className="flex min-h-0 flex-col overflow-hidden rounded-[20px] border border-white/10 bg-[#090d14] text-white shadow-[0_28px_100px_rgba(0,0,0,0.28)]">
@@ -1080,9 +1255,13 @@ export default function BuilderWindow() {
                   <span className="rounded-full border border-cyan-400/18 bg-cyan-400/8 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-cyan-200">
                     {currentModelLabel}
                   </span>
+                  <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-[#94a3b8]">
+                    {currentModelStatus}
+                  </span>
                 </div>
                 <h1 className="text-[24px] font-semibold leading-tight tracking-[-0.02em] text-white">{projectDisplayName}</h1>
                 <p className="mt-2 max-w-2xl text-[13px] leading-6 text-[#94a3b8]">{providerError || statusMessage}</p>
+                <div className="mt-2 text-[11px] text-[#70829b]">{currentModelName}</div>
               </div>
 
               <div className="flex flex-col items-end gap-2">
@@ -1100,15 +1279,29 @@ export default function BuilderWindow() {
                     Preview
                   </button>
                   <button
-                    onClick={() => persistFile(selectedFile, draftContent)}
-                    disabled={!selectedFile || isBusy}
+                    onClick={() => void handleTopAction(refreshProject, 'Refreshing preview...')}
+                    disabled={!projectState || isBusy}
+                    className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] text-white disabled:opacity-40"
+                  >
+                    <RefreshCw className="mr-1.5 inline h-3.5 w-3.5" />
+                    Refresh
+                  </button>
+                  <button
+                    onClick={() => void persistFile(selectedFile, draftContent)}
+                    disabled={!selectedFile || isBusy || !selectedFileDirty}
                     className="rounded-lg bg-emerald-500/90 px-2.5 py-1.5 text-[11px] text-white disabled:opacity-40"
                   >
                     <Save className="mr-1.5 inline h-3.5 w-3.5" />
-                    Save
+                    {selectedFileDirty ? 'Save' : 'Saved'}
                   </button>
                   <button
-                    onClick={() => exportBuilderProjectZip(projectState!.metadata.id).then((r) => setStatusMessage(r.success ? `ZIP exported: ${r.exportPath}` : r.error || 'ZIP export failed.'))}
+                    onClick={() =>
+                      void handleTopAction(async () => {
+                        if (!projectState) return
+                        const result = await exportBuilderProjectZip(projectState.metadata.id)
+                        setStatusMessage(result.success ? `ZIP exported: ${result.exportPath}` : result.error || 'ZIP export failed.')
+                      }, 'Exporting ZIP...')
+                    }
                     disabled={!projectState}
                     className="rounded-lg bg-violet-500/85 px-2.5 py-1.5 text-[11px] text-white disabled:opacity-40"
                   >
@@ -1116,7 +1309,13 @@ export default function BuilderWindow() {
                     Export
                   </button>
                   <button
-                    onClick={() => openBuilderProjectFolder(projectState!.metadata.id).then((r) => setStatusMessage(r.success ? 'Folder opened.' : r.error || 'Open folder failed.'))}
+                    onClick={() =>
+                      void handleTopAction(async () => {
+                        if (!projectState) return
+                        const result = await openBuilderProjectFolder(projectState.metadata.id)
+                        setStatusMessage(result.success ? 'Folder opened.' : result.error || 'Open folder failed.')
+                      })
+                    }
                     disabled={!projectState}
                     className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] text-white disabled:opacity-40"
                   >
@@ -1124,7 +1323,13 @@ export default function BuilderWindow() {
                     Folder
                   </button>
                   <button
-                    onClick={() => openBuilderProjectInVsCode(projectState!.metadata.id).then((r) => setStatusMessage(r.success ? 'VS Code opened.' : r.error || 'VS Code open failed.'))}
+                    onClick={() =>
+                      void handleTopAction(async () => {
+                        if (!projectState) return
+                        const result = await openBuilderProjectInVsCode(projectState.metadata.id)
+                        setStatusMessage(result.success ? 'VS Code opened.' : result.error || 'VS Code open failed.')
+                      })
+                    }
                     disabled={!projectState}
                     className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] text-white disabled:opacity-40"
                   >
@@ -1132,7 +1337,13 @@ export default function BuilderWindow() {
                     VS Code
                   </button>
                   <button
-                    onClick={() => void copyBuilderProjectPath(projectState!.metadata.id).then((r) => setStatusMessage(r.success ? 'Project path copied.' : r.error || 'Copy failed.'))}
+                    onClick={() =>
+                      void handleTopAction(async () => {
+                        if (!projectState) return
+                        const result = await copyBuilderProjectPath(projectState.metadata.id)
+                        setStatusMessage(result.success ? 'Project path copied.' : result.error || 'Copy failed.')
+                      })
+                    }
                     disabled={!projectState}
                     className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] text-white disabled:opacity-40"
                   >
@@ -1193,23 +1404,8 @@ export default function BuilderWindow() {
                 </div>
                 <div className="min-h-0 flex-1 overflow-y-auto p-3">
                   <div className="space-y-2">
-                    {activeFiles.length ? (
-                      activeFiles.map((file) => (
-                        <button
-                          key={file.path}
-                          onClick={() => setSelectedFile(file.path)}
-                          className={`w-full rounded-2xl px-3 py-3 text-left text-sm transition ${
-                            selectedFile === file.path
-                              ? 'border border-cyan-400/40 bg-[#10151f] text-white shadow-[0_0_0_1px_rgba(34,211,238,0.12)]'
-                              : 'border border-white/5 bg-[#12161f] text-[#c3c9d4] hover:bg-[#151b26]'
-                          }`}
-                        >
-                          <div className="truncate font-medium">{file.path.split('/').pop()}</div>
-                          <div className={`truncate text-xs ${selectedFile === file.path ? 'text-white/60' : 'text-[#778192]'}`}>
-                            {file.path}
-                          </div>
-                        </button>
-                      ))
+                    {fileTree.length ? (
+                      renderFileTreeNodes(fileTree)
                     ) : (
                       <div className="rounded-2xl border border-white/10 bg-[#12161f] p-4 text-sm text-[#93a0b5]">
                         Files will appear here after generation.
@@ -1270,12 +1466,19 @@ export default function BuilderWindow() {
 
             {mode !== 'preview' && (
               <section className="grid min-h-0 grid-rows-[minmax(0,1fr)_240px] gap-3">
-                <div className="min-h-0 overflow-hidden rounded-[20px] border border-white/10 bg-[#fbfbfd] shadow-[0_16px_40px_rgba(0,0,0,0.18)]">
-                  <div className="border-b border-[#eceef4] px-4 py-3">
+                <div className="min-h-0 overflow-hidden rounded-[20px] border border-white/10 bg-[#0c1018] shadow-[0_16px_40px_rgba(0,0,0,0.18)]">
+                  <div className="border-b border-white/10 px-4 py-3">
                     <div className="flex items-center justify-between gap-3">
                       <div>
                         <div className="text-[10px] font-semibold uppercase tracking-[0.28em] text-[#8b93a5]">Code Editor</div>
-                        <div className="mt-1 text-sm font-medium text-[#111418]">{selectedFile || 'No file selected'}</div>
+                        <div className="mt-1 flex items-center gap-2 text-sm font-medium text-white">
+                          <span>{selectedFile || 'No file selected'}</span>
+                          {selectedFileDirty && (
+                            <span className="rounded-full border border-amber-400/20 bg-amber-400/10 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.18em] text-amber-200">
+                              Unsaved
+                            </span>
+                          )}
+                        </div>
                       </div>
                       {showVisual && (
                         <button
@@ -1295,7 +1498,7 @@ export default function BuilderWindow() {
                           className={`rounded-full px-3 py-1.5 text-[11px] ${
                             selectedFile === file.path
                               ? 'bg-[#111318] text-white'
-                              : 'border border-[#e7eaf0] bg-[#f6f7fa] text-[#6b7280]'
+                              : 'border border-white/10 bg-white/5 text-[#94a3b8]'
                           }`}
                         >
                           {file.path.split('/').pop()}
@@ -1305,7 +1508,7 @@ export default function BuilderWindow() {
                   </div>
 
                   <div className="h-[calc(100%-96px)] overflow-hidden">
-                    {showCode ? (
+                    {showCode && selectedFile ? (
                       <Editor
                         height="100%"
                         language={languageForFile(selectedFile)}
@@ -1319,25 +1522,35 @@ export default function BuilderWindow() {
                           fontFamily: "'Fira Code', monospace"
                         }}
                       />
+                    ) : showCode ? (
+                      <div className="flex h-full items-center justify-center bg-[#0b0e14] text-[#94a3b8]">
+                        Select a file to edit.
+                      </div>
                     ) : showVisual ? (
-                      <div className="h-full overflow-y-auto bg-[#f6f7fa] p-4">
+                      <div className="h-full overflow-y-auto bg-[#0b0e14] p-4">
                         <div className="space-y-3">
-                          {editableTexts.map((item, index) => (
-                            <label key={item.id} className="block rounded-2xl border border-[#e5e7eb] bg-white p-3 shadow-sm">
-                              <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.24em] text-[#6b7280]">{item.tag}</div>
-                              <input
-                                value={item.text}
-                                onChange={(event) =>
-                                  setEditableTexts((prev) =>
-                                    prev.map((entry, currentIndex) =>
-                                      currentIndex === index ? { ...entry, text: event.target.value } : entry
+                          {editableTexts.length ? (
+                            editableTexts.map((item, index) => (
+                              <label key={item.id} className="block rounded-2xl border border-white/10 bg-white/5 p-3 shadow-sm">
+                                <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.24em] text-[#94a3b8]">{item.tag}</div>
+                                <input
+                                  value={item.text}
+                                  onChange={(event) =>
+                                    setEditableTexts((prev) =>
+                                      prev.map((entry, currentIndex) =>
+                                        currentIndex === index ? { ...entry, text: event.target.value } : entry
+                                      )
                                     )
-                                  )
-                                }
-                                className="w-full rounded-xl border border-[#e5e7eb] bg-[#fafafc] px-3 py-2 text-sm text-[#111418] outline-none"
-                              />
-                            </label>
-                          ))}
+                                  }
+                                  className="w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-sm text-white outline-none"
+                                />
+                              </label>
+                            ))
+                          ) : (
+                            <div className="flex h-full min-h-[300px] items-center justify-center text-[#94a3b8]">
+                              No editable text nodes found in the current preview.
+                            </div>
+                          )}
                         </div>
                       </div>
                     ) : (
