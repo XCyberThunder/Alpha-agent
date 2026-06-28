@@ -29,37 +29,18 @@ import {
   BuilderModelStatuses,
   BuilderProjectFile,
   BuilderProjectState,
-  BuilderTerminalResult,
-  copyBuilderProjectPath,
   createBuilderProject,
   exportBuilderProjectZip,
   getBuilderModelStatuses,
-  getLastBuilderProject,
   getBuilderWindowState,
-  openBuilderProjectFolder,
-  openBuilderProjectInVsCode,
   pickBuilderAttachments,
-  runBuilderProjectCommand,
   saveBuilderProjectFile,
-  saveBuilderProjectMemory,
-  stopBuilderProjectCommand,
   updateBuilderProject
 } from '@renderer/services/project-builder'
 
 type RightPanel = 'preview' | 'code'
 type PermissionMode = 'ask' | 'approve' | 'full'
 type KnownProvider = 'glm' | 'zai' | 'gemini' | 'openrouter' | 'kimi' | 'groq'
-type AgentState =
-  | 'idle'
-  | 'understanding'
-  | 'planning'
-  | 'loading_context'
-  | 'generating_files'
-  | 'applying_files'
-  | 'running_checks'
-  | 'previewing'
-  | 'completed'
-  | 'error'
 
 type WindowPayload = {
   state?: BuilderProjectState
@@ -166,24 +147,17 @@ const ACCESS_OPTIONS: Array<{
 
 const BUILDER_THEME_CSS = `
 .builderwindow-root {
-  --background: #050505;
-  --foreground: #ffffff;
-  --card: #0b0d12;
-  --panel: #0f1117;
-  --popover: #0f1117;
-  --primary: #8b5cf6;
-  --primary-cyan: #22d3ee;
-  --primary-pink: #f472b6;
-  --muted: #111318;
-  --muted-foreground: #a1a1aa;
-  --border: rgba(255,255,255,0.08);
-  --danger: #ef4444;
-  --success: #22c55e;
+  --background: #0c0c0f;
+  --foreground: #e2e2e8;
+  --card: #111116;
+  --popover: #18181e;
+  --primary: #7c6cf7;
+  --muted: #1e1e26;
+  --muted-foreground: #5a5a6e;
+  --border: rgba(255,255,255,0.07);
+  --danger: #e5484d;
   color: var(--foreground);
-  background:
-    radial-gradient(circle at top, rgba(34,211,238,0.10), transparent 24%),
-    radial-gradient(circle at 82% 10%, rgba(139,92,246,0.12), transparent 26%),
-    linear-gradient(180deg, #08080b 0%, #050505 100%);
+  background: var(--background);
   font-family: Geist, Inter, system-ui, sans-serif;
 }
 .builderwindow-root * {
@@ -204,17 +178,6 @@ const BUILDER_THEME_CSS = `
 .builderwindow-root input,
 .builderwindow-root button {
   font: inherit;
-}
-.builderwindow-root button {
-  letter-spacing: 0;
-}
-.builderwindow-root .glass-panel {
-  background: linear-gradient(145deg, rgba(15,17,23,0.96), rgba(11,13,18,0.92));
-  border: 1px solid rgba(255,255,255,0.08);
-  box-shadow:
-    0 22px 80px rgba(0,0,0,0.45),
-    inset 0 1px 0 rgba(255,255,255,0.04);
-  backdrop-filter: blur(18px);
 }
 `
 
@@ -406,64 +369,6 @@ const readDraft = () => {
   } catch {
     return null
   }
-}
-
-const AGENT_STATE_LABELS: Record<AgentState, string> = {
-  idle: 'Idle',
-  understanding: 'Understanding request',
-  planning: 'Choosing stack',
-  loading_context: 'Loading memory + skills',
-  generating_files: 'Generating files',
-  applying_files: 'Applying files',
-  running_checks: 'Running checks',
-  previewing: 'Updating preview',
-  completed: 'Done',
-  error: 'Error'
-}
-
-const detectLocalCommand = (prompt: string) => {
-  const lower = prompt.toLowerCase().trim()
-  if (!lower) return null
-
-  if (/^(previous project continue karo|last builder project open karo|previous builder project|continue previous project)$/.test(lower)) {
-    return { type: 'last-project' as const }
-  }
-  if (/^is project ka memory save karo/.test(lower)) {
-    return { type: 'save-memory' as const }
-  }
-  if (/^(open project folder|project folder kholo|open folder)$/.test(lower)) {
-    return { type: 'open-folder' as const }
-  }
-  if (/^(vs code open karo|open in vs code|project ko vs code me kholo)$/.test(lower)) {
-    return { type: 'open-vscode' as const }
-  }
-  if (/^(copy project path|project path copy karo)$/.test(lower)) {
-    return { type: 'copy-path' as const }
-  }
-  if (/^(running command stop karo|stop command|command stop karo)$/.test(lower)) {
-    return { type: 'stop-command' as const }
-  }
-
-  const commandMatch =
-    lower.match(/\b(npm run build|npm run dev|npm test|npm install|pnpm install|yarn install|python main\.py|pip install -r requirements\.txt|gradle build|dir|ls)\b/) ||
-    lower.match(/\b(command|terminal)\s*:\s*(.+)$/)
-  if (commandMatch) {
-    const command = commandMatch[2] ? commandMatch[2].trim() : commandMatch[1].trim()
-    return { type: 'run-command' as const, command }
-  }
-
-  return null
-}
-
-const needsApprovalForCommand = (command: string, permissionMode: PermissionMode) => {
-  const lower = command.toLowerCase()
-  if (permissionMode === 'full') {
-    return /\b(npm install|pnpm install|yarn install|pip install|gradle build)\b/.test(lower)
-  }
-  if (permissionMode === 'approve') {
-    return true
-  }
-  return true
 }
 
 function FileIcon({ ext }: { ext?: string }) {
@@ -998,7 +903,7 @@ function PreviewPanel({
   }
 
   return (
-    <div className="relative h-full flex-1 overflow-hidden bg-[#08080b]">
+    <div className="relative h-full flex-1 overflow-hidden bg-[#0c0c0f]">
       {loading && (
         <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#0c0c0f]/65 backdrop-blur-sm">
           <div className="flex items-center gap-2 rounded-2xl border border-border bg-card px-4 py-3 text-xs text-muted-foreground">
@@ -1011,7 +916,7 @@ function PreviewPanel({
         title="ALPHA Builder Preview"
         srcDoc={previewMarkup}
         sandbox="allow-scripts allow-same-origin allow-forms allow-modals"
-        className="h-full w-full border-0 bg-[#08080b]"
+        className="h-full w-full border-0 bg-white"
       />
     </div>
   )
@@ -1102,12 +1007,6 @@ export default function BuilderWindow() {
   const [customModels, setCustomModels] = useState<CustomModel[]>([])
   const [dirtyFiles, setDirtyFiles] = useState<Record<string, boolean>>({})
   const [toasts, setToasts] = useState<BuilderToast[]>([])
-  const [agentState, setAgentState] = useState<AgentState>('idle')
-  const [agentStatusText, setAgentStatusText] = useState('Describe what you want to build.')
-  const [terminalStatus, setTerminalStatus] = useState('No command running.')
-  const [terminalRunId, setTerminalRunId] = useState<string | null>(null)
-  const [approvedFileWrites, setApprovedFileWrites] = useState<Record<string, boolean>>({})
-  const terminalOutputRef = useRef<Record<string, string>>({})
 
   const dragStartX = useRef(0)
   const dragStartWidth = useRef(0)
@@ -1160,61 +1059,6 @@ export default function BuilderWindow() {
     window.addEventListener(BUILDER_TOAST_EVENT, handleToast as EventListener)
     return () => window.removeEventListener(BUILDER_TOAST_EVENT, handleToast as EventListener)
   }, [])
-
-  useEffect(() => {
-    const cleanup = window.electron.ipcRenderer.on('builder-terminal-event', (_event, payload) => {
-      if (!projectState?.metadata.id || payload?.projectId !== projectState.metadata.id) return
-      const runId = String(payload?.runId || terminalRunId || '')
-      if (payload?.type === 'start') {
-        terminalOutputRef.current[runId] = ''
-        setTerminalRunId(runId)
-        setTerminalStatus(`Running: ${payload.command}`)
-        setAgentState('running_checks')
-        setAgentStatusText(`Running command: ${payload.command}`)
-        return
-      }
-      if (payload?.type === 'stdout' || payload?.type === 'stderr') {
-        terminalOutputRef.current[runId] = `${terminalOutputRef.current[runId] || ''}${payload.chunk || ''}`
-        return
-      }
-      if (payload?.type === 'stopped') {
-        setTerminalRunId(null)
-        setTerminalStatus('Command stopped.')
-        setAgentState('completed')
-        setAgentStatusText('Command stopped.')
-        setMessages((current) => [
-          ...current,
-          {
-            id: `terminal-stop-${makeId()}`,
-            role: 'assistant',
-            content: 'Command stopped.',
-            timestamp: new Date()
-          }
-        ])
-        return
-      }
-      if (payload?.type === 'exit') {
-        const output = terminalOutputRef.current[runId] || ''
-        delete terminalOutputRef.current[runId]
-        setTerminalRunId(null)
-        setTerminalStatus(`Last exit code: ${payload.exitCode ?? 0}`)
-        setAgentState(payload.exitCode === 0 ? 'completed' : 'error')
-        setAgentStatusText(payload.exitCode === 0 ? 'Command completed.' : `Command failed with exit code ${payload.exitCode}.`)
-        setMessages((current) => [
-          ...current,
-          {
-            id: `terminal-exit-${makeId()}`,
-            role: 'assistant',
-            content: `Command finished with exit code ${payload.exitCode ?? 0}.\n\n${output.trim() || '(no output)'}`,
-            timestamp: new Date()
-          }
-        ])
-      }
-    })
-    return () => {
-      cleanup?.()
-    }
-  }, [projectState?.metadata.id, terminalRunId])
 
   const providerOptions = useMemo<ProviderOption[]>(() => {
     const base: ProviderOption[] = (Object.keys(PROVIDER_LABELS) as KnownProvider[]).map((provider) => {
@@ -1271,21 +1115,13 @@ export default function BuilderWindow() {
     void loadStatuses()
   }, [loadStatuses])
 
-  const setProgress = useCallback((state: AgentState, text?: string) => {
-    setAgentState(state)
-    if (text) setAgentStatusText(text)
-  }, [])
-
   const syncProjectState = useCallback(
     (state: BuilderProjectState, incomingPreviewHtml?: string, prompt?: string, providerError?: string) => {
       setProjectState(state)
       setFileContents(mapFilesToRecord(state.files))
       setDirtyFiles({})
-      setApprovedFileWrites({})
       setPreviewHtml(incomingPreviewHtml || inlinePreviewHtml(state.files))
       setPreviewLoading(false)
-      setInput('')
-      setAttachments([])
 
       setSelectedFilePath((current) => {
         const currentKey = arrayPathToString(current)
@@ -1295,12 +1131,6 @@ export default function BuilderWindow() {
 
       const provider = normalizeProvider(state.metadata.providerUsed) || normalizeProvider(state.metadata.modelUsed)
       if (provider) setSelectedModel(provider)
-      setAgentState(providerError ? 'error' : 'completed')
-      setAgentStatusText(
-        providerError
-          ? providerError
-          : `${state.files.length} files ready in ${providerDisplayName(state.metadata.providerUsed)}.`
-      )
 
       const nextMessages: Message[] = []
       if (prompt) {
@@ -1324,149 +1154,6 @@ export default function BuilderWindow() {
     []
   )
 
-  const requestApproval = useCallback(
-    (message: string) => {
-      if (typeof window === 'undefined') return false
-      return window.confirm(message)
-    },
-    []
-  )
-
-  const handleLocalBuilderIntent = useCallback(
-    async (prompt: string) => {
-      const intent = detectLocalCommand(prompt)
-      if (!intent) return false
-
-      if (intent.type === 'last-project') {
-        setProgress('loading_context', 'Loading previous Builder project...')
-        const response = await getLastBuilderProject()
-        if (response.success && response.state) {
-          const resumedState = response.state
-          syncProjectState(resumedState, response.previewHtml)
-          setMessages((current) => [
-            ...current,
-            {
-              id: `resume-${makeId()}`,
-              role: 'assistant',
-              content: `Loaded previous project **${resumedState.metadata.name}**.`,
-              timestamp: new Date()
-            }
-          ])
-        } else {
-          setProgress('error', response.error || 'No previous Builder project found.')
-          setMessages((current) => [
-            ...current,
-            {
-              id: `resume-error-${makeId()}`,
-              role: 'assistant',
-              content: response.error || 'No previous Builder project found.',
-              timestamp: new Date()
-            }
-          ])
-        }
-        return true
-      }
-
-      if (!projectState?.metadata.id) {
-        setProgress('error', 'Create or open a project first.')
-        setMessages((current) => [
-          ...current,
-          {
-            id: `no-project-${makeId()}`,
-            role: 'assistant',
-            content: 'Pehle project create/open kar lo, phir ye action chalega.',
-            timestamp: new Date()
-          }
-        ])
-        return true
-      }
-
-      if (intent.type === 'save-memory') {
-        setProgress('loading_context', 'Saving project memory...')
-        const response = await saveBuilderProjectMemory(projectState.metadata.id)
-        if (response.success) {
-          setProgress('completed', 'Project memory saved.')
-          setMessages((current) => [
-            ...current,
-            {
-              id: `memory-${makeId()}`,
-              role: 'assistant',
-              content: 'Is project ka memory save kar diya.',
-              timestamp: new Date()
-            }
-          ])
-        } else {
-          setProgress('error', response.error || 'Project memory save failed.')
-        }
-        return true
-      }
-
-      if (intent.type === 'open-folder') {
-        const response = await openBuilderProjectFolder(projectState.metadata.id)
-        setProgress(response.success ? 'completed' : 'error', response.success ? 'Project folder opened.' : response.error || 'Open folder failed.')
-        return true
-      }
-
-      if (intent.type === 'open-vscode') {
-        const response = await openBuilderProjectInVsCode(projectState.metadata.id)
-        setProgress(response.success ? 'completed' : 'error', response.success ? 'Opened in VS Code.' : response.error || 'VS Code open failed.')
-        return true
-      }
-
-      if (intent.type === 'copy-path') {
-        const response = await copyBuilderProjectPath(projectState.metadata.id)
-        if (response.success && response.projectPath) {
-          await navigator.clipboard.writeText(response.projectPath)
-          setProgress('completed', 'Project path copied.')
-        } else {
-          setProgress('error', response.error || 'Copy path failed.')
-        }
-        return true
-      }
-
-      if (intent.type === 'stop-command') {
-        const response = await stopBuilderProjectCommand(projectState.metadata.id)
-        setProgress(response.success ? 'completed' : 'error', response.success ? 'Command stopped.' : response.error || 'No running command.')
-        return true
-      }
-
-      if (intent.type === 'run-command') {
-        const shouldAsk = needsApprovalForCommand(intent.command, permissionMode)
-        if (shouldAsk) {
-          const approved = requestApproval(`Run this project-scoped command?\n\n${intent.command}`)
-          if (!approved) {
-            setProgress('idle', 'Command cancelled.')
-            return true
-          }
-        }
-        setProgress('running_checks', `Starting command: ${intent.command}`)
-        const response: BuilderTerminalResult = await runBuilderProjectCommand(projectState.metadata.id, intent.command)
-        if (!response.success) {
-          setProgress('error', response.error || 'Command failed to start.')
-          setMessages((current) => [
-            ...current,
-            {
-              id: `command-error-${makeId()}`,
-              role: 'assistant',
-              content: response.error || 'Command failed to start.',
-              timestamp: new Date()
-            }
-          ])
-        }
-        return true
-      }
-
-      return false
-    },
-    [
-      permissionMode,
-      projectState,
-      requestApproval,
-      setProgress,
-      syncProjectState
-    ]
-  )
-
   const submitPrompt = useCallback(
     async ({
       prompt,
@@ -1481,12 +1168,6 @@ export default function BuilderWindow() {
     }) => {
       const trimmed = prompt.trim()
       if (!trimmed || sending) return
-      setInput('')
-
-      if (await handleLocalBuilderIntent(trimmed)) {
-        setAttachments([])
-        return
-      }
 
       const providerChoice =
         normalizeProvider(providerId) ||
@@ -1508,28 +1189,14 @@ export default function BuilderWindow() {
 
       setSending(true)
       setPreviewLoading(true)
-      setProgress('understanding', 'Understanding request...')
-
-      await new Promise((resolve) => window.setTimeout(resolve, 120))
-      setProgress('planning', `Choosing stack for ${providerDisplayName(providerChoice)}...`)
-
-      await new Promise((resolve) => window.setTimeout(resolve, 120))
-      setProgress('loading_context', 'Loading memory + skills...')
 
       try {
         const response = projectId
-          ? await updateBuilderProject(projectId, messageText, providerChoice, permissionMode)
-          : await createBuilderProject(messageText, providerChoice, permissionMode)
-
-        setProgress('generating_files', 'Generating project files...')
+          ? await updateBuilderProject(projectId, messageText, providerChoice)
+          : await createBuilderProject(messageText, providerChoice)
 
         if (response.success && response.state) {
-          const nextState = response.state
-          setProgress('applying_files', 'Applying files to project...')
-          syncProjectState(nextState, response.previewHtml, preserveUserMessage ? trimmed : undefined)
-          setProgress('running_checks', `Validated ${nextState.files.length} project files.`)
-          await new Promise((resolve) => window.setTimeout(resolve, 80))
-          setProgress('previewing', 'Refreshing preview...')
+          syncProjectState(response.state, response.previewHtml, preserveUserMessage ? trimmed : undefined)
           if (!preserveUserMessage) {
             setMessages((current) => [
               ...current,
@@ -1537,24 +1204,17 @@ export default function BuilderWindow() {
                 id: `assistant-${makeId()}`,
                 role: 'assistant',
                 content: `Applied changes with **${providerDisplayName(
-                  nextState.metadata.providerUsed || providerChoice
-                )}**.\n\nProject type: ${nextState.metadata.type}\nFiles: ${nextState.files.length}`,
+                  response.state?.metadata.providerUsed || providerChoice
+                )}**.`,
                 timestamp: new Date()
               }
             ])
           }
-          setProgress('completed', `Done - ${nextState.files.length} files ready.`)
+          setInput('')
           setAttachments([])
           return
         }
 
-        setProgress(
-          'error',
-          response.providerError ||
-            response.message ||
-            response.error ||
-            'Builder request failed. Try another configured provider.'
-        )
         setMessages((current) => [
           ...current,
           {
@@ -1569,7 +1229,6 @@ export default function BuilderWindow() {
           }
         ])
       } catch (error) {
-        setProgress('error', error instanceof Error ? error.message : 'Builder request failed.')
         setMessages((current) => [
           ...current,
           {
@@ -1584,7 +1243,7 @@ export default function BuilderWindow() {
         setPreviewLoading(false)
       }
     },
-    [attachments, handleLocalBuilderIntent, permissionMode, providerOptions, selectedModel, sending, setProgress, syncProjectState]
+    [attachments, providerOptions, selectedModel, sending, syncProjectState]
   )
 
   const applyWindowPayload = useCallback(
@@ -1594,6 +1253,10 @@ export default function BuilderWindow() {
       if (payload.state) {
         syncProjectState(payload.state, payload.previewHtml, payload.prompt, payload.providerError)
         return
+      }
+
+      if (payload.prompt) {
+        setInput(payload.prompt)
       }
 
       if (payload.autoStart && payload.prompt) {
@@ -1645,16 +1308,6 @@ export default function BuilderWindow() {
 
     const timer = window.setTimeout(async () => {
       try {
-        const needsFileApproval = permissionMode === 'ask' && !approvedFileWrites[selectedFileKey]
-        if (needsFileApproval) {
-          const approved = requestApproval(`Save changes to ${selectedFileKey} inside this project?`)
-          if (!approved) {
-            setDirtyFiles((current) => ({ ...current, [selectedFileKey]: false }))
-            setAgentStatusText(`Save cancelled for ${selectedFileKey}.`)
-            return
-          }
-          setApprovedFileWrites((current) => ({ ...current, [selectedFileKey]: true }))
-        }
         const response = await saveBuilderProjectFile(
           projectState.metadata.id,
           selectedFileKey,
@@ -1664,7 +1317,6 @@ export default function BuilderWindow() {
           setProjectState(response.state)
           setPreviewHtml(response.previewHtml || inlinePreviewHtml(response.state.files))
           setDirtyFiles((current) => ({ ...current, [selectedFileKey]: false }))
-          setAgentStatusText(`Saved ${selectedFileKey}.`)
         } else {
           emitBuilderToast('error', response.error || response.message || 'File save failed.')
         }
@@ -1674,7 +1326,7 @@ export default function BuilderWindow() {
     }, 800)
 
     return () => window.clearTimeout(timer)
-  }, [approvedFileWrites, dirtyFiles, fileContents, permissionMode, projectState, requestApproval, selectedFileKey])
+  }, [dirtyFiles, fileContents, projectState, selectedFileKey])
 
   useEffect(() => {
     const handleKeydown = (event: KeyboardEvent) => {
@@ -1793,8 +1445,6 @@ export default function BuilderWindow() {
     if (!selectedFileKey) return
     setFileContents((current) => ({ ...current, [selectedFileKey]: value }))
     setDirtyFiles((current) => ({ ...current, [selectedFileKey]: true }))
-    setAgentState('applying_files')
-    setAgentStatusText(`Editing ${selectedFileKey}...`)
   }
 
   const currentModelLabel = providerOptions.find((option) => option.id === selectedModel)?.label || 'GLM 5.2'
@@ -1822,42 +1472,21 @@ export default function BuilderWindow() {
           isDragging ? 'cursor-col-resize select-none' : ''
         }`}
       >
-        <div className="glass-panel flex shrink-0 flex-col bg-card" style={{ width: panelWidth }}>
+        <div className="flex shrink-0 flex-col bg-card" style={{ width: panelWidth }}>
           <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3">
             <div className="flex items-center gap-2">
-              <div className="h-2 w-2 rounded-full bg-cyan-400 animate-pulse" />
+              <div className="h-2 w-2 rounded-full bg-primary animate-pulse" />
               <span className="text-sm font-semibold tracking-tight text-foreground">Agent</span>
             </div>
-            <div className="flex items-center gap-2">
-              <span className="max-w-[132px] truncate rounded-full border border-white/8 bg-[#111318] px-2 py-0.5 font-mono text-[10px] text-muted-foreground">
-                {currentModelLabel}
-              </span>
-              <span className={`rounded-full border px-2 py-0.5 text-[10px] ${
-                agentState === 'error'
-                  ? 'border-red-500/25 bg-red-500/10 text-red-300'
-                  : agentState === 'completed'
-                    ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300'
-                    : 'border-cyan-500/25 bg-cyan-500/10 text-cyan-200'
-              }`}>
-                {AGENT_STATE_LABELS[agentState]}
-              </span>
-            </div>
+            <span className="rounded-full bg-muted px-2 py-0.5 font-mono text-[10px] text-muted-foreground">
+              {currentModelLabel.split(' ').slice(-2).join(' ')}
+            </span>
           </div>
 
           <div
             className="flex-1 space-y-5 overflow-y-auto px-4 py-4"
             style={{ scrollbarWidth: 'thin', scrollbarColor: 'rgba(255,255,255,0.06) transparent' }}
           >
-            <div className="rounded-2xl border border-white/8 bg-[#0f1117] px-3 py-2 text-xs text-muted-foreground">
-              <div className="font-medium text-foreground">{agentStatusText}</div>
-              <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] text-zinc-500">
-                <span>Provider: {providerDisplayName(projectState?.metadata.providerUsed || selectedModel)}</span>
-                <span>Access: {ACCESS_OPTIONS.find((option) => option.id === permissionMode)?.label || 'Ask for approval'}</span>
-                <span>Files: {projectState?.files.length || 0}</span>
-                <span>Preview: {previewLoading ? 'Refreshing' : activePreviewHtml ? 'Ready' : 'Waiting'}</span>
-                <span className="col-span-2">Terminal: {terminalStatus}</span>
-              </div>
-            </div>
             {messages.length === 0 && !sending ? (
               <div className="flex h-full min-h-[220px] items-center justify-center text-center">
                 <div>
@@ -1876,9 +1505,9 @@ export default function BuilderWindow() {
                 <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-violet-500/10 text-violet-400">
                   <Bot size={13} />
                 </div>
-                <div className="flex items-center gap-2 rounded-2xl rounded-tl-sm border border-border bg-[#0f1117] px-3.5 py-3">
+                <div className="flex items-center gap-2 rounded-2xl rounded-tl-sm border border-border bg-card px-3.5 py-3">
                   <Loader2 size={13} className="animate-spin text-primary" />
-                  <span className="text-xs text-muted-foreground">{agentStatusText}</span>
+                  <span className="text-xs text-muted-foreground">Thinking...</span>
                 </div>
               </div>
             )}
@@ -1886,7 +1515,7 @@ export default function BuilderWindow() {
           </div>
 
           <div className="shrink-0 border-t border-border px-2.5 py-2">
-            <div className="rounded-lg border border-border bg-[#0f1117] transition-all focus-within:border-primary/40 focus-within:ring-1 focus-within:ring-primary/20">
+            <div className="rounded-lg border border-border bg-muted/40 transition-all focus-within:border-primary/40 focus-within:ring-1 focus-within:ring-primary/20">
               <textarea
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
@@ -1924,7 +1553,7 @@ export default function BuilderWindow() {
                   <button
                     onClick={handleSend}
                     disabled={!input.trim() || sending}
-                    className="flex h-7 w-7 items-center justify-center rounded-md bg-gradient-to-r from-cyan-500 to-violet-500 text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-30"
+                    className="flex h-7 w-7 items-center justify-center rounded-md bg-primary text-white transition-all hover:bg-primary/85 disabled:cursor-not-allowed disabled:opacity-30"
                     aria-label="Send builder prompt"
                   >
                     {sending ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
@@ -1949,17 +1578,16 @@ export default function BuilderWindow() {
           <div className="absolute inset-y-0 -left-1.5 -right-1.5" />
         </div>
 
-        <div className="glass-panel flex min-w-0 flex-1 flex-col bg-background">
-          <div className="flex shrink-0 items-center justify-between border-b border-border bg-[#0f1117] px-4 py-2.5">
-            <div className="flex items-center gap-3">
-              <div className="flex items-center gap-0.5 rounded-lg border border-border bg-[#111318] p-0.5">
+        <div className="flex min-w-0 flex-1 flex-col bg-background">
+          <div className="flex shrink-0 items-center justify-between border-b border-border bg-card px-4 py-2.5">
+            <div className="flex items-center gap-0.5 rounded-lg border border-border bg-muted/60 p-0.5">
               {(['preview', 'code'] as RightPanel[]).map((mode) => (
                 <button
                   key={mode}
                   onClick={() => setPanel(mode)}
                   className={`flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-all ${
                     panel === mode
-                      ? 'bg-[#090b10] text-foreground shadow-sm'
+                      ? 'bg-background text-foreground shadow-sm'
                       : 'text-muted-foreground hover:text-foreground'
                   }`}
                 >
@@ -1968,21 +1596,12 @@ export default function BuilderWindow() {
                 </button>
               ))}
             </div>
-              <div className="min-w-0">
-                <div className="truncate text-sm font-semibold text-white">
-                  {projectState?.metadata.name || 'Blank workspace'}
-                </div>
-                <div className="truncate text-[11px] text-zinc-500">
-                  {providerDisplayName(projectState?.metadata.providerUsed || selectedModel)} · {projectState?.files.length || 0} files
-                </div>
-              </div>
-            </div>
 
             <div className="flex items-center gap-2">
               <button
                 onClick={handleOpenInWindow}
                 title="Open in window"
-                className="flex items-center justify-center rounded-lg border border-border bg-[#111318] px-[8px] py-[6px] text-muted-foreground transition-colors hover:bg-[#1a1d24] hover:text-foreground"
+                className="flex items-center justify-center rounded-lg border border-border bg-[#21262d] px-[8px] py-[6px] text-muted-foreground transition-colors hover:bg-[#30363d] hover:text-foreground"
               >
                 <ExternalLink size={16} />
               </button>
@@ -1990,7 +1609,7 @@ export default function BuilderWindow() {
               {panel === 'code' && (
                 <button
                   onClick={handleCopy}
-                  className="flex items-center gap-1.5 rounded-lg border border-border bg-[#111318] px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-[#1a1d24] hover:text-foreground"
+                  className="flex items-center gap-1.5 rounded-lg border border-border bg-[#21262d] px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-[#30363d] hover:text-foreground"
                 >
                   {copied ? <Check size={12} className="text-green-400" /> : <Copy size={12} />}
                   <span>{copied ? 'Copied' : 'Copy'}</span>
@@ -1999,7 +1618,7 @@ export default function BuilderWindow() {
 
               <button
                 onClick={handleZipDownload}
-                className="flex items-center gap-1.5 rounded-lg border border-fuchsia-500/25 bg-gradient-to-r from-[#111318] to-[#17111f] px-3 py-1.5 text-xs font-medium text-white transition-colors hover:border-fuchsia-400/35"
+                className="flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-medium text-black transition-colors hover:bg-white/90"
               >
                 <Download size={12} />
                 <span>Download</span>
