@@ -15,6 +15,7 @@ import {
   FolderOpen,
   Key,
   Loader2,
+  MoreHorizontal,
   Plus,
   Send,
   ShieldAlert,
@@ -33,8 +34,12 @@ import {
   exportBuilderProjectZip,
   getBuilderModelStatuses,
   getBuilderWindowState,
+  openBuilderProjectFolder,
+  openBuilderProjectInVsCode,
   pickBuilderAttachments,
+  readBuilderProject,
   saveBuilderProjectFile,
+  copyBuilderProjectPath,
   updateBuilderProject
 } from '@renderer/services/project-builder'
 
@@ -88,10 +93,30 @@ type BuilderToast = {
   message: string
 }
 
+type PersistedMessage = Omit<Message, 'timestamp'> & { timestamp: string }
+
+type ChatSession = {
+  id: string
+  projectId: string | null
+  title: string
+  providerId: string
+  createdAt: string
+  updatedAt: string
+  messages: PersistedMessage[]
+}
+
+type ChatStore = {
+  sessions: ChatSession[]
+  recentSessionIds: string[]
+}
+
+type SidebarMenuSection = 'project' | 'more' | null
+
 const MIN_WIDTH = 220
 const MAX_WIDTH = 560
 const DRAFT_STORAGE_KEY = 'alpha_builder_window_draft'
 const BUILDER_TOAST_EVENT = 'alpha-builder-toast'
+const CHAT_SESSIONS_STORAGE_KEY = 'alpha_builder_chat_sessions_v1'
 
 const PROVIDER_LABELS: Record<KnownProvider, string> = {
   glm: 'GLM 5.2',
@@ -147,17 +172,24 @@ const ACCESS_OPTIONS: Array<{
 
 const BUILDER_THEME_CSS = `
 .builderwindow-root {
-  --background: #0c0c0f;
-  --foreground: #e2e2e8;
-  --card: #111116;
-  --popover: #18181e;
-  --primary: #7c6cf7;
-  --muted: #1e1e26;
-  --muted-foreground: #5a5a6e;
-  --border: rgba(255,255,255,0.07);
-  --danger: #e5484d;
+  --background: #050505;
+  --background-soft: #07090d;
+  --foreground: #ffffff;
+  --card: rgba(12,14,18,0.88);
+  --popover: rgba(15,18,24,0.96);
+  --primary: #8b5cf6;
+  --primary-cyan: #22d3ee;
+  --primary-pink: #f472b6;
+  --muted: rgba(17,20,28,0.88);
+  --muted-foreground: #a1a1aa;
+  --border: rgba(255,255,255,0.08);
+  --danger: #ef4444;
   color: var(--foreground);
-  background: var(--background);
+  background:
+    radial-gradient(circle at 14% 8%, rgba(34,211,238,0.11), transparent 22%),
+    radial-gradient(circle at 82% 12%, rgba(139,92,246,0.14), transparent 24%),
+    radial-gradient(circle at 60% 100%, rgba(244,114,182,0.08), transparent 20%),
+    linear-gradient(180deg, #07090d 0%, #050505 100%);
   font-family: Geist, Inter, system-ui, sans-serif;
 }
 .builderwindow-root * {
@@ -178,6 +210,29 @@ const BUILDER_THEME_CSS = `
 .builderwindow-root input,
 .builderwindow-root button {
   font: inherit;
+}
+.builderwindow-root textarea::placeholder,
+.builderwindow-root input::placeholder {
+  color: rgba(161,161,170,0.58);
+}
+.builderwindow-root .glass-panel {
+  background:
+    linear-gradient(180deg, rgba(18, 22, 30, 0.88), rgba(10, 12, 17, 0.92)),
+    radial-gradient(circle at top, rgba(34,211,238,0.07), transparent 38%);
+  border: 1px solid rgba(255,255,255,0.08);
+  box-shadow:
+    0 30px 80px rgba(0,0,0,0.38),
+    inset 0 1px 0 rgba(255,255,255,0.04),
+    inset 0 -1px 0 rgba(34,211,238,0.03);
+  backdrop-filter: blur(22px);
+}
+.builderwindow-root .premium-button {
+  background: linear-gradient(135deg, rgba(34,211,238,0.18), rgba(139,92,246,0.18));
+  border: 1px solid rgba(255,255,255,0.08);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.05);
+}
+.builderwindow-root .premium-button:hover {
+  background: linear-gradient(135deg, rgba(34,211,238,0.24), rgba(139,92,246,0.24));
 }
 `
 
@@ -369,6 +424,42 @@ const readDraft = () => {
   } catch {
     return null
   }
+}
+
+const serializeMessages = (messages: Message[]): PersistedMessage[] =>
+  messages.map((message) => ({
+    ...message,
+    timestamp: message.timestamp.toISOString()
+  }))
+
+const hydrateMessages = (messages: PersistedMessage[]): Message[] =>
+  messages.map((message) => ({
+    ...message,
+    timestamp: new Date(message.timestamp)
+  }))
+
+const readChatStore = (): ChatStore => {
+  try {
+    const raw = localStorage.getItem(CHAT_SESSIONS_STORAGE_KEY)
+    if (!raw) return { sessions: [], recentSessionIds: [] }
+    const parsed = JSON.parse(raw) as Partial<ChatStore>
+    return {
+      sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
+      recentSessionIds: Array.isArray(parsed.recentSessionIds) ? parsed.recentSessionIds : []
+    }
+  } catch {
+    return { sessions: [], recentSessionIds: [] }
+  }
+}
+
+const writeChatStore = (store: ChatStore) => {
+  localStorage.setItem(CHAT_SESSIONS_STORAGE_KEY, JSON.stringify(store))
+}
+
+const deriveSessionTitle = (messages: Message[], fallback = 'New chat') => {
+  const firstUserMessage = messages.find((message) => message.role === 'user')?.content.trim()
+  if (!firstUserMessage) return fallback
+  return firstUserMessage.length > 56 ? `${firstUserMessage.slice(0, 56)}...` : firstUserMessage
 }
 
 function FileIcon({ ext }: { ext?: string }) {
@@ -800,7 +891,7 @@ function ChatMessage({ message }: { message: Message }) {
     <div className={`flex gap-3 ${isUser ? 'flex-row-reverse' : ''}`}>
       <div
         className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${
-          isUser ? 'bg-primary/20 text-primary' : 'bg-violet-500/10 text-violet-400'
+          isUser ? 'bg-cyan-500/14 text-cyan-300 shadow-[0_0_24px_rgba(34,211,238,0.18)]' : 'bg-violet-500/12 text-violet-300 shadow-[0_0_24px_rgba(139,92,246,0.16)]'
         }`}
       >
         {isUser ? <User size={13} /> : <Bot size={13} />}
@@ -809,8 +900,8 @@ function ChatMessage({ message }: { message: Message }) {
         <div
           className={`whitespace-pre-wrap rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed ${
             isUser
-              ? 'rounded-tr-sm bg-primary text-white'
-              : 'rounded-tl-sm border border-border bg-card text-foreground'
+              ? 'rounded-tr-sm border border-cyan-400/18 bg-gradient-to-br from-cyan-500/18 to-violet-500/18 text-white'
+              : 'rounded-tl-sm border border-border bg-[rgba(15,18,24,0.88)] text-foreground shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]'
           }`}
           dangerouslySetInnerHTML={{
             __html: escapeHtml(message.content).replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
@@ -885,7 +976,7 @@ function PreviewPanel({
 }) {
   if (!previewMarkup && !loading) {
     return (
-      <div className="relative flex h-full flex-1 items-center justify-center overflow-hidden bg-[#0c0c0f]">
+      <div className="relative flex h-full flex-1 items-center justify-center overflow-hidden bg-[#08090e]">
         <div
           className="absolute inset-0 opacity-[0.04]"
           style={{
@@ -903,11 +994,11 @@ function PreviewPanel({
   }
 
   return (
-    <div className="relative h-full flex-1 overflow-hidden bg-[#0c0c0f]">
+    <div className="relative h-full flex-1 overflow-hidden bg-[#08090e]">
       {loading && (
-        <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#0c0c0f]/65 backdrop-blur-sm">
-          <div className="flex items-center gap-2 rounded-2xl border border-border bg-card px-4 py-3 text-xs text-muted-foreground">
-            <Loader2 size={13} className="animate-spin text-primary" />
+        <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#050505]/66 backdrop-blur-md">
+          <div className="glass-panel flex items-center gap-2 rounded-2xl px-4 py-3 text-xs text-muted-foreground">
+            <Loader2 size={13} className="animate-spin text-cyan-300" />
             <span>Updating preview...</span>
           </div>
         </div>
@@ -916,7 +1007,7 @@ function PreviewPanel({
         title="ALPHA Builder Preview"
         srcDoc={previewMarkup}
         sandbox="allow-scripts allow-same-origin allow-forms allow-modals"
-        className="h-full w-full border-0 bg-white"
+        className="h-full w-full border-0 bg-[#08090e]"
       />
     </div>
   )
@@ -943,7 +1034,7 @@ function CodePanel({
   return (
     <div className="flex h-full">
       <div
-        className="w-48 shrink-0 overflow-y-auto border-r border-border bg-card py-2"
+        className="w-48 shrink-0 overflow-y-auto border-r border-border bg-[rgba(12,14,18,0.72)] py-2"
         style={{ scrollbarWidth: 'thin', scrollbarColor: 'rgba(255,255,255,0.06) transparent' }}
       >
         <div className="px-3 pb-1.5">
@@ -964,8 +1055,8 @@ function CodePanel({
         ))}
       </div>
       <div className="flex min-w-0 flex-1 flex-col">
-        <div className="flex shrink-0 items-center overflow-x-auto border-b border-border bg-card">
-          <div className="flex items-center gap-2 border-r border-primary/30 bg-background/60 px-4 py-2">
+        <div className="flex shrink-0 items-center overflow-x-auto border-b border-border bg-[rgba(12,14,18,0.82)]">
+          <div className="flex items-center gap-2 border-r border-primary/30 bg-black/30 px-4 py-2">
             <FileIcon ext={ext} />
             <span className={`font-mono text-xs font-medium ${extColorMap[ext || ''] || 'text-foreground'}`}>
               {fileName || 'Select a file'}
@@ -1007,11 +1098,18 @@ export default function BuilderWindow() {
   const [customModels, setCustomModels] = useState<CustomModel[]>([])
   const [dirtyFiles, setDirtyFiles] = useState<Record<string, boolean>>({})
   const [toasts, setToasts] = useState<BuilderToast[]>([])
+  const [activeSessionId, setActiveSessionId] = useState('')
+  const [recentSessions, setRecentSessions] = useState<ChatSession[]>([])
+  const [sidebarMenuOpen, setSidebarMenuOpen] = useState(false)
+  const [sidebarMenuSection, setSidebarMenuSection] = useState<SidebarMenuSection>(null)
+  const [statusText, setStatusText] = useState('Describe what you want to build.')
 
   const dragStartX = useRef(0)
   const dragStartWidth = useRef(0)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const lastAutoRunKeyRef = useRef<string>('')
+  const sidebarMenuRef = useRef<HTMLDivElement>(null)
+  const sidebarMenuButtonRef = useRef<HTMLButtonElement>(null)
 
   const draft = useMemo(() => readDraft(), [])
 
@@ -1058,6 +1156,30 @@ export default function BuilderWindow() {
     }
     window.addEventListener(BUILDER_TOAST_EVENT, handleToast as EventListener)
     return () => window.removeEventListener(BUILDER_TOAST_EVENT, handleToast as EventListener)
+  }, [])
+
+  useEffect(() => {
+    const handlePointerDown = (event: MouseEvent) => {
+      if (
+        sidebarMenuRef.current &&
+        !sidebarMenuRef.current.contains(event.target as Node) &&
+        sidebarMenuButtonRef.current &&
+        !sidebarMenuButtonRef.current.contains(event.target as Node)
+      ) {
+        setSidebarMenuOpen(false)
+        setSidebarMenuSection(null)
+      }
+    }
+    document.addEventListener('mousedown', handlePointerDown)
+    return () => document.removeEventListener('mousedown', handlePointerDown)
+  }, [])
+
+  useEffect(() => {
+    const store = readChatStore()
+    const sessions = [...store.sessions].sort(
+      (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+    )
+    setRecentSessions(sessions.slice(0, 8))
   }, [])
 
   const providerOptions = useMemo<ProviderOption[]>(() => {
@@ -1115,13 +1237,97 @@ export default function BuilderWindow() {
     void loadStatuses()
   }, [loadStatuses])
 
+  const refreshRecentSessions = useCallback((preferredProjectId?: string | null) => {
+    const store = readChatStore()
+    const ordered = [...store.sessions].sort(
+      (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+    )
+    const filtered = preferredProjectId
+      ? [
+          ...ordered.filter((session) => session.projectId === preferredProjectId),
+          ...ordered.filter((session) => session.projectId !== preferredProjectId)
+        ]
+      : ordered
+    setRecentSessions(filtered.slice(0, 8))
+  }, [])
+
+  const persistSession = useCallback(
+    (nextMessages: Message[], projectId?: string | null, sessionIdOverride?: string) => {
+      if (!nextMessages.length) return
+      const store = readChatStore()
+      const sessionId = sessionIdOverride || activeSessionId || `session-${makeId()}`
+      const existing = store.sessions.find((session) => session.id === sessionId)
+      const now = new Date().toISOString()
+      const nextSession: ChatSession = {
+        id: sessionId,
+        projectId: projectId ?? projectState?.metadata.id ?? existing?.projectId ?? null,
+        title: deriveSessionTitle(nextMessages, existing?.title || projectState?.metadata.name || 'New chat'),
+        providerId: selectedModel,
+        createdAt: existing?.createdAt || now,
+        updatedAt: now,
+        messages: serializeMessages(nextMessages)
+      }
+      const nextSessions = [
+        nextSession,
+        ...store.sessions.filter((session) => session.id !== sessionId)
+      ]
+      writeChatStore({
+        sessions: nextSessions,
+        recentSessionIds: [sessionId, ...store.recentSessionIds.filter((id) => id !== sessionId)].slice(0, 24)
+      })
+      if (sessionId !== activeSessionId) {
+        setActiveSessionId(sessionId)
+      }
+      refreshRecentSessions(nextSession.projectId)
+    },
+    [activeSessionId, projectState?.metadata.id, projectState?.metadata.name, refreshRecentSessions, selectedModel]
+  )
+
+  const loadSessionById = useCallback(
+    async (sessionId: string) => {
+      const store = readChatStore()
+      const session = store.sessions.find((item) => item.id === sessionId)
+      if (!session) return
+
+      if (session.projectId && session.projectId !== projectState?.metadata.id) {
+        const response = await readBuilderProject(session.projectId)
+        if (response.success && response.state) {
+          setProjectState(response.state)
+          setFileContents(mapFilesToRecord(response.state.files))
+          setDirtyFiles({})
+          setPreviewHtml(response.previewHtml || inlinePreviewHtml(response.state.files))
+          setSelectedFilePath(response.state.files[0] ? stringPathToArray(response.state.files[0].path) : [])
+          const provider = normalizeProvider(response.state.metadata.providerUsed) || normalizeProvider(response.state.metadata.modelUsed)
+          if (provider) setSelectedModel(provider)
+        }
+      }
+
+      setActiveSessionId(session.id)
+      setMessages(hydrateMessages(session.messages))
+      setStatusText(`Loaded chat: ${session.title}`)
+      refreshRecentSessions(session.projectId)
+    },
+    [projectState?.metadata.id, refreshRecentSessions]
+  )
+
   const syncProjectState = useCallback(
-    (state: BuilderProjectState, incomingPreviewHtml?: string, prompt?: string, providerError?: string) => {
+    (
+      state: BuilderProjectState,
+      incomingPreviewHtml?: string,
+      prompt?: string,
+      providerError?: string,
+      preserveCurrentChat = false
+    ) => {
       setProjectState(state)
       setFileContents(mapFilesToRecord(state.files))
       setDirtyFiles({})
       setPreviewHtml(incomingPreviewHtml || inlinePreviewHtml(state.files))
       setPreviewLoading(false)
+      setStatusText(
+        providerError
+          ? providerError
+          : `Project ready in ${providerDisplayName(state.metadata.providerUsed)}.`
+      )
 
       setSelectedFilePath((current) => {
         const currentKey = arrayPathToString(current)
@@ -1132,27 +1338,63 @@ export default function BuilderWindow() {
       const provider = normalizeProvider(state.metadata.providerUsed) || normalizeProvider(state.metadata.modelUsed)
       if (provider) setSelectedModel(provider)
 
-      const nextMessages: Message[] = []
-      if (prompt) {
-        nextMessages.push({
-          id: `prompt-${makeId()}`,
-          role: 'user',
-          content: prompt,
-          timestamp: new Date()
-        })
+      if (preserveCurrentChat) return
+
+      const store = readChatStore()
+      const latestProjectSession = store.sessions
+        .filter((session) => session.projectId === state.metadata.id)
+        .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())[0]
+
+      if (latestProjectSession) {
+        setActiveSessionId(latestProjectSession.id)
+        setMessages(hydrateMessages(latestProjectSession.messages))
+        return
       }
-      nextMessages.push({
-        id: `ack-${makeId()}`,
-        role: 'assistant',
-        content: providerError
-          ? `Builder shell ready.\n\n${providerError}`
-          : `Project ready in **${providerDisplayName(state.metadata.providerUsed)}**. Preview and code are synced.`,
-        timestamp: new Date()
-      })
-      setMessages(nextMessages)
+
+      if (prompt || providerError) {
+        const nextMessages: Message[] = []
+        if (prompt) {
+          nextMessages.push({
+            id: `prompt-${makeId()}`,
+            role: 'user',
+            content: prompt,
+            timestamp: new Date()
+          })
+        }
+        if (providerError) {
+          nextMessages.push({
+            id: `ack-${makeId()}`,
+            role: 'assistant',
+            content: `Builder shell ready.\n\n${providerError}`,
+            timestamp: new Date()
+          })
+        }
+        setMessages(nextMessages)
+        return
+      }
+
+      setMessages([])
     },
     []
   )
+
+  useEffect(() => {
+    if (!messages.length) return
+    persistSession(messages, projectState?.metadata.id || null)
+  }, [messages, persistSession, projectState?.metadata.id])
+
+  useEffect(() => {
+    if (!projectState?.metadata.id) return
+    if (messages.length) return
+    const store = readChatStore()
+    const latestProjectSession = store.sessions
+      .filter((session) => session.projectId === projectState.metadata.id)
+      .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())[0]
+    if (!latestProjectSession) return
+    setActiveSessionId(latestProjectSession.id)
+    setMessages(hydrateMessages(latestProjectSession.messages))
+    setStatusText(`Restored chat: ${latestProjectSession.title}`)
+  }, [messages.length, projectState?.metadata.id])
 
   const submitPrompt = useCallback(
     async ({
@@ -1168,6 +1410,8 @@ export default function BuilderWindow() {
     }) => {
       const trimmed = prompt.trim()
       if (!trimmed || sending) return
+      setInput('')
+      setStatusText(`Sending request to ${providerDisplayName(providerId || selectedModel)}...`)
 
       const providerChoice =
         normalizeProvider(providerId) ||
@@ -1179,6 +1423,15 @@ export default function BuilderWindow() {
         'glm'
 
       const messageText = `${trimmed}${summarizeAttachments(attachments)}`
+      if (import.meta.env.DEV) {
+        console.info('[BUILDER_DEBUG] submit', {
+          provider: providerChoice,
+          selectedModel,
+          promptLength: trimmed.length,
+          attachments: attachments.length,
+          existingProjectId: projectId || null
+        })
+      }
 
       if (!preserveUserMessage) {
         setMessages((current) => [
@@ -1196,25 +1449,55 @@ export default function BuilderWindow() {
           : await createBuilderProject(messageText, providerChoice)
 
         if (response.success && response.state) {
-          syncProjectState(response.state, response.previewHtml, preserveUserMessage ? trimmed : undefined)
+          syncProjectState(response.state, response.previewHtml, undefined, response.providerError, true)
           if (!preserveUserMessage) {
             setMessages((current) => [
               ...current,
               {
                 id: `assistant-${makeId()}`,
                 role: 'assistant',
-                content: `Applied changes with **${providerDisplayName(
-                  response.state?.metadata.providerUsed || providerChoice
-                )}**.`,
+                content: response.providerError
+                  ? `Provider returned fallback shell.\n\n${response.providerError}`
+                  : `Applied changes with **${providerDisplayName(
+                      response.state?.metadata.providerUsed || providerChoice
+                    )}**.`,
                 timestamp: new Date()
               }
             ])
           }
-          setInput('')
+          setStatusText(
+            response.providerError
+              ? `Fallback shell ready for ${response.state.metadata.name}.`
+              : `${response.state.files.length} files updated in ${response.state.metadata.name}.`
+          )
+          if (!activeSessionId) {
+            persistSession(
+              preserveUserMessage
+                ? [
+                    {
+                      id: `user-${makeId()}`,
+                      role: 'user',
+                      content: trimmed,
+                      timestamp: new Date()
+                    },
+                    {
+                      id: `assistant-${makeId()}`,
+                      role: 'assistant',
+                      content: `Applied changes with **${providerDisplayName(
+                        response.state.metadata.providerUsed || providerChoice
+                      )}**.`,
+                      timestamp: new Date()
+                    }
+                  ]
+                : messages,
+              response.state.metadata.id
+            )
+          }
           setAttachments([])
           return
         }
 
+        setStatusText('Provider returned an error. Check the latest assistant message.')
         setMessages((current) => [
           ...current,
           {
@@ -1229,6 +1512,7 @@ export default function BuilderWindow() {
           }
         ])
       } catch (error) {
+        setStatusText('Builder request failed.')
         setMessages((current) => [
           ...current,
           {
@@ -1243,7 +1527,7 @@ export default function BuilderWindow() {
         setPreviewLoading(false)
       }
     },
-    [attachments, providerOptions, selectedModel, sending, syncProjectState]
+    [activeSessionId, attachments, messages, persistSession, providerOptions, selectedModel, sending, syncProjectState]
   )
 
   const applyWindowPayload = useCallback(
@@ -1255,10 +1539,6 @@ export default function BuilderWindow() {
         return
       }
 
-      if (payload.prompt) {
-        setInput(payload.prompt)
-      }
-
       if (payload.autoStart && payload.prompt) {
         const autoKey = JSON.stringify({
           prompt: payload.prompt,
@@ -1267,18 +1547,10 @@ export default function BuilderWindow() {
 
         if (lastAutoRunKeyRef.current !== autoKey) {
           lastAutoRunKeyRef.current = autoKey
-          setMessages([
-            {
-              id: `autostart-${makeId()}`,
-              role: 'user',
-              content: payload.prompt,
-              timestamp: new Date()
-            }
-          ])
           await submitPrompt({
             prompt: payload.prompt,
             providerId: payload.selectedProvider || selectedModel,
-            preserveUserMessage: true
+            preserveUserMessage: false
           })
         }
       }
@@ -1418,6 +1690,57 @@ export default function BuilderWindow() {
     }
   }
 
+  const handleOpenProjectFolder = async () => {
+    if (!projectState?.metadata.id) {
+      emitBuilderToast('error', 'No project available yet.')
+      return
+    }
+    const response = await openBuilderProjectFolder(projectState.metadata.id)
+    if (!response.success) {
+      emitBuilderToast('error', response.error || 'Open folder failed.')
+    }
+  }
+
+  const handleOpenProjectInVsCode = async () => {
+    if (!projectState?.metadata.id) {
+      emitBuilderToast('error', 'No project available yet.')
+      return
+    }
+    const response = await openBuilderProjectInVsCode(projectState.metadata.id)
+    if (!response.success) {
+      emitBuilderToast('error', response.error || 'Open in VS Code failed.')
+    }
+  }
+
+  const handleCopyProjectPath = async () => {
+    if (!projectState?.metadata.id) {
+      emitBuilderToast('error', 'No project available yet.')
+      return
+    }
+    const response = await copyBuilderProjectPath(projectState.metadata.id)
+    if (response.success && response.projectPath) {
+      await navigator.clipboard.writeText(response.projectPath)
+      emitBuilderToast('success', 'Project path copied.')
+      return
+    }
+    emitBuilderToast('error', response.error || 'Copy path failed.')
+  }
+
+  const handleNewChat = () => {
+    const hasContext = messages.length > 0 || input.trim().length > 0 || attachments.length > 0
+    if (hasContext) {
+      const confirmed = window.confirm('Start a new Builder chat? Project files will stay the same.')
+      if (!confirmed) return
+    }
+    setSidebarMenuOpen(false)
+    setSidebarMenuSection(null)
+    setMessages([])
+    setInput('')
+    setAttachments([])
+    setActiveSessionId(`session-${makeId()}`)
+    setStatusText('Started a new chat.')
+  }
+
   const handleAddCustomModel = (model: CustomModel) => {
     setCustomModels((current) => [...current, model])
   }
@@ -1472,15 +1795,101 @@ export default function BuilderWindow() {
           isDragging ? 'cursor-col-resize select-none' : ''
         }`}
       >
-        <div className="flex shrink-0 flex-col bg-card" style={{ width: panelWidth }}>
-          <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3">
+        <div className="glass-panel flex shrink-0 flex-col bg-card" style={{ width: panelWidth }}>
+          <div className="relative flex shrink-0 items-center justify-between border-b border-border px-4 py-3">
             <div className="flex items-center gap-2">
-              <div className="h-2 w-2 rounded-full bg-primary animate-pulse" />
+              <div className="h-2 w-2 rounded-full bg-cyan-400 animate-pulse" />
               <span className="text-sm font-semibold tracking-tight text-foreground">Agent</span>
             </div>
-            <span className="rounded-full bg-muted px-2 py-0.5 font-mono text-[10px] text-muted-foreground">
-              {currentModelLabel.split(' ').slice(-2).join(' ')}
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="max-w-[120px] truncate rounded-full border border-white/8 bg-black/30 px-2 py-0.5 font-mono text-[10px] text-muted-foreground">
+                {currentModelLabel}
+              </span>
+              <button
+                ref={sidebarMenuButtonRef}
+                onClick={() => {
+                  setSidebarMenuOpen((value) => !value)
+                  setSidebarMenuSection(null)
+                }}
+                className="premium-button flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:text-white"
+                aria-label="Open Builder agent menu"
+              >
+                <MoreHorizontal size={14} />
+              </button>
+            </div>
+
+            {sidebarMenuOpen && (
+              <div
+                ref={sidebarMenuRef}
+                className="glass-panel absolute right-3 top-[calc(100%-6px)] z-50 w-[260px] rounded-2xl p-2 text-xs shadow-2xl"
+              >
+                <div className="space-y-1">
+                  <button
+                    onClick={handleNewChat}
+                    className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-foreground transition-colors hover:bg-white/5"
+                  >
+                    <span>New chat</span>
+                    <span className="text-[10px] text-muted-foreground">Clear thread</span>
+                  </button>
+                  <button
+                    onClick={() => setSidebarMenuSection((current) => (current === 'project' ? null : 'project'))}
+                    className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-foreground transition-colors hover:bg-white/5"
+                  >
+                    <span>Project</span>
+                    <ChevronDown size={12} className={`transition-transform ${sidebarMenuSection === 'project' ? 'rotate-180' : ''}`} />
+                  </button>
+                  {sidebarMenuSection === 'project' && (
+                    <div className="space-y-1 px-2 pb-1">
+                      <button onClick={handleOpenProjectFolder} className="flex w-full rounded-lg px-3 py-2 text-left text-muted-foreground transition-colors hover:bg-white/5 hover:text-white">Open folder</button>
+                      <button onClick={handleOpenProjectInVsCode} className="flex w-full rounded-lg px-3 py-2 text-left text-muted-foreground transition-colors hover:bg-white/5 hover:text-white">Open in VS Code</button>
+                      <button onClick={handleCopyProjectPath} className="flex w-full rounded-lg px-3 py-2 text-left text-muted-foreground transition-colors hover:bg-white/5 hover:text-white">Copy path</button>
+                      <button onClick={handleZipDownload} className="flex w-full rounded-lg px-3 py-2 text-left text-muted-foreground transition-colors hover:bg-white/5 hover:text-white">Download ZIP</button>
+                    </div>
+                  )}
+                  <button
+                    onClick={() => setSidebarMenuSection((current) => (current === 'more' ? null : 'more'))}
+                    className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-foreground transition-colors hover:bg-white/5"
+                  >
+                    <span>More</span>
+                    <ChevronDown size={12} className={`transition-transform ${sidebarMenuSection === 'more' ? 'rotate-180' : ''}`} />
+                  </button>
+                  {sidebarMenuSection === 'more' && (
+                    <div className="space-y-1 px-2 pb-1">
+                      <button onClick={() => { void loadStatuses(); setStatusText('Model statuses refreshed.'); setSidebarMenuOpen(false) }} className="flex w-full rounded-lg px-3 py-2 text-left text-muted-foreground transition-colors hover:bg-white/5 hover:text-white">Refresh models</button>
+                      <button onClick={() => { handleOpenInWindow(); setSidebarMenuOpen(false) }} className="flex w-full rounded-lg px-3 py-2 text-left text-muted-foreground transition-colors hover:bg-white/5 hover:text-white">Open current panel</button>
+                    </div>
+                  )}
+                  <div className="pt-2">
+                    <div className="px-3 pb-1 text-[10px] uppercase tracking-[0.24em] text-muted-foreground/60">
+                      Recent chats
+                    </div>
+                    <div className="space-y-1">
+                      {recentSessions.length ? (
+                        recentSessions.map((session) => (
+                          <button
+                            key={session.id}
+                            onClick={() => {
+                              setSidebarMenuOpen(false)
+                              void loadSessionById(session.id)
+                            }}
+                            className={`flex w-full flex-col rounded-xl px-3 py-2 text-left transition-colors ${
+                              session.id === activeSessionId ? 'bg-white/6 text-white' : 'text-muted-foreground hover:bg-white/5 hover:text-white'
+                            }`}
+                          >
+                            <span className="truncate text-xs">{session.title}</span>
+                            <span className="text-[10px] opacity-60">
+                              {new Date(session.updatedAt).toLocaleDateString([], { month: 'short', day: 'numeric' })}
+                            </span>
+                          </button>
+                        ))
+                      ) : (
+                        <div className="px-3 py-2 text-[11px] text-muted-foreground/70">No saved Builder chats yet.</div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           <div
@@ -1505,9 +1914,9 @@ export default function BuilderWindow() {
                 <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-violet-500/10 text-violet-400">
                   <Bot size={13} />
                 </div>
-                <div className="flex items-center gap-2 rounded-2xl rounded-tl-sm border border-border bg-card px-3.5 py-3">
+                <div className="glass-panel flex items-center gap-2 rounded-2xl rounded-tl-sm px-3.5 py-3">
                   <Loader2 size={13} className="animate-spin text-primary" />
-                  <span className="text-xs text-muted-foreground">Thinking...</span>
+                  <span className="text-xs text-muted-foreground">{statusText}</span>
                 </div>
               </div>
             )}
@@ -1515,7 +1924,7 @@ export default function BuilderWindow() {
           </div>
 
           <div className="shrink-0 border-t border-border px-2.5 py-2">
-            <div className="rounded-lg border border-border bg-muted/40 transition-all focus-within:border-primary/40 focus-within:ring-1 focus-within:ring-primary/20">
+            <div className="glass-panel rounded-xl border border-border transition-all focus-within:border-primary/40 focus-within:ring-1 focus-within:ring-primary/20">
               <textarea
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
@@ -1534,7 +1943,7 @@ export default function BuilderWindow() {
                 <div className="flex items-center gap-0.5">
                   <button
                     onClick={handlePickAttachment}
-                    className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground"
+                    className="premium-button flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:text-foreground"
                     aria-label="Add attachment"
                     title={attachments.length ? `${attachments.length} attachment(s) selected` : 'Add attachment'}
                   >
@@ -1553,7 +1962,7 @@ export default function BuilderWindow() {
                   <button
                     onClick={handleSend}
                     disabled={!input.trim() || sending}
-                    className="flex h-7 w-7 items-center justify-center rounded-md bg-primary text-white transition-all hover:bg-primary/85 disabled:cursor-not-allowed disabled:opacity-30"
+                    className="flex h-7 w-7 items-center justify-center rounded-md bg-gradient-to-r from-cyan-500 to-violet-500 text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-30"
                     aria-label="Send builder prompt"
                   >
                     {sending ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
@@ -1578,16 +1987,17 @@ export default function BuilderWindow() {
           <div className="absolute inset-y-0 -left-1.5 -right-1.5" />
         </div>
 
-        <div className="flex min-w-0 flex-1 flex-col bg-background">
-          <div className="flex shrink-0 items-center justify-between border-b border-border bg-card px-4 py-2.5">
-            <div className="flex items-center gap-0.5 rounded-lg border border-border bg-muted/60 p-0.5">
+        <div className="glass-panel flex min-w-0 flex-1 flex-col bg-background">
+          <div className="flex shrink-0 items-center justify-between border-b border-border bg-[rgba(12,14,18,0.88)] px-4 py-2.5">
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-0.5 rounded-lg border border-border bg-black/25 p-0.5">
               {(['preview', 'code'] as RightPanel[]).map((mode) => (
                 <button
                   key={mode}
                   onClick={() => setPanel(mode)}
                   className={`flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-all ${
                     panel === mode
-                      ? 'bg-background text-foreground shadow-sm'
+                      ? 'bg-black/35 text-foreground shadow-sm'
                       : 'text-muted-foreground hover:text-foreground'
                   }`}
                 >
@@ -1596,12 +2006,21 @@ export default function BuilderWindow() {
                 </button>
               ))}
             </div>
+              <div className="min-w-0">
+                <div className="truncate text-sm font-semibold text-white">
+                  {projectState?.metadata.name || 'Blank workspace'}
+                </div>
+                <div className="truncate text-[11px] text-zinc-500">
+                  {providerDisplayName(projectState?.metadata.providerUsed || selectedModel)} · {projectState?.files.length || 0} files
+                </div>
+              </div>
+            </div>
 
             <div className="flex items-center gap-2">
               <button
                 onClick={handleOpenInWindow}
                 title="Open in window"
-                className="flex items-center justify-center rounded-lg border border-border bg-[#21262d] px-[8px] py-[6px] text-muted-foreground transition-colors hover:bg-[#30363d] hover:text-foreground"
+                className="premium-button flex items-center justify-center rounded-lg px-[8px] py-[6px] text-muted-foreground transition-colors hover:text-foreground"
               >
                 <ExternalLink size={16} />
               </button>
@@ -1609,7 +2028,7 @@ export default function BuilderWindow() {
               {panel === 'code' && (
                 <button
                   onClick={handleCopy}
-                  className="flex items-center gap-1.5 rounded-lg border border-border bg-[#21262d] px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-[#30363d] hover:text-foreground"
+                  className="premium-button flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
                 >
                   {copied ? <Check size={12} className="text-green-400" /> : <Copy size={12} />}
                   <span>{copied ? 'Copied' : 'Copy'}</span>
@@ -1618,7 +2037,7 @@ export default function BuilderWindow() {
 
               <button
                 onClick={handleZipDownload}
-                className="flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-medium text-black transition-colors hover:bg-white/90"
+                className="flex items-center gap-1.5 rounded-lg border border-fuchsia-500/20 bg-gradient-to-r from-cyan-500/14 to-violet-500/18 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:border-fuchsia-400/35"
               >
                 <Download size={12} />
                 <span>Download</span>

@@ -56,9 +56,10 @@ const ZAI_DEFAULT_BASE_URL = 'https://api.z.ai/api/coding/paas/v4'
 const ZAI_DEFAULT_MODEL_ID = 'glm-4.5v'
 
 const projectTypeRules: Array<{ type: string; pattern: RegExp }> = [
+  { type: 'website', pattern: /\b(discord|youtube|chrome|browser ui|video platform|community app|chat app)\b/i },
   { type: 'website', pattern: /\b(website|landing page|portfolio|frontend|html|css|javascript site)\b/i },
-  { type: 'react', pattern: /\breact\b/i },
-  { type: 'electron', pattern: /\belectron\b/i },
+  { type: 'react', pattern: /\b(react|webapp|dashboard|admin panel|saas|community dashboard)\b/i },
+  { type: 'electron', pattern: /\b(electron|desktop app|windows app)\b/i },
   { type: 'node', pattern: /\bnode(\.js)?\b/i },
   { type: 'python', pattern: /\bpython\b/i },
   { type: 'typescript', pattern: /\btypescript|\bts\b/i },
@@ -94,6 +95,13 @@ const guessProjectName = (prompt: string, type: string) => {
     .replace(/\s+/g, ' ')
     .trim()
   return slugify(cleaned || `${type}-project`)
+}
+
+const debugBuilder = (stage: string, payload: Record<string, unknown>) => {
+  const sanitized = Object.fromEntries(
+    Object.entries(payload).filter(([, value]) => value !== undefined)
+  )
+  console.info(`[BUILDER_DEBUG] ${stage}`, sanitized)
 }
 
 const loadJson = (value: string) => {
@@ -138,6 +146,10 @@ const extractCodeBlockFiles = (raw: string): ProjectFile[] => {
         ? 'html'
         : language.includes('css')
           ? 'css'
+          : language.includes('tsx') || language === 'tsx'
+            ? 'tsx'
+            : language.includes('jsx') || language === 'jsx'
+              ? 'jsx'
           : language.includes('javascript') || language === 'js'
             ? 'js'
             : language.includes('typescript') || language === 'ts'
@@ -150,14 +162,27 @@ const extractCodeBlockFiles = (raw: string): ProjectFile[] => {
                     ? 'cpp'
                     : language === 'c'
                       ? 'c'
-                      : 'txt'
+                      : ''
+    if (!extension) continue
     const defaultName =
       extension === 'html'
         ? 'index.html'
         : extension === 'css'
           ? 'style.css'
+          : extension === 'tsx'
+            ? index === 0
+              ? 'src/App.tsx'
+              : `src/generated-${index + 1}.tsx`
+            : extension === 'jsx'
+              ? index === 0
+                ? 'src/App.jsx'
+                : `src/generated-${index + 1}.jsx`
           : extension === 'js'
             ? 'script.js'
+            : extension === 'ts'
+              ? index === 0
+                ? 'src/main.ts'
+                : `src/generated-${index + 1}.ts`
             : `generated-${index + 1}.${extension}`
     files.push({ path: defaultName, content })
     index += 1
@@ -227,6 +252,51 @@ const createFallbackWebsiteFiles = (prompt: string): ProjectFile[] => {
     ]
   }
 
+  if (/\bdiscord|server|friend add|dm|chat app|community\b/.test(lower)) {
+    return [
+      {
+        path: 'index.html',
+        content: `<!doctype html><html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>ALPHA Community UI</title><link rel="stylesheet" href="style.css"/></head><body><main class="discord-shell"><aside class="server-rail"><button class="server active">A</button><button class="server">C</button><button class="server">+</button></aside><aside class="channel-panel"><div><p class="eyebrow">ALPHA HUB</p><h1>Friends & Chats</h1></div><div class="search-chip">Find friend</div><section class="friend-list"><article class="friend-card active"><strong>Thunder</strong><span>Online now</span></article><article class="friend-card"><strong>Noir</strong><span>Design sync</span></article><article class="friend-card"><strong>Rogue</strong><span>Game night</span></article></section><button class="add-friend">Add Friend</button></aside><section class="chat-panel"><header class="chat-header"><div><h2>ALPHA Community Chat</h2><p>${escapedPrompt}</p></div><button class="invite-btn">Invite</button></header><section class="message-feed"><article class="message"><strong>Thunder</strong><p>Let's ship the next update tonight.</p></article><article class="message"><strong>Noir</strong><p>UI pass is ready for preview.</p></article><article class="message user"><strong>You</strong><p>Friend add flow + direct messaging should feel instant.</p></article></section><footer class="composer"><input placeholder="Message the channel"/><button>Send</button></footer></section></main><script src="script.js"></script></body></html>`
+      },
+      {
+        path: 'style.css',
+        content: `*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at top,#22d3ee15,transparent 22%),radial-gradient(circle at 82% 12%,#8b5cf620,transparent 20%),#050505;color:#fff;font-family:Inter,system-ui,sans-serif}.discord-shell{min-height:100vh;display:grid;grid-template-columns:84px 320px 1fr;gap:18px;padding:18px}.server-rail,.channel-panel,.chat-panel{border:1px solid rgba(255,255,255,.08);background:linear-gradient(160deg,rgba(12,14,18,.92),rgba(15,18,26,.84));backdrop-filter:blur(24px);box-shadow:0 24px 80px rgba(0,0,0,.4),inset 0 1px 0 rgba(255,255,255,.04)}.server-rail{border-radius:28px;padding:16px;display:flex;flex-direction:column;gap:12px;align-items:center}.server{width:44px;height:44px;border:none;border-radius:16px;background:rgba(255,255,255,.06);color:#fff;font-weight:700}.server.active{background:linear-gradient(135deg,#22d3ee,#8b5cf6)}.channel-panel{border-radius:30px;padding:24px;display:grid;grid-template-rows:auto auto 1fr auto;gap:16px}.eyebrow{text-transform:uppercase;letter-spacing:.28em;font-size:11px;color:#22d3ee}.channel-panel h1{margin:6px 0 0;font-size:28px}.search-chip{border:1px solid rgba(255,255,255,.07);border-radius:16px;padding:12px 14px;background:#0c0f16;color:#a1a1aa}.friend-list{display:grid;gap:12px}.friend-card{padding:14px 16px;border-radius:18px;background:rgba(255,255,255,.04);display:grid;gap:4px;color:#a1a1aa}.friend-card.active{border:1px solid rgba(34,211,238,.24);background:rgba(34,211,238,.08)}.add-friend,.invite-btn,.composer button{border:none;border-radius:16px;padding:12px 16px;background:linear-gradient(135deg,#22d3ee,#8b5cf6);color:#fff;font-weight:600}.chat-panel{border-radius:32px;padding:24px;display:grid;grid-template-rows:auto 1fr auto;gap:20px}.chat-header{display:flex;align-items:center;justify-content:space-between;gap:16px}.chat-header h2{margin:0 0 8px;font-size:28px}.chat-header p{margin:0;color:#a1a1aa}.message-feed{display:grid;gap:12px;align-content:start}.message{max-width:720px;padding:16px 18px;border-radius:22px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.06)}.message.user{justify-self:end;background:rgba(139,92,246,.18);border-color:rgba(139,92,246,.26)}.message strong{display:block;margin-bottom:8px}.message p{margin:0;color:#d4d4d8;line-height:1.6}.composer{display:flex;gap:12px;padding:14px;border-radius:22px;background:#0b0d12;border:1px solid rgba(255,255,255,.07)}.composer input{flex:1;background:transparent;border:none;outline:none;color:#fff}@media(max-width:1100px){.discord-shell{grid-template-columns:1fr}.server-rail{flex-direction:row;justify-content:center}.channel-panel,.chat-panel{min-height:unset}}`
+      },
+      { path: 'script.js', content: `console.log('ALPHA community UI ready')` },
+      { path: 'README.md', content: `# ALPHA Community Website\n\nPrompt: ${prompt}\n\nDiscord-inspired original community UI with friends, DMs, and message areas.\n` }
+    ]
+  }
+
+  if (/\byoutube\b/.test(lower)) {
+    return [
+      {
+        path: 'index.html',
+        content: `<!doctype html><html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>ALPHA Stream Grid</title><link rel="stylesheet" href="style.css"/></head><body><main class="video-shell"><aside class="video-sidebar"><h1>ALPHA Stream</h1><nav><a>Home</a><a>Trending</a><a>Subscriptions</a><a>Library</a></nav></aside><section class="video-main"><header class="video-topbar"><div class="searchbar">Search videos, creators, playlists</div><button>Create</button></header><section class="hero-player"><div class="player-frame">Featured Player</div><div><p class="eyebrow">VIDEO PLATFORM</p><h2>Original streaming layout</h2><p>${escapedPrompt}</p></div></section><section class="video-grid"><article><div class="thumb"></div><h3>Network Security Crash Course</h3><p>12 min</p></article><article><div class="thumb"></div><h3>Glass UI Motion Pack</h3><p>9 min</p></article><article><div class="thumb"></div><h3>Creator Studio Dashboard</h3><p>17 min</p></article><article><div class="thumb"></div><h3>Alpha Channel Live</h3><p>Live</p></article></section></section></main><script src="script.js"></script></body></html>`
+      },
+      {
+        path: 'style.css',
+        content: `*{box-sizing:border-box}body{margin:0;background:#050505;color:#fff;font-family:Inter,system-ui,sans-serif}.video-shell{min-height:100vh;display:grid;grid-template-columns:250px 1fr;gap:18px;padding:18px;background:radial-gradient(circle at top,#f472b618,transparent 18%),radial-gradient(circle at 78% 10%,#22d3ee14,transparent 24%),#050505}.video-sidebar,.video-topbar,.hero-player,.video-grid article{border:1px solid rgba(255,255,255,.08);background:linear-gradient(160deg,rgba(12,14,18,.9),rgba(15,18,26,.82));backdrop-filter:blur(24px);box-shadow:0 24px 80px rgba(0,0,0,.35),inset 0 1px 0 rgba(255,255,255,.04)}.video-sidebar{border-radius:30px;padding:26px}.video-sidebar h1{margin:0 0 18px;font-size:28px}.video-sidebar nav{display:grid;gap:12px;color:#a1a1aa}.video-main{display:grid;gap:18px}.video-topbar{border-radius:24px;padding:16px;display:flex;gap:12px;align-items:center}.searchbar{flex:1;border-radius:16px;padding:14px;background:#0b0d12;color:#a1a1aa}.video-topbar button{border:none;border-radius:16px;padding:12px 16px;background:linear-gradient(135deg,#22d3ee,#8b5cf6);color:#fff}.hero-player{border-radius:30px;padding:24px;display:grid;grid-template-columns:1.2fr .8fr;gap:20px}.player-frame{min-height:280px;border-radius:26px;background:linear-gradient(160deg,#0b0d12,#111827);display:grid;place-items:center;color:#a1a1aa;border:1px solid rgba(255,255,255,.06)}.eyebrow{text-transform:uppercase;letter-spacing:.28em;font-size:11px;color:#22d3ee}.hero-player h2{font-size:34px;margin:12px 0}.hero-player p{color:#a1a1aa;line-height:1.7}.video-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px}.video-grid article{border-radius:24px;padding:16px}.thumb{aspect-ratio:16/9;border-radius:18px;background:linear-gradient(135deg,rgba(34,211,238,.2),rgba(139,92,246,.2));margin-bottom:14px}.video-grid h3{margin:0 0 8px;font-size:16px}.video-grid p{margin:0;color:#a1a1aa}@media(max-width:1100px){.video-shell{grid-template-columns:1fr}.hero-player{grid-template-columns:1fr}.video-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}`
+      },
+      { path: 'script.js', content: `console.log('ALPHA stream UI ready')` },
+      { path: 'README.md', content: `# ALPHA Stream Website\n\nPrompt: ${prompt}\n\nOriginal YouTube-inspired video platform UI.\n` }
+    ]
+  }
+
+  if (/\bchrome|browser\b/.test(lower)) {
+    return [
+      {
+        path: 'index.html',
+        content: `<!doctype html><html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>ALPHA Browser UI</title><link rel="stylesheet" href="style.css"/></head><body><main class="browser-shell"><header class="browser-top"><div class="tab-row"><button class="tab active">ALPHA</button><button class="tab">Docs</button><button class="tab add">+</button></div><div class="toolbar"><button class="nav">&#10094;</button><button class="nav">&#10095;</button><button class="nav">&#8635;</button><div class="address-bar">alpha://workspace/browser-ui</div><button class="profile">User</button></div></header><section class="browser-body"><aside class="browser-side"><h2>Collections</h2><ul><li>Recent tabs</li><li>Bookmarks</li><li>Profiles</li><li>History</li></ul></aside><section class="browser-viewport"><article class="browser-hero"><p class="eyebrow">BROWSER INSPIRED</p><h1>Original ALPHA browser-style layout</h1><p>${escapedPrompt}</p></article><div class="browser-grid"><article><h3>Tab System</h3><p>Multi-tab header and quick action rail.</p></article><article><h3>Address Bar</h3><p>Search-ready top bar with original styling.</p></article><article><h3>Workspace</h3><p>Panels for cards, sites, and browsing flows.</p></article></div></section></section></main><script src="script.js"></script></body></html>`
+      },
+      {
+        path: 'style.css',
+        content: `*{box-sizing:border-box}body{margin:0;background:#050505;color:#fff;font-family:Inter,system-ui,sans-serif}.browser-shell{min-height:100vh;padding:18px;background:radial-gradient(circle at top,#22d3ee16,transparent 20%),radial-gradient(circle at 82% 10%,#8b5cf61f,transparent 20%),#050505}.browser-top,.browser-side,.browser-hero,.browser-grid article{border:1px solid rgba(255,255,255,.08);background:linear-gradient(160deg,rgba(12,14,18,.92),rgba(15,18,26,.84));backdrop-filter:blur(24px);box-shadow:0 24px 80px rgba(0,0,0,.4),inset 0 1px 0 rgba(255,255,255,.04)}.browser-top{padding:18px;border-radius:28px}.tab-row{display:flex;gap:10px;margin-bottom:12px}.tab{border:none;border-radius:16px;padding:10px 14px;background:rgba(255,255,255,.06);color:#fff}.tab.active{background:linear-gradient(135deg,#22d3ee,#8b5cf6)}.toolbar{display:flex;gap:10px;align-items:center}.nav,.profile{border:none;border-radius:14px;padding:10px 12px;background:rgba(255,255,255,.05);color:#fff}.address-bar{flex:1;padding:12px 16px;border-radius:16px;background:#0b0d12;color:#a1a1aa}.browser-body{display:grid;grid-template-columns:260px 1fr;gap:18px;margin-top:18px}.browser-side{border-radius:30px;padding:24px}.browser-side h2{margin:0 0 14px}.browser-side ul{list-style:none;padding:0;margin:0;display:grid;gap:10px;color:#a1a1aa}.browser-viewport{display:grid;gap:18px}.browser-hero{border-radius:30px;padding:28px}.eyebrow{text-transform:uppercase;letter-spacing:.28em;font-size:11px;color:#22d3ee}.browser-hero h1{font-size:42px;margin:14px 0}.browser-hero p{color:#a1a1aa;line-height:1.7}.browser-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}.browser-grid article{border-radius:24px;padding:18px}.browser-grid h3{margin:0 0 8px}.browser-grid p{margin:0;color:#a1a1aa}@media(max-width:1000px){.browser-body{grid-template-columns:1fr}.browser-grid{grid-template-columns:1fr}}`
+      },
+      { path: 'script.js', content: `console.log('ALPHA browser UI ready')` },
+      { path: 'README.md', content: `# ALPHA Browser-inspired Website\n\nPrompt: ${prompt}\n\nOriginal browser UI, not official Chrome assets.\n` }
+    ]
+  }
+
   return [
     {
       path: 'index.html',
@@ -280,6 +350,18 @@ const inlinePreviewHtml = (files: ProjectFile[]) => {
 }
 
 const normalizeFiles = (payload: any, prompt: string, projectType: string): ProjectFile[] => {
+  if (Array.isArray(payload)) {
+    payload = { files: payload }
+  } else if (payload?.project && Array.isArray(payload.project.files)) {
+    payload = {
+      ...payload,
+      projectName: payload.projectName || payload.project.name,
+      projectType: payload.projectType || payload.project.type,
+      summary: payload.summary || payload.project.summary,
+      files: payload.project.files
+    }
+  }
+
   const incoming = Array.isArray(payload?.files) ? payload.files : []
   const files = incoming
     .filter((file) => typeof file?.path === 'string' && typeof file?.content === 'string')
@@ -288,11 +370,25 @@ const normalizeFiles = (payload: any, prompt: string, projectType: string): Proj
       content: file.content
     }))
 
-  if (files.length) return files
+  if (files.length) {
+    debugBuilder('provider-parse', {
+      projectType,
+      promptLength: prompt.length,
+      structuredFiles: files.length,
+      fallbackUsed: false
+    })
+    return files
+  }
 
   if (typeof payload?.rawText === 'string') {
     const codeBlockFiles = extractCodeBlockFiles(payload.rawText)
     if (codeBlockFiles.length) {
+      debugBuilder('provider-parse', {
+        projectType,
+        promptLength: prompt.length,
+        codeBlockFiles: codeBlockFiles.length,
+        fallbackUsed: false
+      })
       const hasReadme = codeBlockFiles.some((file) => file.path.toLowerCase() === 'readme.md')
       return hasReadme
         ? codeBlockFiles
@@ -306,10 +402,22 @@ const normalizeFiles = (payload: any, prompt: string, projectType: string): Proj
     }
   }
 
-  if (projectType === 'website') {
+  if (projectType === 'website' || projectType === 'react') {
+    debugBuilder('provider-parse', {
+      projectType,
+      promptLength: prompt.length,
+      codeBlockFiles: 0,
+      fallbackUsed: true
+    })
     return createFallbackWebsiteFiles(prompt)
   }
 
+  debugBuilder('provider-parse', {
+    projectType,
+    promptLength: prompt.length,
+    codeBlockFiles: 0,
+    fallbackUsed: true
+  })
   return [
     {
       path: 'README.md',
@@ -545,25 +653,55 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
         : slot
     )
   }
-  const buildProjectSystemPrompt = (providerLabel: string) =>
+  const buildProjectSystemPrompt = (
+    providerLabel: string,
+    prompt: string,
+    projectType: string,
+    currentFiles?: ProjectFile[]
+  ) =>
     [
       `You are ALPHA coding engine using ${providerLabel}.`,
+      `The detected project type is ${projectType}.`,
       'Return strict JSON only.',
       'Schema:',
       '{"projectName":"string","projectType":"string","summary":"string","files":[{"path":"relative/path","content":"file contents"}]}',
       'Never wrap output in markdown.',
+      'Never return explanation-only answers.',
+      'Do not create generated-1.txt, output.txt, response.txt, or random text dump files unless explicitly asked.',
+      currentFiles?.length
+        ? 'You are editing an existing project. Respect current files and return only needed updated files or a complete corrected file map.'
+        : 'You are creating a fresh project from the user request.',
       'For websites include at least index.html, style.css, script.js, README.md.',
-      'For website prompts, make the page visibly functional and previewable immediately.',
-      'For a calculator website, return a working calculator UI with glassmorphism styling and JavaScript interactions.',
-      'For non-website projects include a practical starter file and README.md.'
-    ].join(' ')
+      'For React/webapp prompts prefer package.json, index.html, src/main.tsx, src/App.tsx, src/styles.css, README.md.',
+      'For calculator prompts return a real working calculator UI and JS interactions.',
+      /\bdiscord|friend add|dm|community|chat\b/i.test(prompt)
+        ? 'For Discord-like requests create an original community/chat UI with server rail, friends list, message area, and add-friend flow. Do not return a generic presentation scaffold.'
+        : '',
+      /\byoutube\b/i.test(prompt)
+        ? 'For YouTube-like requests create an original video platform style UI with sidebar, search, player or video cards. Do not return a generic presentation scaffold.'
+        : '',
+      /\bchrome|browser\b/i.test(prompt)
+        ? 'For Chrome-like/browser-inspired requests create an original browser shell with tabs, address bar, toolbar, and content area. Do not use official logos or assets.'
+        : '',
+      /\badvanced|premium|3d|animated|glass|glassmorphism|badhiya\b/i.test(prompt)
+        ? 'The user wants premium output. Use polished sections, meaningful styling, and interactions. Avoid a basic hero + cards scaffold unless the prompt truly asks for that.'
+        : ''
+    ]
+      .filter(Boolean)
+      .join(' ')
 
-  const buildProjectUserPrompt = (prompt: string, currentFiles?: ProjectFile[]) =>
+  const buildProjectUserPrompt = (prompt: string, projectType: string, currentFiles?: ProjectFile[]) =>
     currentFiles?.length
-      ? `Update this existing project for the request.\nRequest: ${prompt}\nCurrent files:\n${JSON.stringify(currentFiles)}`
-      : `Create a project for this request.\nRequest: ${prompt}`
+      ? `Update this existing project for the request.\nDetected project type: ${projectType}\nRequest: ${prompt}\nCurrent file tree:\n${currentFiles.map((file) => file.path).join('\n')}\nCurrent files:\n${JSON.stringify(currentFiles.slice(0, 12))}`
+      : `Create a project for this request.\nDetected project type: ${projectType}\nRequest: ${prompt}`
 
   const parseProviderPayload = (content: string, providerLabel: string): ProviderResult => {
+    debugBuilder('provider-response', {
+      providerLabel,
+      responseLength: content.length,
+      hasCodeFence: /```/.test(content),
+      hasJsonShape: content.includes('"files"') || content.includes('{')
+    })
     const parsed = extractJson(content)
     if (!parsed) {
       return {
@@ -597,6 +735,14 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
       }
     }
 
+    const projectType = detectProjectType(prompt)
+    debugBuilder('provider-call', {
+      provider: 'gemini',
+      selectedModel: 'gemini-2.5-flash',
+      promptLength: prompt.length,
+      projectType,
+      existingFiles: currentFiles?.length || 0
+    })
     const response = await fetch(
       'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' +
         encodeURIComponent(geminiKey),
@@ -604,8 +750,8 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          systemInstruction: { parts: [{ text: buildProjectSystemPrompt('Gemini 2.5 Flash') }] },
-          contents: [{ role: 'user', parts: [{ text: buildProjectUserPrompt(prompt, currentFiles) }] }],
+          systemInstruction: { parts: [{ text: buildProjectSystemPrompt('Gemini 2.5 Flash', prompt, projectType, currentFiles) }] },
+          contents: [{ role: 'user', parts: [{ text: buildProjectUserPrompt(prompt, projectType, currentFiles) }] }],
           generationConfig: { temperature: 0.35, maxOutputTokens: 4096 }
         })
       }
@@ -631,6 +777,14 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
     currentFiles: ProjectFile[] | undefined,
     config: { endpoint: string; key: string; model: string; providerLabel: string; headers?: Record<string, string> }
   ): Promise<ProviderResult> => {
+    const projectType = detectProjectType(prompt)
+    debugBuilder('provider-call', {
+      provider: config.providerLabel,
+      selectedModel: config.model,
+      promptLength: prompt.length,
+      projectType,
+      existingFiles: currentFiles?.length || 0
+    })
     const response = await fetch(config.endpoint, {
       method: 'POST',
       headers: {
@@ -642,8 +796,8 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
         model: config.model,
         temperature: 0.35,
         messages: [
-          { role: 'system', content: buildProjectSystemPrompt(config.providerLabel) },
-          { role: 'user', content: buildProjectUserPrompt(prompt, currentFiles) }
+          { role: 'system', content: buildProjectSystemPrompt(config.providerLabel, prompt, projectType, currentFiles) },
+          { role: 'user', content: buildProjectUserPrompt(prompt, projectType, currentFiles) }
         ]
       })
     })
@@ -684,6 +838,14 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
     const modelId = activeSlot.modelId || ZENMUX_DEFAULT_MODEL_ID
     writeSecureVault(secureData)
 
+    const projectType = detectProjectType(prompt)
+    debugBuilder('provider-call', {
+      provider: 'glm',
+      selectedModel: modelId,
+      promptLength: prompt.length,
+      projectType,
+      existingFiles: currentFiles?.length || 0
+    })
     try {
       const endpoint =
         providerMode === 'direct-zai'
@@ -706,8 +868,8 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
           model: modelId,
           temperature: 0.35,
           messages: [
-            { role: 'system', content: buildProjectSystemPrompt('GLM 5.2') },
-            { role: 'user', content: buildProjectUserPrompt(prompt, currentFiles) }
+            { role: 'system', content: buildProjectSystemPrompt('GLM 5.2', prompt, projectType, currentFiles) },
+            { role: 'user', content: buildProjectUserPrompt(prompt, projectType, currentFiles) }
           ]
         })
       })
@@ -775,6 +937,14 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
     const modelId = activeSlot.modelId || ZAI_DEFAULT_MODEL_ID
     writeSecureVault(secureData)
 
+    const projectType = detectProjectType(prompt)
+    debugBuilder('provider-call', {
+      provider: 'zai',
+      selectedModel: modelId,
+      promptLength: prompt.length,
+      projectType,
+      existingFiles: currentFiles?.length || 0
+    })
     try {
       const endpoint =
         providerMode === 'zai-compatible'
@@ -791,8 +961,8 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
           model: modelId,
           temperature: 0.35,
           messages: [
-            { role: 'system', content: buildProjectSystemPrompt('Z.AI Coding Provider') },
-            { role: 'user', content: buildProjectUserPrompt(prompt, currentFiles) }
+            { role: 'system', content: buildProjectSystemPrompt('Z.AI Coding Provider', prompt, projectType, currentFiles) },
+            { role: 'user', content: buildProjectUserPrompt(prompt, projectType, currentFiles) }
           ]
         })
       })
