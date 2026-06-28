@@ -1,8 +1,8 @@
 import fs from 'fs'
 import path from 'path'
-import { execFile } from 'child_process'
+import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'child_process'
 import { promisify } from 'util'
-import { app, IpcMain, safeStorage, shell } from 'electron'
+import { app, BrowserWindow, IpcMain, safeStorage, shell } from 'electron'
 
 type ProjectFile = {
   path: string
@@ -47,6 +47,7 @@ type ProviderResult =
   | { success: false; code: string; message: string; providerLabel: string }
 
 const execFileAsync = promisify(execFile)
+const activeProjectProcesses = new Map<string, ChildProcessWithoutNullStreams>()
 
 const PROJECT_MODEL = 'glm-5.2'
 const ZENMUX_DEFAULT_BASE_URL = 'https://zenmux.ai/api/v1'
@@ -981,6 +982,12 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
     return { metadata, files }
   }
 
+  const emitTerminalEvent = (payload: Record<string, any>) => {
+    BrowserWindow.getAllWindows().forEach((window) => {
+      window.webContents.send('builder-terminal-event', payload)
+    })
+  }
+
   ipcMain.handle('project-builder-create', async (_, { prompt, provider = 'glm' }) => {
     const projectType = detectProjectType(prompt || '')
     const generated = await callProvider(provider, prompt || '')
@@ -1141,5 +1148,51 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
     } catch (error: any) {
       return { success: false, error: error?.message || 'Project path unavailable.' }
     }
+  })
+
+  ipcMain.handle('project-builder-run-command', async (_, { projectId, command }) => {
+    try {
+      const state = readProjectState(projectId)
+      const projectPath = state.metadata.projectPath
+      const trimmedCommand = String(command || '').trim()
+      if (!trimmedCommand) return { success: false, error: 'Command is empty.' }
+
+      const existing = activeProjectProcesses.get(projectId)
+      if (existing && !existing.killed) {
+        return { success: false, error: 'A command is already running for this project.' }
+      }
+
+      const child = spawn('cmd.exe', ['/c', trimmedCommand], {
+        cwd: projectPath,
+        windowsHide: true
+      })
+      const runId = `${projectId}-${Date.now()}`
+      activeProjectProcesses.set(projectId, child)
+
+      emitTerminalEvent({ projectId, runId, type: 'start', command: trimmedCommand })
+      child.stdout.on('data', (chunk) => {
+        emitTerminalEvent({ projectId, runId, type: 'stdout', chunk: String(chunk) })
+      })
+      child.stderr.on('data', (chunk) => {
+        emitTerminalEvent({ projectId, runId, type: 'stderr', chunk: String(chunk) })
+      })
+      child.on('close', (code) => {
+        activeProjectProcesses.delete(projectId)
+        emitTerminalEvent({ projectId, runId, type: 'exit', exitCode: code ?? 0 })
+      })
+
+      return { success: true, runId, command: trimmedCommand }
+    } catch (error: any) {
+      return { success: false, error: error?.message || 'Project command failed to start.' }
+    }
+  })
+
+  ipcMain.handle('project-builder-stop-command', async (_, { projectId }) => {
+    const child = activeProjectProcesses.get(projectId)
+    if (!child) return { success: false, error: 'No running command for this project.' }
+    child.kill()
+    activeProjectProcesses.delete(projectId)
+    emitTerminalEvent({ projectId, type: 'stopped' })
+    return { success: true }
   })
 }

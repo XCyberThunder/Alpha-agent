@@ -1,21 +1,9 @@
-import { createBuilderProject, openBuilderWindow } from '@renderer/services/project-builder'
+import { openBuilderWindow } from '@renderer/services/project-builder'
 
 export const buildAnimatedWebsite = async (prompt: string) => {
   try {
-    const res = await createBuilderProject(prompt, 'glm')
-
-    if (res.success && res.state) {
-      await openBuilderWindow({
-        state: res.state,
-        previewHtml: res.previewHtml,
-        prompt,
-        providerError: res.providerError
-      })
-      if (res.providerError) return res.providerError
-      return `Website Builder ready. Project saved at ${res.state.metadata.projectPath}.`
-    }
-
-    return res.message || res.error || 'Website Builder project generate nahi kar paya.'
+    await openBuilderWindow({ prompt, autoStart: true })
+    return 'Builder open kar diya. Coding Agent website prompt par kaam kar raha hai.'
   } catch {
     return 'Website Builder route abhi unavailable hai.'
   }
