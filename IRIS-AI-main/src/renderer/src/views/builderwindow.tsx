@@ -173,27 +173,25 @@ const ACCESS_OPTIONS: Array<{
 
 const BUILDER_THEME_CSS = `
 .builderwindow-root {
-  --background: #050505;
-  --background-soft: #0a0d15;
+  --background: #141414;
+  --background-soft: #1a1a1a;
   --foreground: #ffffff;
-  --card: rgba(10,12,18,0.76);
-  --popover: rgba(15,18,27,0.96);
-  --primary: #8b5cf6;
-  --primary-cyan: #22d3ee;
-  --primary-pink: #f472b6;
-  --primary-blue: #38bdf8;
+  --card: rgba(26,26,26,0.92);
+  --popover: rgba(29,29,29,0.98);
+  --primary: #2f81f7;
+  --primary-cyan: #2f81f7;
+  --primary-pink: #7c6cf7;
+  --primary-blue: #3b82f6;
   --primary-red: #ef4444;
-  --muted: rgba(17,20,28,0.88);
+  --muted: rgba(24,24,27,0.96);
   --muted-foreground: #a1a1aa;
-  --border: rgba(255,255,255,0.08);
+  --border: rgba(255,255,255,0.09);
   --danger: #ef4444;
   color: var(--foreground);
   background:
-    radial-gradient(circle at 10% 8%, rgba(56,189,248,0.14), transparent 18%),
-    radial-gradient(circle at 78% 10%, rgba(139,92,246,0.16), transparent 24%),
-    radial-gradient(circle at 52% 100%, rgba(244,114,182,0.10), transparent 20%),
-    radial-gradient(circle at 100% 70%, rgba(239,68,68,0.08), transparent 24%),
-    linear-gradient(180deg, #140b1f 0%, #0b1020 14%, #050505 68%);
+    radial-gradient(circle at 0% 0%, rgba(124,108,247,0.10), transparent 18%),
+    radial-gradient(circle at 100% 100%, rgba(47,129,247,0.08), transparent 18%),
+    linear-gradient(180deg, #1c1c1c 0%, #161616 18%, #121212 100%);
   font-family: Geist, Inter, system-ui, sans-serif;
 }
 .builderwindow-root * {
@@ -221,57 +219,136 @@ const BUILDER_THEME_CSS = `
 }
 .builderwindow-root .glass-panel {
   background:
-    linear-gradient(180deg, rgba(20, 22, 32, 0.84), rgba(8, 10, 16, 0.90)),
-    radial-gradient(circle at top left, rgba(34,211,238,0.08), transparent 34%),
-    radial-gradient(circle at top right, rgba(244,114,182,0.07), transparent 28%);
+    linear-gradient(180deg, rgba(31,31,31,0.96), rgba(21,21,21,0.98));
   border: 1px solid rgba(255,255,255,0.08);
   box-shadow:
-    0 30px 80px rgba(0,0,0,0.42),
-    0 0 0 1px rgba(56,189,248,0.03),
-    0 14px 50px rgba(139,92,246,0.08),
-    inset 0 1px 0 rgba(255,255,255,0.04),
-    inset 0 -1px 0 rgba(34,211,238,0.04);
-  backdrop-filter: blur(22px);
+    0 18px 40px rgba(0,0,0,0.28),
+    inset 0 1px 0 rgba(255,255,255,0.035);
+  backdrop-filter: blur(14px);
 }
 .builderwindow-root .premium-button {
   background:
-    linear-gradient(135deg, rgba(56,189,248,0.16), rgba(139,92,246,0.18)),
-    linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0));
+    linear-gradient(180deg, rgba(41,41,45,0.96), rgba(24,24,27,0.98));
   border: 1px solid rgba(255,255,255,0.08);
   box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.06),
+    inset 0 1px 0 rgba(255,255,255,0.04),
     0 8px 24px rgba(0,0,0,0.16);
 }
 .builderwindow-root .premium-button:hover {
   background:
-    linear-gradient(135deg, rgba(56,189,248,0.24), rgba(244,114,182,0.22)),
-    linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0));
+    linear-gradient(180deg, rgba(49,49,54,0.98), rgba(28,28,31,0.98));
 }
 .builderwindow-root .menu-surface {
   background:
-    linear-gradient(180deg, rgba(18, 20, 28, 0.98), rgba(11, 13, 20, 0.98)),
-    radial-gradient(circle at top left, rgba(56,189,248,0.08), transparent 34%),
-    radial-gradient(circle at bottom right, rgba(244,114,182,0.07), transparent 32%);
+    linear-gradient(180deg, rgba(29,29,31,0.98), rgba(21,21,24,0.98));
   border: 1px solid rgba(255,255,255,0.08);
   box-shadow:
-    0 26px 70px rgba(0,0,0,0.52),
-    0 0 0 1px rgba(139,92,246,0.04),
+    0 24px 48px rgba(0,0,0,0.42),
     inset 0 1px 0 rgba(255,255,255,0.05);
-  backdrop-filter: blur(22px);
+  backdrop-filter: blur(16px);
 }
 .builderwindow-root .field-shell {
   background:
-    linear-gradient(180deg, rgba(13,16,24,0.94), rgba(10,12,18,0.94)),
-    radial-gradient(circle at top left, rgba(34,211,238,0.06), transparent 28%);
+    linear-gradient(180deg, rgba(23,23,25,0.98), rgba(17,17,18,0.98));
   border: 1px solid rgba(255,255,255,0.08);
   box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.04),
-    0 12px 32px rgba(0,0,0,0.26);
+    inset 0 1px 0 rgba(255,255,255,0.03),
+    0 8px 24px rgba(0,0,0,0.18);
 }
 .builderwindow-root .accent-status {
-  background: linear-gradient(135deg, rgba(56,189,248,0.12), rgba(244,114,182,0.12));
+  background: linear-gradient(180deg, rgba(28,28,31,0.98), rgba(20,20,24,0.98));
   border: 1px solid rgba(255,255,255,0.08);
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+}
+.builderwindow-root .codex-panel {
+  background: linear-gradient(180deg, rgba(26,26,26,0.96), rgba(18,18,18,0.98));
+  border: 1px solid rgba(255,255,255,0.08);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
+}
+.builderwindow-root .codex-user-bubble {
+  background: linear-gradient(180deg, rgba(33,49,82,0.96), rgba(29,40,66,0.96));
+  border: 1px solid rgba(83,138,255,0.28);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+}
+.builderwindow-root .codex-assistant-card {
+  background: linear-gradient(180deg, rgba(27,27,30,0.96), rgba(18,18,20,0.98));
+  border: 1px solid rgba(255,255,255,0.08);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
+}
+.builderwindow-root .codex-input-shell {
+  background:
+    linear-gradient(180deg, rgba(19,19,22,0.98), rgba(15,15,18,0.98));
+  border: 1px solid rgba(255,255,255,0.07);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.025),
+    0 8px 20px rgba(0,0,0,0.18);
+}
+.builderwindow-root .codex-editor-surface {
+  background: #1e1e1e;
+}
+.builderwindow-root .codex-editor-gutter {
+  background: #181818;
+}
+.builderwindow-root .codex-editor-tab {
+  background: #252526;
+}
+.builderwindow-root .codex-editor-border {
+  border-color: rgba(255,255,255,0.06);
+}
+.builderwindow-root .minimal-control {
+  background: transparent;
+  border: 1px solid rgba(255,255,255,0.06);
+  box-shadow: none;
+  color: #a1a1aa;
+  backdrop-filter: blur(8px);
+  transition:
+    background-color 140ms ease-out,
+    border-color 140ms ease-out,
+    color 140ms ease-out,
+    transform 140ms ease-out;
+}
+.builderwindow-root .minimal-control:hover {
+  background: rgba(255,255,255,0.035);
+  border-color: rgba(255,255,255,0.1);
+  color: #f4f4f5;
+}
+.builderwindow-root .minimal-control-active {
+  background: rgba(59,130,246,0.1);
+  border-color: rgba(59,130,246,0.22);
+  color: #ffffff;
+}
+.builderwindow-root .minimal-control-ghost {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+.builderwindow-root .dropdown-enter {
+  transform-origin: bottom left;
+  animation: builder-fade-scale 150ms ease-out;
+}
+.builderwindow-root .dropdown-enter-right {
+  transform-origin: bottom right;
+  animation: builder-fade-scale 150ms ease-out;
+}
+.builderwindow-root .preview-surface {
+  background:
+    radial-gradient(circle at 50% 22%, rgba(59,130,246,0.08), transparent 24%),
+    linear-gradient(180deg, #101114 0%, #0b0c10 100%);
+}
+.builderwindow-root .preview-chip {
+  background: rgba(12,14,18,0.82);
+  border: 1px solid rgba(255,255,255,0.08);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.28);
+}
+@keyframes builder-fade-scale {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 `
 
@@ -501,12 +578,6 @@ const deriveSessionTitle = (messages: Message[], fallback = 'New chat') => {
   return firstUserMessage.length > 56 ? `${firstUserMessage.slice(0, 56)}...` : firstUserMessage
 }
 
-const accessLabelMap: Record<PermissionMode, string> = {
-  ask: 'Ask',
-  approve: 'Approve',
-  full: 'Full'
-}
-
 function FileIcon({ ext }: { ext?: string }) {
   if (ext === 'json') return <FileJson size={13} className="text-yellow-400/80" />
   if (ext === 'css') return <FileCode size={13} className="text-blue-400/80" />
@@ -657,27 +728,27 @@ function AccessMenu({
       <button
         ref={buttonRef}
         onClick={handleToggle}
-        className="premium-button flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-[11px] font-medium text-muted-foreground transition-all hover:text-foreground"
+        className="minimal-control flex h-6.5 items-center gap-1 rounded-md px-1.5 text-[11px] font-medium"
         aria-expanded={open}
         aria-label="Access permissions"
       >
         <Key size={11} />
-        <span>{`Access · ${accessLabelMap[value]}`}</span>
+        <span>Access</span>
         <ChevronDown size={9} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
       {open &&
         createPortal(
           <div
             ref={menuRef}
-            className="menu-surface fixed z-[9999] rounded-2xl py-2 shadow-2xl"
+            className="menu-surface dropdown-enter fixed z-[9999] rounded-xl py-1.5 shadow-2xl"
             style={{
               top: coords.top,
               left: coords.left,
-              width: coords.width,
+              width: Math.min(coords.width, 244),
               transform: 'translateY(-100%)'
             }}
           >
-            <p className="px-3 pb-1.5 pt-0.5 text-[10px] font-medium uppercase tracking-widest text-muted-foreground/60">
+            <p className="px-3 pb-1 pt-0.5 text-[9px] font-medium uppercase tracking-widest text-muted-foreground/60">
               How should actions be approved?
             </p>
             {ACCESS_OPTIONS.map((option) => {
@@ -690,29 +761,29 @@ function AccessMenu({
                     onChange(option.id)
                     setOpen(false)
                   }}
-                  className={`mx-1.5 flex w-[calc(100%-12px)] items-start gap-3 rounded-xl px-3 py-2.5 text-left transition-all ${
+                  className={`mx-1.5 flex w-[calc(100%-12px)] items-start gap-2 rounded-lg px-2.5 py-1.5 text-left transition-all ${
                     active
                       ? 'bg-gradient-to-r from-cyan-500/12 via-violet-500/10 to-pink-500/12'
                       : 'hover:bg-white/[0.04]'
                   }`}
                 >
-                  <div className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-white/10 bg-black/20">
-                    <Icon size={12} className={option.color} />
+                  <div className="mt-0.5 flex h-4.5 w-4.5 shrink-0 items-center justify-center rounded-full border border-white/10 bg-black/20">
+                    <Icon size={11} className={option.color} />
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center justify-between gap-2">
-                      <span className={`text-xs font-medium ${active ? 'text-foreground' : 'text-muted-foreground'}`}>
+                      <span className={`text-[11px] font-medium ${active ? 'text-foreground' : 'text-muted-foreground'}`}>
                         {option.label}
                       </span>
                       <span
-                        className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full border ${
+                        className={`flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border ${
                           active ? 'border-cyan-400/60 bg-cyan-400/15 text-cyan-300' : 'border-white/10 text-transparent'
                         }`}
                       >
-                        <Check size={10} />
+                        <Check size={9} />
                       </span>
                     </div>
-                    <p className="mt-0.5 text-[10px] leading-snug text-muted-foreground/70">{option.desc}</p>
+                    <p className="mt-0.5 text-[9px] leading-snug text-muted-foreground/70">{option.desc}</p>
                   </div>
                 </button>
               )
@@ -742,7 +813,7 @@ function ModelSelector({
   const [form, setForm] = useState(EMPTY_FORM)
   const [formError, setFormError] = useState('')
   const [showApiKey, setShowApiKey] = useState(false)
-  const [coords, setCoords] = useState({ top: 0, left: 0, width: 280 })
+  const [coords, setCoords] = useState({ top: 0, left: 0, width: 248 })
   const ref = useRef<HTMLDivElement>(null)
   const buttonRef = useRef<HTMLButtonElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -771,7 +842,7 @@ function ModelSelector({
     (formOpen: boolean) => {
       if (!buttonRef.current) return
       const rect = buttonRef.current.getBoundingClientRect()
-      const width = formOpen ? 340 : 280
+      const width = formOpen ? 308 : 236
       setCoords({
         top: Math.max(16, rect.top - 12),
         left: Math.min(window.innerWidth - width - 16, Math.max(12, rect.left + rect.width - width)),
@@ -810,7 +881,7 @@ function ModelSelector({
   }
 
   const inputClassName =
-    'w-full rounded-lg border border-border bg-[#0d0d10] px-2.5 py-1.5 text-xs text-foreground outline-none transition-colors placeholder:text-muted-foreground/50 focus:border-primary/50'
+    'w-full rounded-lg border border-border bg-[#101014] px-2.5 py-1.5 text-xs text-foreground outline-none transition-colors placeholder:text-muted-foreground/50 focus:border-primary/50'
 
   return (
     <div ref={ref} className="relative">
@@ -821,17 +892,19 @@ function ModelSelector({
           setOpen((state) => !state)
           setShowForm(false)
         }}
-        className="field-shell flex h-9 min-w-[164px] items-center gap-1.5 rounded-xl px-3 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+        className="minimal-control flex h-6.5 w-[74px] min-w-0 max-w-[74px] items-center justify-between gap-1 rounded-md px-1.5 text-[11px] font-medium"
+        title={current?.label || 'Select model'}
+        aria-label={current?.label || 'Select model'}
       >
-        <span className="max-w-[110px] truncate">{current?.label || 'Select model'}</span>
-        <ChevronDown size={11} className={`shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
+        <span className="truncate">Model</span>
+        <ChevronDown size={9} className={`shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
 
       {open &&
         createPortal(
         <div
           ref={menuRef}
-          className="menu-surface fixed z-[9998] overflow-hidden rounded-2xl py-1.5 shadow-2xl"
+          className="menu-surface dropdown-enter-right fixed z-[9998] overflow-hidden rounded-xl py-1.5 shadow-2xl"
           style={{
             top: coords.top,
             left: coords.left,
@@ -850,7 +923,7 @@ function ModelSelector({
                     onChange(option.id)
                     setOpen(false)
                   }}
-                  className={`flex w-full items-center justify-between rounded-xl px-3 py-2.5 text-left text-xs transition-colors ${
+                  className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-[11px] transition-colors ${
                     option.id === value
                       ? 'bg-gradient-to-r from-cyan-500/12 via-violet-500/10 to-pink-500/12 text-foreground'
                       : 'text-muted-foreground hover:bg-white/5 hover:text-foreground'
@@ -860,7 +933,7 @@ function ModelSelector({
                   <span className="flex shrink-0 items-center gap-1.5">
                     {option.id === value && <Check size={11} className="text-primary" />}
                     {option.badge && (
-                      <span className="rounded-md bg-primary/20 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
+                      <span className="rounded-md bg-primary/16 px-1.5 py-0.5 text-[9px] font-semibold text-primary">
                         {option.badge}
                       </span>
                     )}
@@ -874,7 +947,7 @@ function ModelSelector({
                     updateCoords(true)
                     setShowForm(true)
                   }}
-                  className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-xs text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground"
+                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[11px] text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground"
                 >
                   <Plus size={12} className="text-primary" />
                   <span>Add model</span>
@@ -997,26 +1070,28 @@ function ModelSelector({
 function ChatMessage({ message }: { message: Message }) {
   const isUser = message.role === 'user'
   return (
-    <div className={`flex gap-3 ${isUser ? 'flex-row-reverse' : ''}`}>
+    <div className={`flex gap-2 ${isUser ? 'flex-row-reverse' : ''}`}>
       <div
-        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${
-          isUser ? 'bg-cyan-500/14 text-cyan-300 shadow-[0_0_24px_rgba(34,211,238,0.18)]' : 'bg-violet-500/12 text-violet-300 shadow-[0_0_24px_rgba(139,92,246,0.16)]'
+        className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full ${
+          isUser
+            ? 'bg-[#213152] text-blue-200'
+            : 'border border-white/8 bg-[#232326] text-zinc-300'
         }`}
       >
-        {isUser ? <User size={13} /> : <Bot size={13} />}
+        {isUser ? <User size={9} /> : <Bot size={9} />}
       </div>
-      <div className={`flex max-w-[80%] flex-col gap-1 ${isUser ? 'items-end' : 'items-start'}`}>
+      <div className={`flex max-w-[80%] flex-col gap-0.5 ${isUser ? 'items-end' : 'items-start'}`}>
         <div
-          className={`whitespace-pre-wrap rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed ${
+          className={`whitespace-pre-wrap px-3 py-1.5 text-[11.5px] leading-5 ${
             isUser
-              ? 'rounded-tr-sm border border-cyan-400/18 bg-gradient-to-br from-cyan-500/18 to-violet-500/18 text-white'
-              : 'rounded-tl-sm border border-border bg-[rgba(15,18,24,0.88)] text-foreground shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]'
+              ? 'codex-user-bubble rounded-2xl rounded-tr-md text-white'
+              : 'codex-assistant-card rounded-2xl rounded-tl-md text-zinc-100'
           }`}
           dangerouslySetInnerHTML={{
             __html: escapeHtml(message.content).replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
           }}
         />
-        <span className="px-1 text-[10px] text-muted-foreground/60">
+        <span className="px-1 text-[9.5px] text-muted-foreground/55">
           {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
         </span>
       </div>
@@ -1042,16 +1117,16 @@ function CodeEditor({
   }
 
   return (
-    <div className="flex h-full overflow-hidden font-mono text-xs leading-[1.6]">
+    <div className="codex-editor-surface flex h-full overflow-hidden font-mono text-xs leading-[1.6] text-[#d4d4d4]">
       <div
         ref={lineNumberRef}
-        className="w-10 shrink-0 select-none overflow-hidden border-r border-border bg-background"
+        className="codex-editor-gutter codex-editor-border w-11 shrink-0 select-none overflow-hidden border-r"
         style={{ scrollbarWidth: 'none' }}
       >
         {lines.map((_, index) => (
           <div
             key={index}
-            className="pr-2.5 text-right text-[11px] text-muted-foreground/40"
+            className="pr-2.5 text-right text-[11px] text-[#6e7681]"
             style={{ lineHeight: '1.6' }}
           >
             {index + 1}
@@ -1064,7 +1139,7 @@ function CodeEditor({
         value={content}
         onChange={(event) => onChange(event.target.value)}
         onScroll={syncScroll}
-        className="flex-1 resize-none overflow-auto bg-transparent px-4 py-0 text-[11px] text-foreground/90 outline-none"
+        className="flex-1 resize-none overflow-auto bg-transparent px-4 py-0 text-[11px] text-[#d4d4d4] outline-none"
         style={{
           fontFamily: "'Geist Mono', 'JetBrains Mono', monospace",
           lineHeight: '1.6',
@@ -1085,7 +1160,7 @@ function PreviewPanel({
 }) {
   if (!previewMarkup && !loading) {
     return (
-      <div className="relative flex h-full flex-1 items-center justify-center overflow-hidden bg-[#08090e]">
+      <div className="preview-surface relative flex h-full flex-1 items-center justify-center overflow-hidden">
         <div
           className="absolute inset-0 opacity-[0.04]"
           style={{
@@ -1095,19 +1170,19 @@ function PreviewPanel({
           }}
         />
         <div className="relative z-10 text-center">
-          <div className="text-3xl font-semibold tracking-tight text-foreground">Describe what you want to build.</div>
-          <p className="mt-2 text-sm text-muted-foreground">Preview will appear here once files are generated.</p>
+          <div className="text-[28px] font-semibold tracking-tight text-foreground">Describe what you want to build.</div>
+          <p className="mt-2 text-[13px] text-muted-foreground">Preview will appear here once files are generated.</p>
         </div>
       </div>
     )
   }
 
   return (
-    <div className="relative h-full flex-1 overflow-hidden bg-[#08090e]">
+    <div className="preview-surface relative h-full flex-1 overflow-hidden">
       {loading && (
         <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#050505]/66 backdrop-blur-md">
-          <div className="glass-panel flex items-center gap-2 rounded-2xl px-4 py-3 text-xs text-muted-foreground">
-            <Loader2 size={13} className="animate-spin text-cyan-300" />
+          <div className="preview-chip flex items-center gap-2 rounded-xl px-3 py-2 text-[11px] text-muted-foreground">
+            <Loader2 size={12} className="animate-spin text-cyan-300" />
             <span>Updating preview...</span>
           </div>
         </div>
@@ -1116,7 +1191,7 @@ function PreviewPanel({
         title="ALPHA Builder Preview"
         srcDoc={previewMarkup}
         sandbox="allow-scripts allow-same-origin allow-forms allow-modals"
-        className="h-full w-full border-0 bg-[#08090e]"
+        className="h-full w-full border-0 bg-transparent"
       />
     </div>
   )
@@ -1143,13 +1218,13 @@ function CodePanel({
   return (
     <div className="flex h-full">
       <div
-        className="w-48 shrink-0 overflow-y-auto border-r border-border bg-[rgba(12,14,18,0.72)] py-2"
+        className="codex-editor-gutter codex-editor-border w-48 shrink-0 overflow-y-auto border-r py-2"
         style={{ scrollbarWidth: 'thin', scrollbarColor: 'rgba(255,255,255,0.06) transparent' }}
       >
         <div className="px-3 pb-1.5">
-          <span className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/60">
-            Explorer
-          </span>
+            <span className="text-[9px] font-semibold uppercase tracking-[0.18em] text-muted-foreground/60">
+              Explorer
+            </span>
         </div>
         {tree.map((node) => (
           <FileTreeNode
@@ -1164,8 +1239,8 @@ function CodePanel({
         ))}
       </div>
       <div className="flex min-w-0 flex-1 flex-col">
-        <div className="flex shrink-0 items-center overflow-x-auto border-b border-border bg-[rgba(12,14,18,0.82)]">
-          <div className="flex items-center gap-2 border-r border-primary/30 bg-black/30 px-4 py-2">
+        <div className="codex-editor-tab codex-editor-border flex shrink-0 items-center overflow-x-auto border-b">
+          <div className="flex items-center gap-2 border-r border-white/5 bg-black/10 px-3 py-1.5">
             <FileIcon ext={ext} />
             <span className={`font-mono text-xs font-medium ${extColorMap[ext || ''] || 'text-foreground'}`}>
               {fileName || 'Select a file'}
@@ -1177,7 +1252,7 @@ function CodePanel({
           {selectedFilePath.length ? (
             <CodeEditor content={content} onChange={onContentChange} />
           ) : (
-            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+            <div className="flex h-full items-center justify-center text-[13px] text-muted-foreground">
               Select a file to edit.
             </div>
           )}
@@ -1907,11 +1982,11 @@ export default function BuilderWindow() {
         <div className="glass-panel flex shrink-0 flex-col bg-card" style={{ width: panelWidth }}>
           <div className="relative flex shrink-0 items-center justify-between border-b border-border px-4 py-3">
             <div className="flex items-center gap-2">
-              <div className="h-2 w-2 rounded-full bg-cyan-400 animate-pulse" />
+              <div className="h-2 w-2 rounded-full bg-sky-400" />
               <span className="text-sm font-semibold tracking-tight text-foreground">Agent</span>
             </div>
             <div className="flex items-center gap-2">
-              <span className="field-shell max-w-[140px] truncate rounded-full px-2.5 py-1 font-mono text-[10px] text-muted-foreground">
+              <span className="field-shell max-w-[124px] truncate rounded-full px-2 py-1 font-mono text-[9.5px] text-muted-foreground">
                 {currentModelLabel}
               </span>
               <button
@@ -1920,10 +1995,10 @@ export default function BuilderWindow() {
                   setSidebarMenuOpen((value) => !value)
                   setSidebarMenuSection(null)
                 }}
-                className="premium-button flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:text-white"
+                className="premium-button flex h-6.5 w-6.5 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:text-white"
                 aria-label="Open Builder agent menu"
               >
-                <MoreHorizontal size={14} />
+                <MoreHorizontal size={12} />
               </button>
             </div>
 
@@ -2002,7 +2077,7 @@ export default function BuilderWindow() {
           </div>
 
           <div
-            className="flex-1 space-y-5 overflow-y-auto px-4 py-4"
+            className="flex-1 space-y-3 overflow-y-auto px-4 py-4"
             style={{ scrollbarWidth: 'thin', scrollbarColor: 'rgba(255,255,255,0.06) transparent' }}
           >
             {messages.length === 0 && !sending ? (
@@ -2019,21 +2094,21 @@ export default function BuilderWindow() {
             )}
 
             {sending && (
-              <div className="flex gap-3">
-                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-violet-500/10 text-violet-400">
-                  <Bot size={13} />
+              <div className="flex gap-2">
+                <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-white/8 bg-[#232326] text-zinc-300">
+                  <Bot size={9} />
                 </div>
-                <div className="accent-status flex items-center gap-2 rounded-2xl rounded-tl-sm px-3.5 py-3">
-                  <Loader2 size={13} className="animate-spin text-cyan-300" />
-                  <span className="text-xs text-muted-foreground">{statusText}</span>
+                <div className="accent-status flex items-center gap-2 rounded-2xl rounded-tl-md px-3 py-1.5">
+                  <Loader2 size={10} className="animate-spin text-cyan-300" />
+                  <span className="text-[11px] text-muted-foreground">{statusText}</span>
                 </div>
               </div>
             )}
             <div ref={messagesEndRef} />
           </div>
 
-          <div className="shrink-0 border-t border-border px-2.5 py-2">
-            <div className="field-shell rounded-2xl transition-all focus-within:border-primary/40 focus-within:ring-1 focus-within:ring-primary/20">
+          <div className="shrink-0 border-t border-border px-3 py-3">
+            <div className="codex-input-shell rounded-xl transition-all focus-within:border-primary/40 focus-within:ring-1 focus-within:ring-primary/20">
               <textarea
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
@@ -2045,38 +2120,38 @@ export default function BuilderWindow() {
                 }}
                 placeholder="Describe what to build..."
                 rows={2}
-                className="w-full min-h-[72px] resize-none bg-transparent px-3 pb-1 pt-2.5 text-xs leading-relaxed text-foreground outline-none placeholder:text-muted-foreground/50"
+                className="w-full min-h-[64px] resize-none bg-transparent px-3.5 pb-1 pt-2.5 text-[11.5px] leading-5 text-foreground outline-none placeholder:text-muted-foreground/50"
                 style={{ scrollbarWidth: 'none' }}
               />
-              <div className="flex flex-wrap items-end justify-between gap-2 px-2 pb-2 pt-1">
+              <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1.5 px-3 pb-2.5 pt-1">
                 <div className="flex min-w-0 items-center gap-1">
                   <button
                     onClick={handlePickAttachment}
-                    className="premium-button flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:text-foreground"
+                    className="minimal-control flex h-6.5 w-6.5 items-center justify-center rounded-md"
                     aria-label="Add attachment"
                     title={attachments.length ? `${attachments.length} attachment(s) selected` : 'Add attachment'}
                   >
-                    <Plus size={13} />
+                    <Plus size={10} />
                   </button>
                   <AccessMenu value={permissionMode} onChange={setPermissionMode} />
                 </div>
 
-                <div className="flex min-w-0 flex-1 items-center justify-end gap-1.5">
+                <div className="flex min-w-0 items-center justify-end overflow-hidden">
                   <ModelSelector
                     value={selectedModel}
                     onChange={setSelectedModel}
                     options={providerOptions}
                     onAddCustom={handleAddCustomModel}
                   />
-                  <button
-                    onClick={handleSend}
-                    disabled={!input.trim() || sending}
-                    className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-r from-sky-500 via-cyan-400 to-violet-500 text-white shadow-[0_10px_30px_rgba(34,211,238,0.18)] transition-all hover:scale-[1.02] hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-30"
-                    aria-label="Send builder prompt"
-                  >
-                    {sending ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
-                  </button>
                 </div>
+                <button
+                  onClick={handleSend}
+                  disabled={!input.trim() || sending}
+                  className="flex h-6.5 w-6.5 items-center justify-center rounded-full bg-[#2f81f7] text-white shadow-[0_8px_18px_rgba(47,129,247,0.16)] transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-30"
+                  aria-label="Send builder prompt"
+                >
+                  {sending ? <Loader2 size={10} className="animate-spin" /> : <Send size={10} />}
+                </button>
               </div>
             </div>
           </div>
@@ -2097,20 +2172,20 @@ export default function BuilderWindow() {
         </div>
 
         <div className="glass-panel flex min-w-0 flex-1 flex-col bg-background">
-          <div className="flex shrink-0 items-center justify-between border-b border-border bg-[linear-gradient(90deg,rgba(10,12,18,0.92),rgba(18,16,28,0.88))] px-4 py-2.5">
-            <div className="flex items-center gap-3">
-              <div className="field-shell flex items-center gap-0.5 rounded-xl p-0.5">
+          <div className="flex shrink-0 items-center justify-between border-b border-border bg-[rgba(22,22,24,0.96)] px-4 py-2">
+            <div className="flex items-center gap-2.5">
+              <div className="flex items-center gap-0.5 rounded-md border border-white/6 bg-transparent p-0.5">
               {(['preview', 'code'] as RightPanel[]).map((mode) => (
                 <button
                   key={mode}
                   onClick={() => setPanel(mode)}
-                  className={`flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-all ${
+                  className={`flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] font-medium transition-all ${
                     panel === mode
-                      ? 'bg-gradient-to-r from-cyan-500/18 via-violet-500/14 to-pink-500/16 text-foreground shadow-sm'
-                      : 'text-muted-foreground hover:bg-white/5 hover:text-foreground'
+                      ? 'minimal-control minimal-control-active'
+                      : 'minimal-control minimal-control-ghost hover:bg-white/5 hover:text-foreground'
                   }`}
                 >
-                  {mode === 'preview' ? <Eye size={13} /> : <Code2 size={13} />}
+                  {mode === 'preview' ? <Eye size={12} /> : <Code2 size={12} />}
                   <span className="capitalize">{mode}</span>
                 </button>
               ))}
@@ -2120,35 +2195,35 @@ export default function BuilderWindow() {
                   {projectState?.metadata.name || 'Blank workspace'}
                 </div>
                 <div className="truncate text-[11px] text-zinc-500">
-                  {providerDisplayName(projectState?.metadata.providerUsed || selectedModel)} · {projectState?.files.length || 0} files
+                  {providerDisplayName(projectState?.metadata.providerUsed || selectedModel)} Â· {projectState?.files.length || 0} files
                 </div>
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5">
               <button
                 onClick={handleOpenInWindow}
                 title="Open in window"
-                className="premium-button flex items-center justify-center rounded-xl px-[8px] py-[6px] text-muted-foreground transition-colors hover:text-foreground"
+                className="minimal-control flex h-6.5 w-6.5 items-center justify-center rounded-md"
               >
-                <ExternalLink size={16} />
+                <ExternalLink size={11} />
               </button>
 
               {panel === 'code' && (
                 <button
                   onClick={handleCopy}
-                  className="premium-button flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
+                  className="minimal-control flex h-6.5 items-center gap-1 rounded-md px-2 text-[11px] font-medium"
                 >
-                  {copied ? <Check size={12} className="text-green-400" /> : <Copy size={12} />}
+                  {copied ? <Check size={11} className="text-green-400" /> : <Copy size={11} />}
                   <span>{copied ? 'Copied' : 'Copy'}</span>
                 </button>
               )}
 
               <button
                 onClick={handleZipDownload}
-                className="flex items-center gap-1.5 rounded-xl border border-fuchsia-500/22 bg-[linear-gradient(135deg,rgba(56,189,248,0.18),rgba(139,92,246,0.22),rgba(244,114,182,0.18))] px-3 py-1.5 text-xs font-medium text-white shadow-[0_12px_34px_rgba(139,92,246,0.12)] transition-colors hover:border-fuchsia-400/35"
+                className="minimal-control flex h-6.5 items-center gap-1 rounded-md px-2 text-[11px] font-medium text-foreground"
               >
-                <Download size={12} />
+                <Download size={11} />
                 <span>Download</span>
               </button>
             </div>
@@ -2173,4 +2248,5 @@ export default function BuilderWindow() {
     </>
   )
 }
+
 
