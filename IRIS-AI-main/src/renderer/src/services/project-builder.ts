@@ -14,6 +14,8 @@ export type BuilderProjectMetadata = {
   files: string[]
   lastPrompt: string
   projectPath: string
+  lastError?: string
+  summary?: string
 }
 
 export type BuilderProjectState = {
@@ -82,21 +84,39 @@ export type BuilderModelStatuses = Record<string, BuilderModelStatusRow[]>
 
 export const createBuilderProject = async (
   prompt: string,
-  provider: 'glm' | 'zai' | 'gemini' | 'openrouter' | 'kimi' | 'groq' = 'glm'
+  provider: 'glm' | 'zai' | 'gemini' | 'openrouter' | 'kimi' | 'groq' = 'glm',
+  permissionMode: 'ask' | 'approve' | 'full' = 'ask'
 ): Promise<BuilderProjectResponse> => {
-  return window.electron.ipcRenderer.invoke('project-builder-create', { prompt, provider })
+  return window.electron.ipcRenderer.invoke('project-builder-create', { prompt, provider, permissionMode })
 }
 
 export const updateBuilderProject = async (
   projectId: string,
   prompt: string,
-  provider?: 'glm' | 'zai' | 'gemini' | 'openrouter' | 'kimi' | 'groq'
+  provider?: 'glm' | 'zai' | 'gemini' | 'openrouter' | 'kimi' | 'groq',
+  permissionMode: 'ask' | 'approve' | 'full' = 'ask'
 ): Promise<BuilderProjectResponse> => {
-  return window.electron.ipcRenderer.invoke('project-builder-update', { projectId, prompt, provider })
+  return window.electron.ipcRenderer.invoke('project-builder-update', {
+    projectId,
+    prompt,
+    provider,
+    permissionMode
+  })
 }
 
 export const readBuilderProject = async (projectId: string): Promise<BuilderProjectResponse> => {
   return window.electron.ipcRenderer.invoke('project-builder-read', { projectId })
+}
+
+export const getLastBuilderProject = async (): Promise<BuilderProjectResponse> => {
+  return window.electron.ipcRenderer.invoke('project-builder-last-project')
+}
+
+export const saveBuilderProjectMemory = async (
+  projectId: string,
+  note?: string
+): Promise<BuilderProjectResponse> => {
+  return window.electron.ipcRenderer.invoke('project-builder-save-memory', { projectId, note })
 }
 
 export const exportBuilderProjectZip = async (
