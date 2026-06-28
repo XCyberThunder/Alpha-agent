@@ -9,7 +9,7 @@ import LoginPage from './auth/Login'
 import { useAuthStore } from './store/auth-store'
 import AuthInitializer from './auth/AuthToken'
 import IndexRoot from './IndexRoot'
-import BuilderWindow from './views/BuilderWindow'
+import BuilderWindow from './views/builderwindow'
 
 const electronAPI = (window as any).electron?.ipcRenderer
 

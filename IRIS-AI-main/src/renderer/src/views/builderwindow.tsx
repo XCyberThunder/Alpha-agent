@@ -9,8 +9,6 @@ import Editor, { useMonaco } from '@monaco-editor/react'
 import {
   ArrowUp,
   Bot,
-  CheckCircle2,
-  ChevronDown,
   Code2,
   Copy,
   Download,
@@ -25,25 +23,19 @@ import {
   FolderOpen,
   FolderTree,
   FolderUp,
-  Globe,
   Laptop,
   LayoutGrid,
   MessageSquare,
   MonitorSmartphone,
   PencilLine,
-  Play,
   Plus,
   RefreshCw,
   Save,
-  Search,
   Settings2,
-  ShieldCheck,
   Sparkles,
-  Square,
   Smartphone,
   Terminal,
   Upload,
-  Wand2,
   X
 } from 'lucide-react'
 import {
@@ -171,6 +163,14 @@ const buildLoaderCss = `
   40% { transform: translateY(-14px); opacity: 1; }
 }
 `
+const DRAFT_STORAGE_KEY = 'alpha_builder_window_draft'
+const isDev = import.meta.env.DEV
+
+const debugBuilder = (...args: unknown[]) => {
+  if (isDev) {
+    console.debug('[builderwindow]', ...args)
+  }
+}
 
 const languageForFile = (filePath: string) => {
   const lower = filePath.toLowerCase()
@@ -387,6 +387,8 @@ export default function BuilderWindow() {
   const [addModelMessage, setAddModelMessage] = useState('')
   const [activeSidebarTab, setActiveSidebarTab] = useState<'chat' | 'agent'>('chat')
   const consumedPromptRef = useRef<string>('')
+  const terminalPanelRef = useRef<HTMLDivElement | null>(null)
+  const filePanelRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     if (!monaco) return
@@ -451,8 +453,49 @@ export default function BuilderWindow() {
     void refreshModelOptions()
   }, [])
 
+  useEffect(() => {
+    try {
+      const rawDraft = localStorage.getItem(DRAFT_STORAGE_KEY)
+      if (!rawDraft) return
+      const draft = JSON.parse(rawDraft) as {
+        chatInput?: string
+        mode?: BuilderMode
+        selectedModel?: ModelProvider
+        permissionMode?: PermissionMode
+        statusMessage?: string
+      }
+      if (draft.chatInput) setChatInput(draft.chatInput)
+      if (draft.mode) setMode(draft.mode)
+      if (draft.selectedModel) setSelectedModel(draft.selectedModel)
+      if (draft.permissionMode) setPermissionMode(draft.permissionMode)
+      if (draft.statusMessage) setStatusMessage(draft.statusMessage)
+    } catch (error) {
+      debugBuilder('draft-load-failed', error)
+    }
+  }, [])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        DRAFT_STORAGE_KEY,
+        JSON.stringify({
+          chatInput,
+          mode,
+          selectedModel,
+          permissionMode,
+          statusMessage,
+          lastOutput: chatMessages.at(-1)?.text || '',
+          updatedAt: new Date().toISOString()
+        })
+      )
+    } catch (error) {
+      debugBuilder('draft-save-failed', error)
+    }
+  }, [chatInput, mode, selectedModel, permissionMode, statusMessage, chatMessages])
+
   const applyIncomingPayload = (payload?: BuilderPayload | null) => {
     if (!payload) return
+    debugBuilder('incoming-payload', payload)
 
     if (payload.selectedProvider && payload.selectedProvider !== 'auto') {
       setSelectedModel(payload.selectedProvider as ModelProvider)
@@ -654,6 +697,7 @@ export default function BuilderWindow() {
   const handleAgentPrompt = async (prompt: string, skipApproval = false) => {
     const trimmed = prompt.trim()
     if (!trimmed) return
+    debugBuilder('agent-prompt', { trimmed, skipApproval })
 
     if (!skipApproval && permissionMode === 'ask' && projectState) {
       setPendingApproval({ type: 'agent-edit', prompt: trimmed })
@@ -763,6 +807,7 @@ export default function BuilderWindow() {
     const response = await pickBuilderAttachments(kind)
     if (!response.success) {
       setStatusMessage(response.error || 'Attachment pick failed.')
+      debugBuilder('attachment-pick-failed', response.error)
       return
     }
     if (response.cancelled || !response.attachments?.length) return
@@ -793,6 +838,27 @@ export default function BuilderWindow() {
     } finally {
       if (busyLabel) setIsBusy(false)
     }
+  }
+
+  const handleSidebarAction = (action: 'chat' | 'agent' | 'files' | 'terminal' | 'models') => {
+    if (action === 'chat' || action === 'agent') {
+      setActiveSidebarTab(action)
+      setStatusMessage(action === 'chat' ? 'Project chat ready.' : 'Coding agent controls ready.')
+      return
+    }
+    if (action === 'files') {
+      setMode((current) => (current === 'preview' ? 'split' : current))
+      filePanelRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+      setStatusMessage('Project file tree focused.')
+      return
+    }
+    if (action === 'terminal') {
+      terminalPanelRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+      setStatusMessage('Terminal panel focused.')
+      return
+    }
+    setShowModelModal(true)
+    setStatusMessage('Model configuration open hai.')
   }
 
   const saveModelDraft = async () => {
@@ -937,24 +1003,56 @@ export default function BuilderWindow() {
             <div className="grid h-[36px] w-[36px] place-items-center rounded-[12px] bg-[#111318] text-white shadow-[0_0_0_1px_rgba(34,211,238,0.18),0_8px_24px_rgba(17,19,24,0.18)]">
               <Sparkles className="h-[16px] w-[16px]" />
             </div>
-            <button className="grid h-[36px] w-[36px] place-items-center rounded-[12px] border border-cyan-400/20 bg-cyan-400/10 text-cyan-300 shadow-[0_0_16px_rgba(34,211,238,0.12)]">
+            <button
+              aria-label="Open builder chat"
+              onClick={() => handleSidebarAction('chat')}
+              className={`grid h-[36px] w-[36px] place-items-center rounded-[12px] border ${
+                activeSidebarTab === 'chat'
+                  ? 'border-cyan-400/20 bg-cyan-400/10 text-cyan-300 shadow-[0_0_16px_rgba(34,211,238,0.12)]'
+                  : 'border-white/10 bg-white/5 text-[#94a3b8]'
+              }`}
+            >
               <MessageSquare className="h-[16px] w-[16px]" />
             </button>
-            <button className="grid h-[36px] w-[36px] place-items-center rounded-[12px] border border-white/10 bg-white/5 text-[#94a3b8]">
+            <button
+              aria-label="Open coding agent"
+              onClick={() => handleSidebarAction('agent')}
+              className={`grid h-[36px] w-[36px] place-items-center rounded-[12px] border ${
+                activeSidebarTab === 'agent'
+                  ? 'border-cyan-400/20 bg-cyan-400/10 text-cyan-300 shadow-[0_0_16px_rgba(34,211,238,0.12)]'
+                  : 'border-white/10 bg-white/5 text-[#94a3b8]'
+              }`}
+            >
               <Bot className="h-[16px] w-[16px]" />
             </button>
-            <button className="grid h-[36px] w-[36px] place-items-center rounded-[12px] border border-white/10 bg-white/5 text-[#94a3b8]">
+            <button
+              aria-label="Focus file tree"
+              onClick={() => handleSidebarAction('files')}
+              className="grid h-[36px] w-[36px] place-items-center rounded-[12px] border border-white/10 bg-white/5 text-[#94a3b8]"
+            >
               <FolderTree className="h-[16px] w-[16px]" />
             </button>
-            <button className="grid h-[36px] w-[36px] place-items-center rounded-[12px] border border-white/10 bg-white/5 text-[#94a3b8]">
+            <button
+              aria-label="Focus terminal"
+              onClick={() => handleSidebarAction('terminal')}
+              className="grid h-[36px] w-[36px] place-items-center rounded-[12px] border border-white/10 bg-white/5 text-[#94a3b8]"
+            >
               <Terminal className="h-[16px] w-[16px]" />
             </button>
-            <button onClick={() => setShowModelModal(true)} className="grid h-[36px] w-[36px] place-items-center rounded-[12px] border border-white/10 bg-white/5 text-[#94a3b8]">
+            <button
+              aria-label="Add or configure model"
+              onClick={() => handleSidebarAction('models')}
+              className="grid h-[36px] w-[36px] place-items-center rounded-[12px] border border-white/10 bg-white/5 text-[#94a3b8]"
+            >
               <Plus className="h-[16px] w-[16px]" />
             </button>
           </div>
           <div className="flex flex-col items-center gap-3">
-            <button onClick={() => setShowModelModal(true)} className="grid h-[36px] w-[36px] place-items-center rounded-[12px] border border-white/10 bg-white/5 text-[#94a3b8]">
+            <button
+              aria-label="Open builder settings"
+              onClick={() => setShowModelModal(true)}
+              className="grid h-[36px] w-[36px] place-items-center rounded-[12px] border border-white/10 bg-white/5 text-[#94a3b8]"
+            >
               <Settings2 className="h-[16px] w-[16px]" />
             </button>
             <button
@@ -982,6 +1080,7 @@ export default function BuilderWindow() {
 
             <div className="mt-3 grid grid-cols-2 gap-1 rounded-[14px] border border-white/8 bg-white/5 p-1">
               <button
+                aria-label="Show chat messages"
                 onClick={() => setActiveSidebarTab('chat')}
                 className={`rounded-[10px] px-2.5 py-1.5 text-left text-[11px] font-medium ${
                   activeSidebarTab === 'chat' ? 'bg-cyan-400/12 text-cyan-200' : 'text-[#94a3b8]'
@@ -993,6 +1092,7 @@ export default function BuilderWindow() {
                 </span>
               </button>
               <button
+                aria-label="Show agent details"
                 onClick={() => setActiveSidebarTab('agent')}
                 className={`rounded-[10px] px-2.5 py-1.5 text-left text-[11px] font-medium ${
                   activeSidebarTab === 'agent' ? 'bg-cyan-400/12 text-cyan-200' : 'text-[#94a3b8]'
@@ -1397,7 +1497,10 @@ export default function BuilderWindow() {
             }`}
           >
             {mode !== 'preview' && (
-              <aside className="flex min-h-0 flex-col overflow-hidden rounded-[18px] border border-white/10 bg-[#0b0d12] text-white shadow-[0_16px_40px_rgba(0,0,0,0.24)]">
+              <aside
+                ref={filePanelRef}
+                className="flex min-h-0 flex-col overflow-hidden rounded-[18px] border border-white/10 bg-[#0b0d12] text-white shadow-[0_16px_40px_rgba(0,0,0,0.24)]"
+              >
                 <div className="border-b border-white/10 px-4 py-3">
                   <div className="text-[10px] font-semibold uppercase tracking-[0.28em] text-[#7d8795]">Files</div>
                   <div className="mt-1 text-sm font-medium text-white">{totalFiles} project files</div>
@@ -1559,7 +1662,10 @@ export default function BuilderWindow() {
                   </div>
                 </div>
 
-                <div className="overflow-hidden rounded-[20px] border border-white/10 bg-[#0c0f15] text-white shadow-[0_16px_40px_rgba(0,0,0,0.24)]">
+                <div
+                  ref={terminalPanelRef}
+                  className="overflow-hidden rounded-[20px] border border-white/10 bg-[#0c0f15] text-white shadow-[0_16px_40px_rgba(0,0,0,0.24)]"
+                >
                   <div className="border-b border-white/10 px-4 py-3">
                     <div className="flex items-center justify-between gap-3">
                       <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.28em] text-[#7d8795]">
