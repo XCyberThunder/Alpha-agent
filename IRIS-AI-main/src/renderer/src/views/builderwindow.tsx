@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import {
   Bot,
   Check,
@@ -150,21 +151,21 @@ const ACCESS_OPTIONS: Array<{
   {
     id: 'ask',
     label: 'Ask for approval',
-    desc: 'Always ask before file changes and run actions.',
+    desc: 'Always ask before edits / commands / external actions.',
     icon: ShieldAlert,
     color: 'text-yellow-400'
   },
   {
     id: 'approve',
     label: 'Approve for me',
-    desc: 'Allow safe project edits and ask on risky actions.',
+    desc: 'Only ask for actions detected as potentially unsafe.',
     icon: ShieldCheck,
     color: 'text-blue-400'
   },
   {
     id: 'full',
     label: 'Full access',
-    desc: 'Allow full project edits inside the current workspace.',
+    desc: 'Broad access mode, but still respect ALPHA safety boundaries.',
     icon: Unlock,
     color: 'text-green-400'
   }
@@ -173,23 +174,26 @@ const ACCESS_OPTIONS: Array<{
 const BUILDER_THEME_CSS = `
 .builderwindow-root {
   --background: #050505;
-  --background-soft: #07090d;
+  --background-soft: #0a0d15;
   --foreground: #ffffff;
-  --card: rgba(12,14,18,0.88);
-  --popover: rgba(15,18,24,0.96);
+  --card: rgba(10,12,18,0.76);
+  --popover: rgba(15,18,27,0.96);
   --primary: #8b5cf6;
   --primary-cyan: #22d3ee;
   --primary-pink: #f472b6;
+  --primary-blue: #38bdf8;
+  --primary-red: #ef4444;
   --muted: rgba(17,20,28,0.88);
   --muted-foreground: #a1a1aa;
   --border: rgba(255,255,255,0.08);
   --danger: #ef4444;
   color: var(--foreground);
   background:
-    radial-gradient(circle at 14% 8%, rgba(34,211,238,0.11), transparent 22%),
-    radial-gradient(circle at 82% 12%, rgba(139,92,246,0.14), transparent 24%),
-    radial-gradient(circle at 60% 100%, rgba(244,114,182,0.08), transparent 20%),
-    linear-gradient(180deg, #07090d 0%, #050505 100%);
+    radial-gradient(circle at 10% 8%, rgba(56,189,248,0.14), transparent 18%),
+    radial-gradient(circle at 78% 10%, rgba(139,92,246,0.16), transparent 24%),
+    radial-gradient(circle at 52% 100%, rgba(244,114,182,0.10), transparent 20%),
+    radial-gradient(circle at 100% 70%, rgba(239,68,68,0.08), transparent 24%),
+    linear-gradient(180deg, #140b1f 0%, #0b1020 14%, #050505 68%);
   font-family: Geist, Inter, system-ui, sans-serif;
 }
 .builderwindow-root * {
@@ -217,22 +221,57 @@ const BUILDER_THEME_CSS = `
 }
 .builderwindow-root .glass-panel {
   background:
-    linear-gradient(180deg, rgba(18, 22, 30, 0.88), rgba(10, 12, 17, 0.92)),
-    radial-gradient(circle at top, rgba(34,211,238,0.07), transparent 38%);
+    linear-gradient(180deg, rgba(20, 22, 32, 0.84), rgba(8, 10, 16, 0.90)),
+    radial-gradient(circle at top left, rgba(34,211,238,0.08), transparent 34%),
+    radial-gradient(circle at top right, rgba(244,114,182,0.07), transparent 28%);
   border: 1px solid rgba(255,255,255,0.08);
   box-shadow:
-    0 30px 80px rgba(0,0,0,0.38),
+    0 30px 80px rgba(0,0,0,0.42),
+    0 0 0 1px rgba(56,189,248,0.03),
+    0 14px 50px rgba(139,92,246,0.08),
     inset 0 1px 0 rgba(255,255,255,0.04),
-    inset 0 -1px 0 rgba(34,211,238,0.03);
+    inset 0 -1px 0 rgba(34,211,238,0.04);
   backdrop-filter: blur(22px);
 }
 .builderwindow-root .premium-button {
-  background: linear-gradient(135deg, rgba(34,211,238,0.18), rgba(139,92,246,0.18));
+  background:
+    linear-gradient(135deg, rgba(56,189,248,0.16), rgba(139,92,246,0.18)),
+    linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0));
   border: 1px solid rgba(255,255,255,0.08);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.05);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.06),
+    0 8px 24px rgba(0,0,0,0.16);
 }
 .builderwindow-root .premium-button:hover {
-  background: linear-gradient(135deg, rgba(34,211,238,0.24), rgba(139,92,246,0.24));
+  background:
+    linear-gradient(135deg, rgba(56,189,248,0.24), rgba(244,114,182,0.22)),
+    linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0));
+}
+.builderwindow-root .menu-surface {
+  background:
+    linear-gradient(180deg, rgba(18, 20, 28, 0.98), rgba(11, 13, 20, 0.98)),
+    radial-gradient(circle at top left, rgba(56,189,248,0.08), transparent 34%),
+    radial-gradient(circle at bottom right, rgba(244,114,182,0.07), transparent 32%);
+  border: 1px solid rgba(255,255,255,0.08);
+  box-shadow:
+    0 26px 70px rgba(0,0,0,0.52),
+    0 0 0 1px rgba(139,92,246,0.04),
+    inset 0 1px 0 rgba(255,255,255,0.05);
+  backdrop-filter: blur(22px);
+}
+.builderwindow-root .field-shell {
+  background:
+    linear-gradient(180deg, rgba(13,16,24,0.94), rgba(10,12,18,0.94)),
+    radial-gradient(circle at top left, rgba(34,211,238,0.06), transparent 28%);
+  border: 1px solid rgba(255,255,255,0.08);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.04),
+    0 12px 32px rgba(0,0,0,0.26);
+}
+.builderwindow-root .accent-status {
+  background: linear-gradient(135deg, rgba(56,189,248,0.12), rgba(244,114,182,0.12));
+  border: 1px solid rgba(255,255,255,0.08);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
 }
 `
 
@@ -462,6 +501,12 @@ const deriveSessionTitle = (messages: Message[], fallback = 'New chat') => {
   return firstUserMessage.length > 56 ? `${firstUserMessage.slice(0, 56)}...` : firstUserMessage
 }
 
+const accessLabelMap: Record<PermissionMode, string> = {
+  ask: 'Ask',
+  approve: 'Approve',
+  full: 'Full'
+}
+
 function FileIcon({ ext }: { ext?: string }) {
   if (ext === 'json') return <FileJson size={13} className="text-yellow-400/80" />
   if (ext === 'css') return <FileCode size={13} className="text-blue-400/80" />
@@ -576,7 +621,7 @@ function AccessMenu({
   onChange: (value: PermissionMode) => void
 }) {
   const [open, setOpen] = useState(false)
-  const [coords, setCoords] = useState({ top: 0, left: 0 })
+  const [coords, setCoords] = useState({ top: 0, left: 0, width: 280 })
   const buttonRef = useRef<HTMLButtonElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
 
@@ -598,7 +643,11 @@ function AccessMenu({
   const handleToggle = () => {
     if (buttonRef.current) {
       const rect = buttonRef.current.getBoundingClientRect()
-      setCoords({ top: rect.top - 8, left: rect.left })
+      setCoords({
+        top: Math.max(16, rect.top - 12),
+        left: Math.max(12, rect.left),
+        width: Math.max(272, rect.width + 96)
+      })
     }
     setOpen((value) => !value)
   }
@@ -608,50 +657,69 @@ function AccessMenu({
       <button
         ref={buttonRef}
         onClick={handleToggle}
-        className="flex h-6 items-center gap-1 rounded-md px-1.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground"
+        className="premium-button flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-[11px] font-medium text-muted-foreground transition-all hover:text-foreground"
+        aria-expanded={open}
+        aria-label="Access permissions"
       >
         <Key size={11} />
-        <span>Access</span>
+        <span>{`Access · ${accessLabelMap[value]}`}</span>
         <ChevronDown size={9} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
-      {open && (
-        <div
-          ref={menuRef}
-          className="fixed z-[9999] w-64 rounded-xl border border-border bg-popover py-1.5 shadow-2xl shadow-black/70"
-          style={{ top: coords.top, left: coords.left, transform: 'translateY(-100%)' }}
-        >
-          <p className="px-3 pb-1.5 pt-0.5 text-[10px] font-medium uppercase tracking-widest text-muted-foreground/60">
-            How should actions be approved?
-          </p>
-          {ACCESS_OPTIONS.map((option) => {
-            const Icon = option.icon
-            const active = option.id === value
-            return (
-              <button
-                key={option.id}
-                onClick={() => {
-                  onChange(option.id)
-                  setOpen(false)
-                }}
-                className={`flex w-full items-start gap-3 px-3 py-2.5 text-left transition-colors ${
-                  active ? 'bg-white/5' : 'hover:bg-white/[0.04]'
-                }`}
-              >
-                <Icon size={14} className={`mt-0.5 shrink-0 ${option.color}`} />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className={`text-xs font-medium ${active ? 'text-foreground' : 'text-muted-foreground'}`}>
-                      {option.label}
-                    </span>
-                    {active && <Check size={11} className="shrink-0 text-primary" />}
+      {open &&
+        createPortal(
+          <div
+            ref={menuRef}
+            className="menu-surface fixed z-[9999] rounded-2xl py-2 shadow-2xl"
+            style={{
+              top: coords.top,
+              left: coords.left,
+              width: coords.width,
+              transform: 'translateY(-100%)'
+            }}
+          >
+            <p className="px-3 pb-1.5 pt-0.5 text-[10px] font-medium uppercase tracking-widest text-muted-foreground/60">
+              How should actions be approved?
+            </p>
+            {ACCESS_OPTIONS.map((option) => {
+              const Icon = option.icon
+              const active = option.id === value
+              return (
+                <button
+                  key={option.id}
+                  onClick={() => {
+                    onChange(option.id)
+                    setOpen(false)
+                  }}
+                  className={`mx-1.5 flex w-[calc(100%-12px)] items-start gap-3 rounded-xl px-3 py-2.5 text-left transition-all ${
+                    active
+                      ? 'bg-gradient-to-r from-cyan-500/12 via-violet-500/10 to-pink-500/12'
+                      : 'hover:bg-white/[0.04]'
+                  }`}
+                >
+                  <div className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-white/10 bg-black/20">
+                    <Icon size={12} className={option.color} />
                   </div>
-                  <p className="mt-0.5 text-[10px] leading-snug text-muted-foreground/60">{option.desc}</p>
-                </div>
-              </button>
-            )
-          })}
-        </div>
-      )}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className={`text-xs font-medium ${active ? 'text-foreground' : 'text-muted-foreground'}`}>
+                        {option.label}
+                      </span>
+                      <span
+                        className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full border ${
+                          active ? 'border-cyan-400/60 bg-cyan-400/15 text-cyan-300' : 'border-white/10 text-transparent'
+                        }`}
+                      >
+                        <Check size={10} />
+                      </span>
+                    </div>
+                    <p className="mt-0.5 text-[10px] leading-snug text-muted-foreground/70">{option.desc}</p>
+                  </div>
+                </button>
+              )
+            })}
+          </div>,
+          document.body
+        )}
     </>
   )
 }
@@ -674,13 +742,21 @@ function ModelSelector({
   const [form, setForm] = useState(EMPTY_FORM)
   const [formError, setFormError] = useState('')
   const [showApiKey, setShowApiKey] = useState(false)
+  const [coords, setCoords] = useState({ top: 0, left: 0, width: 280 })
   const ref = useRef<HTMLDivElement>(null)
+  const buttonRef = useRef<HTMLButtonElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
 
   const current = options.find((option) => option.id === value) || options[0]
 
   useEffect(() => {
     const handler = (event: MouseEvent) => {
-      if (ref.current && !ref.current.contains(event.target as Node)) {
+      if (
+        ref.current &&
+        !ref.current.contains(event.target as Node) &&
+        menuRef.current &&
+        !menuRef.current.contains(event.target as Node)
+      ) {
         setOpen(false)
         setShowForm(false)
         setForm(EMPTY_FORM)
@@ -690,6 +766,20 @@ function ModelSelector({
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
   }, [])
+
+  const updateCoords = useCallback(
+    (formOpen: boolean) => {
+      if (!buttonRef.current) return
+      const rect = buttonRef.current.getBoundingClientRect()
+      const width = formOpen ? 340 : 280
+      setCoords({
+        top: Math.max(16, rect.top - 12),
+        left: Math.min(window.innerWidth - width - 16, Math.max(12, rect.left + rect.width - width)),
+        width
+      })
+    },
+    []
+  )
 
   const handleSaveModel = () => {
     if (!form.provider.trim() || !form.name.trim()) {
@@ -725,20 +815,34 @@ function ModelSelector({
   return (
     <div ref={ref} className="relative">
       <button
+        ref={buttonRef}
         onClick={() => {
+          updateCoords(false)
           setOpen((state) => !state)
           setShowForm(false)
         }}
-        className="flex items-center gap-1.5 rounded-lg border border-border bg-muted/60 px-2.5 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        className="field-shell flex h-9 min-w-[164px] items-center gap-1.5 rounded-xl px-3 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
       >
         <span className="max-w-[110px] truncate">{current?.label || 'Select model'}</span>
         <ChevronDown size={11} className={`shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
 
-      {open && (
-        <div className="absolute bottom-full left-0 z-50 mb-1.5 w-64 overflow-hidden rounded-xl border border-border bg-popover py-1 shadow-2xl shadow-black/50">
+      {open &&
+        createPortal(
+        <div
+          ref={menuRef}
+          className="menu-surface fixed z-[9998] overflow-hidden rounded-2xl py-1.5 shadow-2xl"
+          style={{
+            top: coords.top,
+            left: coords.left,
+            width: coords.width,
+            transform: 'translateY(-100%)',
+            maxHeight: '70vh'
+          }}
+        >
           {!showForm ? (
             <>
+              <div className="max-h-[48vh] overflow-y-auto px-1.5">
               {options.map((option) => (
                 <button
                   key={option.id}
@@ -746,9 +850,9 @@ function ModelSelector({
                     onChange(option.id)
                     setOpen(false)
                   }}
-                  className={`flex w-full items-center justify-between px-3 py-2 text-left text-xs transition-colors ${
+                  className={`flex w-full items-center justify-between rounded-xl px-3 py-2.5 text-left text-xs transition-colors ${
                     option.id === value
-                      ? 'bg-primary/15 text-foreground'
+                      ? 'bg-gradient-to-r from-cyan-500/12 via-violet-500/10 to-pink-500/12 text-foreground'
                       : 'text-muted-foreground hover:bg-white/5 hover:text-foreground'
                   }`}
                 >
@@ -763,10 +867,14 @@ function ModelSelector({
                   </span>
                 </button>
               ))}
-              <div className="mt-1 border-t border-border pt-1">
+              </div>
+              <div className="mt-1 border-t border-border px-1.5 pt-1">
                 <button
-                  onClick={() => setShowForm(true)}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground"
+                  onClick={() => {
+                    updateCoords(true)
+                    setShowForm(true)
+                  }}
+                  className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-xs text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground"
                 >
                   <Plus size={12} className="text-primary" />
                   <span>Add model</span>
@@ -774,7 +882,7 @@ function ModelSelector({
               </div>
             </>
           ) : (
-            <div className="space-y-2.5 p-3">
+            <div className="max-h-[70vh] space-y-2.5 overflow-y-auto p-3">
               <div className="mb-1 flex items-center justify-between">
                 <span className="text-xs font-semibold text-foreground">Add model</span>
                 <button
@@ -861,7 +969,7 @@ function ModelSelector({
               <div className="flex gap-2 pt-0.5">
                 <button
                   onClick={handleSaveModel}
-                  className="flex-1 rounded-lg bg-primary py-1.5 text-xs font-medium text-white transition-colors hover:bg-primary/85"
+                  className="flex-1 rounded-xl bg-gradient-to-r from-cyan-500 to-violet-500 py-2 text-xs font-medium text-white transition-colors hover:opacity-90"
                 >
                   Save
                 </button>
@@ -872,14 +980,15 @@ function ModelSelector({
                     setFormError('')
                     setShowApiKey(false)
                   }}
-                  className="flex-1 rounded-lg border border-border py-1.5 text-xs text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground"
+                  className="flex-1 rounded-xl border border-border py-2 text-xs text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground"
                 >
                   Cancel
                 </button>
               </div>
             </div>
           )}
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   )
@@ -1802,7 +1911,7 @@ export default function BuilderWindow() {
               <span className="text-sm font-semibold tracking-tight text-foreground">Agent</span>
             </div>
             <div className="flex items-center gap-2">
-              <span className="max-w-[120px] truncate rounded-full border border-white/8 bg-black/30 px-2 py-0.5 font-mono text-[10px] text-muted-foreground">
+              <span className="field-shell max-w-[140px] truncate rounded-full px-2.5 py-1 font-mono text-[10px] text-muted-foreground">
                 {currentModelLabel}
               </span>
               <button
@@ -1821,7 +1930,7 @@ export default function BuilderWindow() {
             {sidebarMenuOpen && (
               <div
                 ref={sidebarMenuRef}
-                className="glass-panel absolute right-3 top-[calc(100%-6px)] z-50 w-[260px] rounded-2xl p-2 text-xs shadow-2xl"
+                className="menu-surface absolute right-3 top-[calc(100%-6px)] z-50 w-[260px] rounded-2xl p-2 text-xs shadow-2xl"
               >
                 <div className="space-y-1">
                   <button
@@ -1914,8 +2023,8 @@ export default function BuilderWindow() {
                 <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-violet-500/10 text-violet-400">
                   <Bot size={13} />
                 </div>
-                <div className="glass-panel flex items-center gap-2 rounded-2xl rounded-tl-sm px-3.5 py-3">
-                  <Loader2 size={13} className="animate-spin text-primary" />
+                <div className="accent-status flex items-center gap-2 rounded-2xl rounded-tl-sm px-3.5 py-3">
+                  <Loader2 size={13} className="animate-spin text-cyan-300" />
                   <span className="text-xs text-muted-foreground">{statusText}</span>
                 </div>
               </div>
@@ -1924,7 +2033,7 @@ export default function BuilderWindow() {
           </div>
 
           <div className="shrink-0 border-t border-border px-2.5 py-2">
-            <div className="glass-panel rounded-xl border border-border transition-all focus-within:border-primary/40 focus-within:ring-1 focus-within:ring-primary/20">
+            <div className="field-shell rounded-2xl transition-all focus-within:border-primary/40 focus-within:ring-1 focus-within:ring-primary/20">
               <textarea
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
@@ -1936,14 +2045,14 @@ export default function BuilderWindow() {
                 }}
                 placeholder="Describe what to build..."
                 rows={2}
-                className="w-full resize-none bg-transparent px-3 pb-1 pt-2.5 text-xs leading-relaxed text-foreground outline-none placeholder:text-muted-foreground/50"
+                className="w-full min-h-[72px] resize-none bg-transparent px-3 pb-1 pt-2.5 text-xs leading-relaxed text-foreground outline-none placeholder:text-muted-foreground/50"
                 style={{ scrollbarWidth: 'none' }}
               />
-              <div className="flex items-center justify-between px-2 pb-2 pt-0.5">
-                <div className="flex items-center gap-0.5">
+              <div className="flex flex-wrap items-end justify-between gap-2 px-2 pb-2 pt-1">
+                <div className="flex min-w-0 items-center gap-1">
                   <button
                     onClick={handlePickAttachment}
-                    className="premium-button flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:text-foreground"
+                    className="premium-button flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:text-foreground"
                     aria-label="Add attachment"
                     title={attachments.length ? `${attachments.length} attachment(s) selected` : 'Add attachment'}
                   >
@@ -1952,7 +2061,7 @@ export default function BuilderWindow() {
                   <AccessMenu value={permissionMode} onChange={setPermissionMode} />
                 </div>
 
-                <div className="flex items-center gap-1.5">
+                <div className="flex min-w-0 flex-1 items-center justify-end gap-1.5">
                   <ModelSelector
                     value={selectedModel}
                     onChange={setSelectedModel}
@@ -1962,7 +2071,7 @@ export default function BuilderWindow() {
                   <button
                     onClick={handleSend}
                     disabled={!input.trim() || sending}
-                    className="flex h-7 w-7 items-center justify-center rounded-md bg-gradient-to-r from-cyan-500 to-violet-500 text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-30"
+                    className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-r from-sky-500 via-cyan-400 to-violet-500 text-white shadow-[0_10px_30px_rgba(34,211,238,0.18)] transition-all hover:scale-[1.02] hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-30"
                     aria-label="Send builder prompt"
                   >
                     {sending ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
@@ -1988,17 +2097,17 @@ export default function BuilderWindow() {
         </div>
 
         <div className="glass-panel flex min-w-0 flex-1 flex-col bg-background">
-          <div className="flex shrink-0 items-center justify-between border-b border-border bg-[rgba(12,14,18,0.88)] px-4 py-2.5">
+          <div className="flex shrink-0 items-center justify-between border-b border-border bg-[linear-gradient(90deg,rgba(10,12,18,0.92),rgba(18,16,28,0.88))] px-4 py-2.5">
             <div className="flex items-center gap-3">
-              <div className="flex items-center gap-0.5 rounded-lg border border-border bg-black/25 p-0.5">
+              <div className="field-shell flex items-center gap-0.5 rounded-xl p-0.5">
               {(['preview', 'code'] as RightPanel[]).map((mode) => (
                 <button
                   key={mode}
                   onClick={() => setPanel(mode)}
                   className={`flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-all ${
                     panel === mode
-                      ? 'bg-black/35 text-foreground shadow-sm'
-                      : 'text-muted-foreground hover:text-foreground'
+                      ? 'bg-gradient-to-r from-cyan-500/18 via-violet-500/14 to-pink-500/16 text-foreground shadow-sm'
+                      : 'text-muted-foreground hover:bg-white/5 hover:text-foreground'
                   }`}
                 >
                   {mode === 'preview' ? <Eye size={13} /> : <Code2 size={13} />}
@@ -2011,7 +2120,7 @@ export default function BuilderWindow() {
                   {projectState?.metadata.name || 'Blank workspace'}
                 </div>
                 <div className="truncate text-[11px] text-zinc-500">
-                  {providerDisplayName(projectState?.metadata.providerUsed || selectedModel)} Â· {projectState?.files.length || 0} files
+                  {providerDisplayName(projectState?.metadata.providerUsed || selectedModel)} · {projectState?.files.length || 0} files
                 </div>
               </div>
             </div>
@@ -2020,7 +2129,7 @@ export default function BuilderWindow() {
               <button
                 onClick={handleOpenInWindow}
                 title="Open in window"
-                className="premium-button flex items-center justify-center rounded-lg px-[8px] py-[6px] text-muted-foreground transition-colors hover:text-foreground"
+                className="premium-button flex items-center justify-center rounded-xl px-[8px] py-[6px] text-muted-foreground transition-colors hover:text-foreground"
               >
                 <ExternalLink size={16} />
               </button>
@@ -2028,7 +2137,7 @@ export default function BuilderWindow() {
               {panel === 'code' && (
                 <button
                   onClick={handleCopy}
-                  className="premium-button flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
+                  className="premium-button flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
                 >
                   {copied ? <Check size={12} className="text-green-400" /> : <Copy size={12} />}
                   <span>{copied ? 'Copied' : 'Copy'}</span>
@@ -2037,7 +2146,7 @@ export default function BuilderWindow() {
 
               <button
                 onClick={handleZipDownload}
-                className="flex items-center gap-1.5 rounded-lg border border-fuchsia-500/20 bg-gradient-to-r from-cyan-500/14 to-violet-500/18 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:border-fuchsia-400/35"
+                className="flex items-center gap-1.5 rounded-xl border border-fuchsia-500/22 bg-[linear-gradient(135deg,rgba(56,189,248,0.18),rgba(139,92,246,0.22),rgba(244,114,182,0.18))] px-3 py-1.5 text-xs font-medium text-white shadow-[0_12px_34px_rgba(139,92,246,0.12)] transition-colors hover:border-fuchsia-400/35"
               >
                 <Download size={12} />
                 <span>Download</span>
@@ -2064,3 +2173,4 @@ export default function BuilderWindow() {
     </>
   )
 }
+
