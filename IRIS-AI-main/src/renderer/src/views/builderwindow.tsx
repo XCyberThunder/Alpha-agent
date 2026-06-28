@@ -1,67 +1,48 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode
-} from 'react'
-import Editor, { useMonaco } from '@monaco-editor/react'
-import {
-  ArrowUp,
   Bot,
+  Check,
+  ChevronDown,
   Code2,
   Copy,
   Download,
   ExternalLink,
   Eye,
-  FileCode2,
-  FileImage,
-  FileJson2,
-  FileText,
-  FileUp,
+  EyeOff,
+  FileCode,
+  FileJson,
   Folder,
   FolderOpen,
-  FolderTree,
-  FolderUp,
-  Laptop,
-  LayoutGrid,
-  MessageSquare,
-  MonitorSmartphone,
-  PencilLine,
+  Key,
+  Loader2,
   Plus,
-  RefreshCw,
-  Save,
-  Settings2,
-  Sparkles,
-  Smartphone,
-  Terminal,
-  Upload,
+  Send,
+  ShieldAlert,
+  ShieldCheck,
+  Unlock,
+  User,
   X
 } from 'lucide-react'
+
 import {
-  closeBuilderWindow,
-  type BuilderProjectFile,
-  type BuilderProjectState,
-  type BuilderAttachmentDescriptor,
-  copyBuilderProjectPath,
+  BuilderAttachmentDescriptor,
+  BuilderModelStatuses,
+  BuilderProjectFile,
+  BuilderProjectState,
   createBuilderProject,
   exportBuilderProjectZip,
   getBuilderModelStatuses,
   getBuilderWindowState,
-  openBuilderProjectFolder,
-  openBuilderProjectInVsCode,
   pickBuilderAttachments,
-  readBuilderProject,
-  runBuilderProjectCommand,
   saveBuilderProjectFile,
-  saveBuilderModelSlot,
-  stopBuilderProjectCommand,
-  setBuilderModelEnabled,
-  testBuilderModelSlot,
   updateBuilderProject
 } from '@renderer/services/project-builder'
 
-type BuilderPayload = {
+type RightPanel = 'preview' | 'code'
+type PermissionMode = 'ask' | 'approve' | 'full'
+type KnownProvider = 'glm' | 'zai' | 'gemini' | 'openrouter' | 'kimi' | 'groq'
+
+type WindowPayload = {
   state?: BuilderProjectState
   previewHtml?: string
   prompt?: string
@@ -70,106 +51,152 @@ type BuilderPayload = {
   selectedProvider?: string
 }
 
-type BuilderMode = 'preview' | 'code' | 'split' | 'visual'
-type DeviceMode = 'desktop' | 'tablet' | 'mobile'
-type PermissionMode = 'ask' | 'safe' | 'full'
-type ChatMessageRole = 'user' | 'assistant' | 'system'
-type ModelProvider = 'auto' | 'glm' | 'zai' | 'gemini' | 'openrouter' | 'kimi' | 'groq'
-
-type ChatMessage = {
+type Message = {
   id: string
-  role: ChatMessageRole
-  text: string
+  role: 'user' | 'assistant'
+  content: string
+  timestamp: Date
 }
 
-type AttachmentItem = {
-  id: string
+type FileTreeNodeData = {
   name: string
-  kind: 'image' | 'file' | 'folder'
-  size: number
-  path?: string
-  fileCount?: number
-  previewUrl?: string
-  content?: string
-  skippedCount?: number
+  type: 'file' | 'folder'
+  ext?: string
+  children?: FileTreeNodeData[]
 }
 
-type FileTreeNode = {
+type ProviderOption = {
   id: string
-  name: string
-  path: string
-  kind: 'file' | 'folder'
-  children: FileTreeNode[]
-}
-
-type EditableTextNode = {
-  id: string
-  tag: string
-  text: string
-}
-
-type ModelOption = {
-  provider: ModelProvider
+  provider: string
   label: string
-  model: string
+  badge: string | null
   configured: boolean
-  status: string
-  priorityLabel?: string
+  isCustom?: boolean
 }
 
-type AddModelDraft = {
-  group: 'glm' | 'zai' | 'geminiBrain' | 'kimi' | 'openrouter' | 'groq'
-  slot: 1 | 2 | 3
-  apiKey: string
-  baseUrl: string
-  modelId: string
-  providerMode: string
-  enabled: boolean
-}
-
-type PendingApproval =
-  | { type: 'command'; command: string }
-  | { type: 'agent-edit'; prompt: string }
-
-type ModeButtonMeta = {
-  value: BuilderMode
+type CustomModel = {
+  id: string
   label: string
-  icon: ReactNode
+  provider: string
+  modelName: string
+  baseUrl: string
 }
 
-const deviceWidths: Record<DeviceMode, string> = {
-  desktop: '100%',
-  tablet: '860px',
-  mobile: '430px'
+type BuilderToast = {
+  id: string
+  tone: 'success' | 'error'
+  message: string
 }
 
-const defaultAddModelDraft = (): AddModelDraft => ({
-  group: 'zai',
-  slot: 1,
-  apiKey: '',
-  baseUrl: 'https://api.z.ai/api/coding/paas/v4',
-  modelId: 'glm-4.5v',
-  providerMode: 'zai-coding',
-  enabled: true
-})
+const MIN_WIDTH = 220
+const MAX_WIDTH = 560
+const DRAFT_STORAGE_KEY = 'alpha_builder_window_draft'
+const BUILDER_TOAST_EVENT = 'alpha-builder-toast'
 
-const buildLoaderCss = `
-.csse-bounce-dots { display:flex; gap:10px; align-items:center; }
-.csse-bounce-dots span { width:12px; height:12px; border-radius:50%; background:#f472b6; animation:csse-bounce-dots 1.2s ease-in-out infinite; }
-.csse-bounce-dots span:nth-child(2) { background:#8b5cf6; animation-delay:0.18s; }
-.csse-bounce-dots span:nth-child(3) { background:#22d3ee; animation-delay:0.36s; }
-@keyframes csse-bounce-dots {
-  0%, 80%, 100% { transform: translateY(0); opacity: 0.48; }
-  40% { transform: translateY(-14px); opacity: 1; }
+const PROVIDER_LABELS: Record<KnownProvider, string> = {
+  glm: 'GLM 5.2',
+  zai: 'Z.AI',
+  gemini: 'Gemini',
+  openrouter: 'OpenRouter',
+  kimi: 'Kimi',
+  groq: 'Groq'
+}
+
+const PROVIDER_GROUP_ALIASES: Record<string, KnownProvider> = {
+  glm: 'glm',
+  'glm 5.2': 'glm',
+  zenmux: 'glm',
+  zai: 'zai',
+  'z.ai': 'zai',
+  'z ai': 'zai',
+  gemini: 'gemini',
+  openrouter: 'openrouter',
+  kimi: 'kimi',
+  groq: 'groq'
+}
+
+const ACCESS_OPTIONS: Array<{
+  id: PermissionMode
+  label: string
+  desc: string
+  icon: typeof ShieldAlert
+  color: string
+}> = [
+  {
+    id: 'ask',
+    label: 'Ask for approval',
+    desc: 'Always ask before file changes and run actions.',
+    icon: ShieldAlert,
+    color: 'text-yellow-400'
+  },
+  {
+    id: 'approve',
+    label: 'Approve for me',
+    desc: 'Allow safe project edits and ask on risky actions.',
+    icon: ShieldCheck,
+    color: 'text-blue-400'
+  },
+  {
+    id: 'full',
+    label: 'Full access',
+    desc: 'Allow full project edits inside the current workspace.',
+    icon: Unlock,
+    color: 'text-green-400'
+  }
+]
+
+const BUILDER_THEME_CSS = `
+.builderwindow-root {
+  --background: #0c0c0f;
+  --foreground: #e2e2e8;
+  --card: #111116;
+  --popover: #18181e;
+  --primary: #7c6cf7;
+  --muted: #1e1e26;
+  --muted-foreground: #5a5a6e;
+  --border: rgba(255,255,255,0.07);
+  --danger: #e5484d;
+  color: var(--foreground);
+  background: var(--background);
+  font-family: Geist, Inter, system-ui, sans-serif;
+}
+.builderwindow-root * {
+  box-sizing: border-box;
+}
+.builderwindow-root ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.builderwindow-root ::-webkit-scrollbar-track {
+  background: transparent;
+}
+.builderwindow-root ::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.08);
+  border-radius: 999px;
+}
+.builderwindow-root textarea,
+.builderwindow-root input,
+.builderwindow-root button {
+  font: inherit;
 }
 `
-const DRAFT_STORAGE_KEY = 'alpha_builder_window_draft'
-const isDev = import.meta.env.DEV
 
-const debugBuilder = (...args: unknown[]) => {
-  if (isDev) {
-    console.debug('[builderwindow]', ...args)
-  }
+const makeId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+
+const emitBuilderToast = (tone: 'success' | 'error', message: string) => {
+  window.dispatchEvent(new CustomEvent(BUILDER_TOAST_EVENT, { detail: { tone, message } }))
+}
+
+const normalizeProvider = (value?: string | null): KnownProvider | null => {
+  if (!value) return null
+  const normalized = value.toLowerCase().trim()
+  return PROVIDER_GROUP_ALIASES[normalized] || null
+}
+
+const providerDisplayName = (value?: string | null) => {
+  const normalized = normalizeProvider(value)
+  if (normalized) return PROVIDER_LABELS[normalized]
+  return value || 'GLM 5.2'
 }
 
 const languageForFile = (filePath: string) => {
@@ -178,30 +205,95 @@ const languageForFile = (filePath: string) => {
   if (lower.endsWith('.css')) return 'css'
   if (lower.endsWith('.js')) return 'javascript'
   if (lower.endsWith('.ts') || lower.endsWith('.tsx')) return 'typescript'
-  if (lower.endsWith('.py')) return 'python'
-  if (lower.endsWith('.java')) return 'java'
   if (lower.endsWith('.json')) return 'json'
   if (lower.endsWith('.md')) return 'markdown'
-  if (lower.endsWith('.c')) return 'c'
+  if (lower.endsWith('.py')) return 'python'
+  if (lower.endsWith('.java')) return 'java'
   if (lower.endsWith('.cpp') || lower.endsWith('.cc') || lower.endsWith('.cxx')) return 'cpp'
+  if (lower.endsWith('.c')) return 'c'
   return 'plaintext'
 }
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
-const safeId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+const extColorMap: Record<string, string> = {
+  tsx: 'text-violet-400',
+  ts: 'text-blue-400',
+  css: 'text-cyan-400',
+  json: 'text-yellow-400',
+  md: 'text-emerald-400',
+  html: 'text-orange-400',
+  js: 'text-amber-400'
+}
 
-const previewFriendlyFile = (files: BuilderProjectFile[]) =>
-  files.find((file) => file.path === 'index.html') ||
-  files.find((file) => file.path.endsWith('/index.html')) ||
-  null
+const escapeHtml = (value: string) =>
+  value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
-const inlinePreviewFromFiles = (files: BuilderProjectFile[]) => {
-  const htmlFile = previewFriendlyFile(files)
+const mapFilesToRecord = (files: BuilderProjectFile[]) =>
+  files.reduce<Record<string, string>>((acc, file) => {
+    acc[file.path.replace(/\\/g, '/')] = file.content
+    return acc
+  }, {})
+
+const arrayPathToString = (pathParts: string[]) => pathParts.join('/')
+
+const stringPathToArray = (input: string) => input.split('/').filter(Boolean)
+
+const buildFileTree = (files: BuilderProjectFile[]): FileTreeNodeData[] => {
+  const root: FileTreeNodeData[] = []
+
+  const insertNode = (segments: string[], index: number, level: FileTreeNodeData[]) => {
+    const name = segments[index]
+    const isFile = index === segments.length - 1
+    let existing = level.find((node) => node.name === name)
+
+    if (!existing) {
+      existing = {
+        name,
+        type: isFile ? 'file' : 'folder',
+        ext: isFile ? name.split('.').pop()?.toLowerCase() : undefined,
+        children: isFile ? undefined : []
+      }
+      level.push(existing)
+    }
+
+    if (!isFile && existing.children) {
+      insertNode(segments, index + 1, existing.children)
+    }
+  }
+
+  files
+    .slice()
+    .sort((a, b) => a.path.localeCompare(b.path))
+    .forEach((file) => {
+      const segments = stringPathToArray(file.path)
+      if (segments.length) insertNode(segments, 0, root)
+    })
+
+  const sortNodes = (nodes: FileTreeNodeData[]) => {
+    nodes.sort((a, b) => {
+      if (a.type !== b.type) return a.type === 'folder' ? -1 : 1
+      return a.name.localeCompare(b.name)
+    })
+    nodes.forEach((node) => node.children && sortNodes(node.children))
+  }
+
+  sortNodes(root)
+  return root
+}
+
+const inlinePreviewHtml = (files: BuilderProjectFile[]) => {
+  const htmlFile =
+    files.find((file) => file.path === 'index.html') ||
+    files.find((file) => file.path.endsWith('/index.html'))
+
   if (!htmlFile) return ''
 
   let html = htmlFile.content
-  const cssFile = files.find((file) => file.path === 'style.css' || file.path.endsWith('/style.css'))
-  const jsFile = files.find((file) => file.path === 'script.js' || file.path.endsWith('/script.js'))
+  const cssFile =
+    files.find((file) => file.path === 'style.css') ||
+    files.find((file) => file.path.endsWith('/style.css'))
+  const jsFile =
+    files.find((file) => file.path === 'script.js') ||
+    files.find((file) => file.path.endsWith('/script.js'))
 
   if (cssFile) {
     html = html.replace(
@@ -209,1638 +301,1347 @@ const inlinePreviewFromFiles = (files: BuilderProjectFile[]) => {
       `<style>\n${cssFile.content}\n</style>`
     )
   }
+
   if (jsFile) {
     html = html.replace(
       /<script[^>]+src=["'][^"']*script\.js["'][^>]*><\/script>/i,
       `<script>\n${jsFile.content}\n</script>`
     )
   }
+
   return html
 }
 
-const extractEditableTextNodes = (html: string): EditableTextNode[] => {
-  if (!html) return []
-  const doc = new DOMParser().parseFromString(html, 'text/html')
-  const nodes = Array.from(doc.body.querySelectorAll('h1,h2,h3,h4,h5,h6,p,button,a,span,li'))
-  return nodes
-    .map((node, index) => ({
-      id: `${node.tagName.toLowerCase()}-${index}`,
-      tag: node.tagName.toLowerCase(),
-      text: (node.textContent || '').trim()
-    }))
-    .filter((node) => node.text.length > 0)
-    .slice(0, 32)
+const openPreviewWindow = (previewMarkup: string, title: string) => {
+  const win = window.open('', '_blank', 'noopener,noreferrer')
+  if (!win) {
+    emitBuilderToast('error', 'Pop-up blocked - allow pop-ups for preview.')
+    return
+  }
+  win.document.open()
+  win.document.write(previewMarkup || `<!doctype html><title>${escapeHtml(title)}</title><body style="background:#0c0c0f;color:#e2e2e8;font-family:Inter,sans-serif;display:grid;place-items:center;min-height:100vh">Preview unavailable</body>`)
+  win.document.close()
 }
 
-const applyVisualEditsToHtml = (html: string, edits: EditableTextNode[]) => {
-  const doc = new DOMParser().parseFromString(html, 'text/html')
-  const nodes = Array.from(doc.body.querySelectorAll('h1,h2,h3,h4,h5,h6,p,button,a,span,li'))
-  edits.forEach((edit, index) => {
-    const node = nodes[index]
-    if (node) node.textContent = edit.text
+const openCodeWindow = (fileName: string, content: string) => {
+  const win = window.open('', '_blank', 'noopener,noreferrer')
+  if (!win) {
+    emitBuilderToast('error', 'Pop-up blocked - allow pop-ups for code view.')
+    return
+  }
+
+  const rows = content
+    .split('\n')
+    .map(
+      (line, index) =>
+        `<tr><td class="ln">${index + 1}</td><td class="code">${escapeHtml(line)}</td></tr>`
+    )
+    .join('')
+
+  win.document.open()
+  win.document.write(`<!doctype html><html><head><title>${escapeHtml(fileName)}</title><style>
+    *{box-sizing:border-box}body{margin:0;background:#0c0c0f;color:#e2e2e8;font-family:Geist Mono,ui-monospace,monospace;font-size:13px}
+    h1{margin:0;padding:12px 16px;border-bottom:1px solid rgba(255,255,255,.08);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#7c6cf7}
+    table{width:100%;border-collapse:collapse}.ln{width:52px;padding:0 12px 0 0;text-align:right;color:#5a5a6e;vertical-align:top;user-select:none}.code{padding:0 16px;white-space:pre;word-break:break-word}
+    tr:hover{background:rgba(255,255,255,.03)}
+  </style></head><body><h1>${escapeHtml(fileName)}</h1><table>${rows}</table></body></html>`)
+  win.document.close()
+}
+
+const summarizeAttachments = (attachments: BuilderAttachmentDescriptor[]) => {
+  if (!attachments.length) return ''
+  const parts = attachments.map((attachment) => {
+    const contentPreview =
+      typeof attachment.content === 'string' && attachment.content.trim()
+        ? `\n${attachment.content.slice(0, 12000)}`
+        : ''
+    return `[ATTACHMENT:${attachment.kind}] ${attachment.name}${contentPreview}`
   })
-  return '<!doctype html>\n' + doc.documentElement.outerHTML
+  return `\n\nAdditional references:\n${parts.join('\n\n')}`
 }
 
-const isTextFile = (name: string) =>
-  /\.(txt|md|json|html|css|js|ts|tsx|py|java|c|cpp|jsx|yml|yaml)$/i.test(name)
-
-const formatBytes = (size: number) => {
-  if (!Number.isFinite(size) || size <= 0) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB']
-  let value = size
-  let unitIndex = 0
-  while (value >= 1024 && unitIndex < units.length - 1) {
-    value /= 1024
-    unitIndex += 1
+const readDraft = () => {
+  try {
+    const raw = localStorage.getItem(DRAFT_STORAGE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' ? parsed : null
+  } catch {
+    return null
   }
-  return `${value >= 100 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`
 }
 
-const buildFileTree = (files: BuilderProjectFile[]): FileTreeNode[] => {
-  const root: FileTreeNode[] = []
-  const folderMap = new Map<string, FileTreeNode>()
-
-  const ensureFolder = (folderPath: string) => {
-    if (!folderPath) return root
-    if (folderMap.has(folderPath)) return folderMap.get(folderPath)!.children
-
-    const segments = folderPath.split('/').filter(Boolean)
-    let currentPath = ''
-    let currentLevel = root
-
-    for (const segment of segments) {
-      currentPath = currentPath ? `${currentPath}/${segment}` : segment
-      let existing = folderMap.get(currentPath)
-      if (!existing) {
-        existing = {
-          id: `folder-${currentPath}`,
-          name: segment,
-          path: currentPath,
-          kind: 'folder',
-          children: []
-        }
-        currentLevel.push(existing)
-        folderMap.set(currentPath, existing)
-      }
-      currentLevel = existing.children
-    }
-
-    return currentLevel
-  }
-
-  files.forEach((file) => {
-    const parts = file.path.split('/').filter(Boolean)
-    const fileName = parts.pop() || file.path
-    const parentLevel = ensureFolder(parts.join('/'))
-    parentLevel.push({
-      id: `file-${file.path}`,
-      name: fileName,
-      path: file.path,
-      kind: 'file',
-      children: []
-    })
-  })
-
-  const sortNodes = (nodes: FileTreeNode[]) => {
-    nodes.sort((left, right) => {
-      if (left.kind !== right.kind) return left.kind === 'folder' ? -1 : 1
-      return left.name.localeCompare(right.name)
-    })
-    nodes.forEach((node) => sortNodes(node.children))
-    return nodes
-  }
-
-  return sortNodes(root)
+function FileIcon({ ext }: { ext?: string }) {
+  if (ext === 'json') return <FileJson size={13} className="text-yellow-400/80" />
+  if (ext === 'css') return <FileCode size={13} className="text-blue-400/80" />
+  return <FileCode size={13} className="text-violet-400/80" />
 }
 
-const getFileIcon = (targetPath: string) => {
-  const lower = targetPath.toLowerCase()
-  if (lower.endsWith('.json')) return <FileJson2 className="h-3.5 w-3.5" />
-  if (lower.endsWith('.md') || lower.endsWith('.txt')) return <FileText className="h-3.5 w-3.5" />
-  if (/\.(html|css|js|jsx|ts|tsx|py|java|c|cpp|cc|cxx)$/i.test(lower)) {
-    return <FileCode2 className="h-3.5 w-3.5" />
-  }
-  return <FileText className="h-3.5 w-3.5" />
-}
+function FileTreeNode({
+  node,
+  depth,
+  selectedPath,
+  onSelect,
+  onDownload,
+  currentPath
+}: {
+  node: FileTreeNodeData
+  depth: number
+  selectedPath: string[]
+  onSelect: (path: string[]) => void
+  onDownload: (path: string[], name: string) => void
+  currentPath: string[]
+}) {
+  const [open, setOpen] = useState(depth < 2)
+  const [hovered, setHovered] = useState(false)
+  const path = [...currentPath, node.name]
+  const isSelected =
+    node.type === 'file' &&
+    selectedPath.length === path.length &&
+    selectedPath.every((segment, index) => segment === path[index])
 
-const attachmentFromDescriptor = (item: BuilderAttachmentDescriptor): AttachmentItem => ({
-  id: item.id,
-  name: item.name,
-  path: item.path,
-  kind: item.kind,
-  size: item.size,
-  fileCount: item.fileCount,
-  previewUrl: item.previewUrl,
-  content: item.content,
-  skippedCount: item.skippedCount
-})
-
-const summarizeAttachments = (attachments: AttachmentItem[]) =>
-  attachments
-    .map((item) => {
-      const header = `${item.kind.toUpperCase()}: ${item.name}`
-      if (item.content) return `${header}\n${item.content.slice(0, 7000)}`
-      if (item.fileCount) return `${header}\nContains ${item.fileCount} files`
-      return header
-    })
-    .join('\n\n')
-
-const LoaderLabel = ({ label }: { label: string }) => (
-  <div className="flex items-center gap-3 text-sm text-[#4b5563]">
-    <div className="csse-bounce-dots">
-      <span />
-      <span />
-      <span />
-    </div>
-    <span>{label}</span>
-  </div>
-)
-
-export default function BuilderWindow() {
-  const monaco = useMonaco()
-  const [projectState, setProjectState] = useState<BuilderProjectState | null>(null)
-  const [previewHtml, setPreviewHtml] = useState('')
-  const [selectedFile, setSelectedFile] = useState('')
-  const [draftContent, setDraftContent] = useState('')
-  const [status, setStatus] = useState<'idle' | 'generating' | 'editing' | 'saved' | 'error'>('idle')
-  const [statusMessage, setStatusMessage] = useState('Start by describing what you want to build.')
-  const [providerError, setProviderError] = useState('')
-  const [mode, setMode] = useState<BuilderMode>('split')
-  const [device, setDevice] = useState<DeviceMode>('desktop')
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>('ask')
-  const [selectedModel, setSelectedModel] = useState<ModelProvider>('auto')
-  const [modelOptions, setModelOptions] = useState<ModelOption[]>([])
-  const [isBusy, setIsBusy] = useState(false)
-  const [chatInput, setChatInput] = useState('')
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
-  const [editableTexts, setEditableTexts] = useState<EditableTextNode[]>([])
-  const [attachments, setAttachments] = useState<AttachmentItem[]>([])
-  const [terminalOutput, setTerminalOutput] = useState<string[]>([])
-  const [terminalCommand, setTerminalCommand] = useState('npm run build')
-  const [terminalHistory, setTerminalHistory] = useState<string[]>([])
-  const [runningCommand, setRunningCommand] = useState(false)
-  const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null)
-  const [pendingFallbackPrompt, setPendingFallbackPrompt] = useState<string | null>(null)
-  const [showModelModal, setShowModelModal] = useState(false)
-  const [addModelDraft, setAddModelDraft] = useState<AddModelDraft>(defaultAddModelDraft)
-  const [addModelMessage, setAddModelMessage] = useState('')
-  const [activeSidebarTab, setActiveSidebarTab] = useState<'chat' | 'agent'>('chat')
-  const consumedPromptRef = useRef<string>('')
-  const terminalPanelRef = useRef<HTMLDivElement | null>(null)
-  const filePanelRef = useRef<HTMLDivElement | null>(null)
-
-  useEffect(() => {
-    if (!monaco) return
-    monaco.editor.defineTheme('alpha-builder-window', {
-      base: 'vs-dark',
-      inherit: true,
-      rules: [{ token: 'comment', foreground: '7c3aed', fontStyle: 'italic' }],
-      colors: {
-        'editor.background': '#0b0e14',
-        'editorLineNumber.foreground': '#465065',
-        'editor.lineHighlightBackground': '#111622',
-        'editorCursor.foreground': '#f9fafb',
-        'editor.selectionBackground': '#1f293780'
-      }
-    })
-    monaco.editor.setTheme('alpha-builder-window')
-  }, [monaco])
-
-  const refreshModelOptions = async () => {
-    const response = await getBuilderModelStatuses()
-    const statuses = response?.statuses || {}
-    const options: ModelOption[] = [
-      {
-        provider: 'auto',
-        label: 'Auto Priority',
-        model: 'GLM -> Z.AI -> fallback',
-        configured: true,
-        status: 'ready',
-        priorityLabel: 'default'
-      }
-    ]
-
-    const resolveSlot = (group: string) =>
-      (statuses[group] || []).find((item: any) => item.enabled && item.hasKey)
-
-    const providerRows: Array<[ModelProvider, string, string, string]> = [
-      ['glm', 'GLM', 'primary', resolveSlot('glm')?.modelId || 'glm'],
-      ['zai', 'Z.AI', 'secondary', resolveSlot('zai')?.modelId || 'zai'],
-      ['gemini', 'Gemini', 'fallback', resolveSlot('geminiBrain')?.maskedKey || 'gemini'],
-      ['openrouter', 'OpenRouter', 'fallback', response?.openrouterModel || 'openrouter'],
-      ['kimi', 'Kimi', 'fallback', resolveSlot('kimi')?.modelId || 'kimi'],
-      ['groq', 'Groq', 'fallback', resolveSlot('groq')?.modelId || 'groq']
-    ]
-
-    providerRows.forEach(([provider, label, priorityLabel, model]) => {
-      const group = provider === 'gemini' ? 'geminiBrain' : provider
-      const found = resolveSlot(group)
-      options.push({
-        provider,
-        label,
-        model: String(model || provider),
-        configured: Boolean(found),
-        status: found?.status || 'missing',
-        priorityLabel
-      })
-    })
-
-    setModelOptions(options)
-  }
-
-  useEffect(() => {
-    void refreshModelOptions()
-  }, [])
-
-  useEffect(() => {
-    try {
-      const rawDraft = localStorage.getItem(DRAFT_STORAGE_KEY)
-      if (!rawDraft) return
-      const draft = JSON.parse(rawDraft) as {
-        chatInput?: string
-        mode?: BuilderMode
-        selectedModel?: ModelProvider
-        permissionMode?: PermissionMode
-        statusMessage?: string
-      }
-      if (draft.chatInput) setChatInput(draft.chatInput)
-      if (draft.mode) setMode(draft.mode)
-      if (draft.selectedModel) setSelectedModel(draft.selectedModel)
-      if (draft.permissionMode) setPermissionMode(draft.permissionMode)
-      if (draft.statusMessage) setStatusMessage(draft.statusMessage)
-    } catch (error) {
-      debugBuilder('draft-load-failed', error)
-    }
-  }, [])
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(
-        DRAFT_STORAGE_KEY,
-        JSON.stringify({
-          chatInput,
-          mode,
-          selectedModel,
-          permissionMode,
-          statusMessage,
-          lastOutput: chatMessages.at(-1)?.text || '',
-          updatedAt: new Date().toISOString()
-        })
-      )
-    } catch (error) {
-      debugBuilder('draft-save-failed', error)
-    }
-  }, [chatInput, mode, selectedModel, permissionMode, statusMessage, chatMessages])
-
-  const applyIncomingPayload = (payload?: BuilderPayload | null) => {
-    if (!payload) return
-    debugBuilder('incoming-payload', payload)
-
-    if (payload.selectedProvider && payload.selectedProvider !== 'auto') {
-      setSelectedModel(payload.selectedProvider as ModelProvider)
-    }
-
-    if (payload.state) {
-      const state = payload.state
-      setProjectState(state)
-      setPreviewHtml(payload.previewHtml || '')
-      setSelectedFile(state.files[0]?.path || '')
-      setStatus(payload.providerError ? 'error' : 'saved')
-      setProviderError(payload.providerError || '')
-      setStatusMessage(payload.providerError || `Project loaded: ${state.metadata.name}`)
-      setChatMessages((prev) =>
-        prev.length
-          ? prev
-          : [
-              {
-                id: safeId(),
-                role: 'assistant',
-                text: payload.providerError
-                  ? `Builder shell ready. ${payload.providerError}`
-                  : `Project loaded with ${state.metadata.providerUsed || state.metadata.modelUsed}.`
-              }
-            ]
-      )
-      return
-    }
-
-    if (payload.prompt && payload.autoStart && consumedPromptRef.current !== payload.prompt) {
-      consumedPromptRef.current = payload.prompt
-      setProjectState(null)
-      setPreviewHtml('')
-      setSelectedFile('')
-      setDraftContent('')
-      setProviderError('')
-      setStatus('idle')
-      setStatusMessage('Builder open hai. Prompt receive ho gaya.')
-      setChatMessages([{ id: safeId(), role: 'user', text: payload.prompt }])
-      void runProjectWorkflow(payload.prompt, payload.selectedProvider as ModelProvider | undefined, true)
-    }
-  }
-
-  useEffect(() => {
-    getBuilderWindowState().then((res) => applyIncomingPayload(res?.payload))
-    const listener = (_event: unknown, payload: BuilderPayload) => applyIncomingPayload(payload)
-    window.electron.ipcRenderer.on('builder-window-state', listener)
-    return () => {
-      window.electron.ipcRenderer.removeListener('builder-window-state', listener)
-    }
-  }, [])
-
-  useEffect(() => {
-    const listener = (_event: unknown, payload: any) => {
-      if (!projectState || payload?.projectId !== projectState.metadata.id) return
-      if (payload.type === 'start') {
-        setRunningCommand(true)
-        setTerminalOutput((prev) => [...prev, `$ ${payload.command}`])
-      } else if (payload.type === 'stdout' || payload.type === 'stderr') {
-        setTerminalOutput((prev) => [...prev, String(payload.chunk || '')])
-      } else if (payload.type === 'exit') {
-        setRunningCommand(false)
-        setTerminalOutput((prev) => [...prev, `\n[exit ${payload.exitCode ?? 0}]`])
-      } else if (payload.type === 'stopped') {
-        setRunningCommand(false)
-        setTerminalOutput((prev) => [...prev, '\n[stopped]'])
-      }
-    }
-
-    window.electron.ipcRenderer.on('builder-terminal-event', listener)
-    return () => {
-      window.electron.ipcRenderer.removeListener('builder-terminal-event', listener)
-    }
-  }, [projectState])
-
-  useEffect(() => {
-    const file = projectState?.files.find((item) => item.path === selectedFile)
-    setDraftContent(file?.content || '')
-  }, [projectState, selectedFile])
-
-  useEffect(() => {
-    const html = previewHtml || inlinePreviewFromFiles(projectState?.files || [])
-    setEditableTexts(extractEditableTextNodes(html))
-  }, [previewHtml, projectState])
-
-  const previewSource = useMemo(
-    () => previewHtml || inlinePreviewFromFiles(projectState?.files || []),
-    [previewHtml, projectState]
-  )
-
-  const currentProvider = useMemo<ModelProvider>(() => {
-    const used = (projectState?.metadata.providerUsed || '').toLowerCase()
-    if (used.includes('z.ai')) return 'zai'
-    if (used.includes('gemini')) return 'gemini'
-    if (used.includes('openrouter')) return 'openrouter'
-    if (used.includes('kimi')) return 'kimi'
-    if (used.includes('groq')) return 'groq'
-    if (used.includes('glm')) return 'glm'
-    return selectedModel
-  }, [projectState, selectedModel])
-
-  const progressivelyApplyProjectState = async (
-    nextState: BuilderProjectState,
-    nextPreviewHtml: string,
-    loadingLabel: string
-  ) => {
-    setStatus('generating')
-    setStatusMessage(loadingLabel)
-
-    const partialState: BuilderProjectState = {
-      metadata: nextState.metadata,
-      files: []
-    }
-
-    setProjectState(partialState)
-    setSelectedFile(nextState.files[0]?.path || '')
-    setPreviewHtml('')
-
-    for (const file of nextState.files) {
-      partialState.files = [...partialState.files, file]
-      setProjectState({
-        metadata: nextState.metadata,
-        files: [...partialState.files]
-      })
-      setSelectedFile((current) => current || file.path)
-      setPreviewHtml(inlinePreviewFromFiles(partialState.files))
-      setStatusMessage(`Writing ${file.path}...`)
-      await sleep(220)
-    }
-
-    setProjectState(nextState)
-    setPreviewHtml(nextPreviewHtml || inlinePreviewFromFiles(nextState.files))
-    setStatus('saved')
-    setStatusMessage('Project files ready.')
-  }
-
-  const resolveProviderForPrompt = (providerOverride?: ModelProvider) => {
-    const target = providerOverride || selectedModel
-    if (target === 'auto') return 'glm'
-    return target
-  }
-
-  const buildPromptWithAttachments = (prompt: string) => {
-    if (!attachments.length) return prompt
-    return `${prompt}\n\nAttached context:\n${summarizeAttachments(attachments)}`
-  }
-
-  const runProjectWorkflow = async (
-    prompt: string,
-    providerOverride?: ModelProvider,
-    isInitialHandoff = false
-  ) => {
-    const provider = resolveProviderForPrompt(providerOverride)
-    const fullPrompt = buildPromptWithAttachments(prompt)
-    setIsBusy(true)
-    setProviderError('')
-    setPendingFallbackPrompt(null)
-    setStatus('generating')
-    setStatusMessage('Waiting for model...')
-
-    try {
-      const response = projectState?.metadata.id
-        ? await updateBuilderProject(projectState.metadata.id, fullPrompt, provider)
-        : await createBuilderProject(fullPrompt, provider)
-
-      if (response.success && response.state) {
-        await progressivelyApplyProjectState(response.state, response.previewHtml || '', 'Generating files')
-
-        if (response.providerError) {
-          const fallbackMessage = response.providerError || 'Selected provider failed.'
-          setProviderError(response.providerError)
-          setPendingFallbackPrompt(prompt)
-          setChatMessages((prev) => [...prev, { id: safeId(), role: 'assistant', text: fallbackMessage }])
-        } else {
-          setChatMessages((prev) => [
-            ...prev,
-            {
-              id: safeId(),
-              role: 'assistant',
-              text: isInitialHandoff
-                ? 'Prompt receive ho gaya. Coding Agent ne project generation start kar diya hai.'
-                : 'Project files update ho gaye.'
-            }
-          ])
-        }
-      } else {
-        const failure = response.error || response.message || 'Project generation failed.'
-        setStatus('error')
-        setStatusMessage(failure)
-        setProviderError(failure)
-        setPendingFallbackPrompt(prompt)
-        setChatMessages((prev) => [...prev, { id: safeId(), role: 'assistant', text: failure }])
-      }
-    } finally {
-      setIsBusy(false)
-    }
-  }
-
-  const handleAgentPrompt = async (prompt: string, skipApproval = false) => {
-    const trimmed = prompt.trim()
-    if (!trimmed) return
-    debugBuilder('agent-prompt', { trimmed, skipApproval })
-
-    if (!skipApproval && permissionMode === 'ask' && projectState) {
-      setPendingApproval({ type: 'agent-edit', prompt: trimmed })
-      setChatMessages((prev) => [
-        ...prev,
-        {
-          id: safeId(),
-          role: 'system',
-          text: `Approval required: "${trimmed}" current project par apply karna hai?`
-        }
-      ])
-      return
-    }
-
-    setChatMessages((prev) => [...prev, { id: safeId(), role: 'user', text: trimmed }])
-    await runProjectWorkflow(trimmed, undefined, false)
-    setChatInput('')
-  }
-
-  const handleFallbackChoice = async (provider: Exclude<ModelProvider, 'auto' | 'glm' | 'zai'>) => {
-    if (!pendingFallbackPrompt) return
-    setSelectedModel(provider)
-    setPendingFallbackPrompt(null)
-    await runProjectWorkflow(pendingFallbackPrompt, provider, false)
-  }
-
-  const persistFile = async (filePath: string, content: string) => {
-    if (!projectState) return
-    setIsBusy(true)
-    setStatus('editing')
-    setStatusMessage(`Saving ${filePath}...`)
-    try {
-      const response = await saveBuilderProjectFile(projectState.metadata.id, filePath, content)
-      if (response.success && response.state) {
-        setProjectState(response.state)
-        setPreviewHtml(response.previewHtml || '')
-        setStatus('saved')
-        setStatusMessage(`Saved ${filePath}.`)
-      } else {
-        setStatus('error')
-        setStatusMessage(response.error || 'Save failed.')
-      }
-    } finally {
-      setIsBusy(false)
-    }
-  }
-
-  const handleVisualSave = async () => {
-    const htmlFile =
-      projectState?.files.find((file) => file.path === 'index.html') ||
-      projectState?.files.find((file) => file.path.endsWith('/index.html'))
-    if (!htmlFile) return
-    await persistFile(htmlFile.path, applyVisualEditsToHtml(htmlFile.content, editableTexts))
-  }
-
-  const refreshProject = async () => {
-    if (!projectState?.metadata.id) return
-    setIsBusy(true)
-    setStatusMessage('Refreshing preview...')
-    try {
-      const response = await readBuilderProject(projectState.metadata.id)
-      if (response.success && response.state) {
-        setProjectState(response.state)
-        setPreviewHtml(response.previewHtml || '')
-        setStatus('saved')
-        setStatusMessage('Project refreshed.')
-      } else {
-        setStatus('error')
-        setStatusMessage(response.error || 'Project refresh failed.')
-      }
-    } finally {
-      setIsBusy(false)
-    }
-  }
-
-  const runTerminalCommand = async (command: string) => {
-    if (!projectState?.metadata.id) {
-      setStatusMessage('Pehle project generate karo.')
-      return
-    }
-    const trimmed = command.trim()
-    if (!trimmed) return
-
-    const isRiskyCommand = /\bnpm\s+(install|i)|yarn\s+install|pnpm\s+install|bun\s+install|npm\s+run\s+(dev|build)\b/i.test(trimmed)
-    const needsApproval = permissionMode === 'ask' || (permissionMode === 'safe' && isRiskyCommand)
-    if (needsApproval) {
-      setPendingApproval({ type: 'command', command: trimmed })
-      setStatusMessage(`Approval required before running: ${trimmed}`)
-      return
-    }
-
-    const response = await runBuilderProjectCommand(projectState.metadata.id, trimmed)
-    if (response.success) {
-      setTerminalHistory((prev) => [trimmed, ...prev.filter((item) => item !== trimmed)].slice(0, 12))
-      setTerminalCommand(trimmed)
-    } else {
-      setTerminalOutput((prev) => [...prev, response.error || 'Command start failed.'])
-    }
-  }
-
-  const stopTerminalCommand = async () => {
-    if (!projectState?.metadata.id) return
-    await stopBuilderProjectCommand(projectState.metadata.id)
-  }
-
-  const handlePickAttachments = async (kind: AttachmentItem['kind']) => {
-    const response = await pickBuilderAttachments(kind)
-    if (!response.success) {
-      setStatusMessage(response.error || 'Attachment pick failed.')
-      debugBuilder('attachment-pick-failed', response.error)
-      return
-    }
-    if (response.cancelled || !response.attachments?.length) return
-    setAttachments((prev) => [...prev, ...response.attachments!.map(attachmentFromDescriptor)])
-    setStatusMessage(
-      kind === 'folder'
-        ? `Folder attached (${response.attachments[0]?.fileCount || 0} files).`
-        : `${response.attachments.length} attachment${response.attachments.length > 1 ? 's' : ''} added.`
+  if (node.type === 'folder') {
+    return (
+      <div>
+        <button
+          onClick={() => setOpen((value) => !value)}
+          className="flex w-full items-center gap-1.5 rounded text-left text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground"
+          style={{
+            paddingLeft: `${8 + depth * 14}px`,
+            paddingTop: 4,
+            paddingBottom: 4,
+            paddingRight: 8
+          }}
+        >
+          {open ? (
+            <FolderOpen size={13} className="shrink-0 text-yellow-400/70" />
+          ) : (
+            <Folder size={13} className="shrink-0 text-yellow-400/50" />
+          )}
+          <span className="text-xs font-medium tracking-wide">{node.name}</span>
+        </button>
+        {open &&
+          node.children?.map((child) => (
+            <FileTreeNode
+              key={`${path.join('/')}/${child.name}`}
+              node={child}
+              depth={depth + 1}
+              selectedPath={selectedPath}
+              onSelect={onSelect}
+              onDownload={onDownload}
+              currentPath={path}
+            />
+          ))}
+      </div>
     )
   }
 
-  const openPreviewWindow = () => {
-    if (!previewSource) return
-    const win = window.open('', '_blank', 'width=1280,height=860')
-    if (!win) return
-    win.document.open()
-    win.document.write(previewSource)
-    win.document.close()
-  }
+  return (
+    <div
+      className={`relative flex items-center rounded transition-colors ${
+        isSelected
+          ? 'bg-primary/15 text-foreground'
+          : 'text-muted-foreground hover:bg-white/5 hover:text-foreground'
+      }`}
+      style={{ paddingLeft: `${8 + depth * 14}px`, paddingRight: 6 }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      <button onClick={() => onSelect(path)} className="flex min-w-0 flex-1 items-center gap-1.5 py-1">
+        <FileIcon ext={node.ext} />
+        <span className="truncate text-xs font-mono">{node.name}</span>
+      </button>
+      <button
+        onClick={(event) => {
+          event.stopPropagation()
+          onDownload(path, node.name)
+        }}
+        title={`Download ${node.name}`}
+        className="h-5 w-5 shrink-0 rounded transition-all"
+        style={{
+          opacity: hovered ? 1 : 0,
+          pointerEvents: hovered ? 'auto' : 'none',
+          color: hovered ? '#c9d1d9' : 'transparent',
+          background: 'transparent'
+        }}
+        onMouseEnter={(event) => {
+          event.currentTarget.style.background = '#30363d'
+        }}
+        onMouseLeave={(event) => {
+          event.currentTarget.style.background = 'transparent'
+        }}
+      >
+        <Download size={12} className="mx-auto" />
+      </button>
+    </div>
+  )
+}
 
-  const handleTopAction = async (action: () => Promise<void> | void, busyLabel?: string) => {
-    if (busyLabel) {
-      setIsBusy(true)
-      setStatusMessage(busyLabel)
-    }
-    try {
-      await action()
-    } finally {
-      if (busyLabel) setIsBusy(false)
-    }
-  }
+function AccessMenu({
+  value,
+  onChange
+}: {
+  value: PermissionMode
+  onChange: (value: PermissionMode) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [coords, setCoords] = useState({ top: 0, left: 0 })
+  const buttonRef = useRef<HTMLButtonElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
 
-  const handleSidebarAction = (action: 'chat' | 'agent' | 'files' | 'terminal' | 'models') => {
-    if (action === 'chat' || action === 'agent') {
-      setActiveSidebarTab(action)
-      setStatusMessage(action === 'chat' ? 'Project chat ready.' : 'Coding agent controls ready.')
-      return
-    }
-    if (action === 'files') {
-      setMode((current) => (current === 'preview' ? 'split' : current))
-      filePanelRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' })
-      setStatusMessage('Project file tree focused.')
-      return
-    }
-    if (action === 'terminal') {
-      terminalPanelRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' })
-      setStatusMessage('Terminal panel focused.')
-      return
-    }
-    setShowModelModal(true)
-    setStatusMessage('Model configuration open hai.')
-  }
-
-  const saveModelDraft = async () => {
-    const result = await saveBuilderModelSlot({
-      group: addModelDraft.group,
-      slot: addModelDraft.slot,
-      key: addModelDraft.apiKey,
-      baseUrl: addModelDraft.baseUrl,
-      modelId: addModelDraft.modelId,
-      providerMode: addModelDraft.providerMode
-    })
-    if (result?.success) {
-      if (!addModelDraft.enabled) {
-        await setBuilderModelEnabled({
-          group: addModelDraft.group,
-          slot: addModelDraft.slot,
-          enabled: false
-        })
+  useEffect(() => {
+    const handlePointerDown = (event: MouseEvent) => {
+      if (
+        buttonRef.current &&
+        !buttonRef.current.contains(event.target as Node) &&
+        menuRef.current &&
+        !menuRef.current.contains(event.target as Node)
+      ) {
+        setOpen(false)
       }
-      setAddModelMessage('Model saved securely.')
-      await refreshModelOptions()
-    } else {
-      setAddModelMessage(result?.error || 'Model save failed.')
     }
-  }
+    document.addEventListener('mousedown', handlePointerDown)
+    return () => document.removeEventListener('mousedown', handlePointerDown)
+  }, [])
 
-  const testModelDraft = async () => {
-    const result = await testBuilderModelSlot({
-      group: addModelDraft.group,
-      slot: addModelDraft.slot
-    })
-    setAddModelMessage(result?.success ? 'Model test passed.' : result?.error || 'Model test failed.')
-    await refreshModelOptions()
-  }
-
-  const approvePendingAction = async () => {
-    const current = pendingApproval
-    setPendingApproval(null)
-    if (!current) return
-    if (current.type === 'command') {
-      await runTerminalCommand(current.command)
-      return
+  const handleToggle = () => {
+    if (buttonRef.current) {
+      const rect = buttonRef.current.getBoundingClientRect()
+      setCoords({ top: rect.top - 8, left: rect.left })
     }
-    await handleAgentPrompt(current.prompt, true)
+    setOpen((value) => !value)
   }
-
-  const activeFiles = projectState?.files || []
-  const fileTree = useMemo(() => buildFileTree(activeFiles), [activeFiles])
-  const selectedFileEntry = activeFiles.find((item) => item.path === selectedFile) || null
-  const selectedFileDirty = Boolean(selectedFileEntry && selectedFileEntry.content !== draftContent)
-  const currentModelLabel =
-    modelOptions.find((option) => option.provider === currentProvider)?.label ||
-    modelOptions.find((option) => option.provider === selectedModel)?.label ||
-    'Auto Priority'
-  const currentModelName =
-    modelOptions.find((option) => option.provider === currentProvider)?.model ||
-    modelOptions.find((option) => option.provider === selectedModel)?.model ||
-    'GLM -> Z.AI -> fallback'
-  const totalFiles = activeFiles.length
-  const emptyState = !projectState && !isBusy && !chatMessages.length
-  const showPreview = mode === 'preview' || mode === 'split' || mode === 'visual'
-  const showCode = mode === 'code' || mode === 'split'
-  const showVisual = mode === 'visual'
-  const latestUserPrompt =
-    [...chatMessages].reverse().find((message) => message.role === 'user')?.text || 'Start a new website brief'
-  const projectDisplayName = projectState?.metadata.name || 'Untitled workspace'
-  const workspacePath = projectState?.metadata.projectPath || '/workspace'
-  const currentModelStatus =
-    modelOptions.find((option) => option.provider === currentProvider)?.status ||
-    modelOptions.find((option) => option.provider === selectedModel)?.status ||
-    'ready'
-
-  const modeButtons: ModeButtonMeta[] = [
-    { value: 'preview', label: 'Preview', icon: <Eye className="h-3.5 w-3.5" /> },
-    { value: 'code', label: 'Code', icon: <Code2 className="h-3.5 w-3.5" /> },
-    { value: 'split', label: 'Split', icon: <LayoutGrid className="h-3.5 w-3.5" /> },
-    { value: 'visual', label: 'Visual', icon: <PencilLine className="h-3.5 w-3.5" /> }
-  ]
-
-  const quickCommandButtons: Array<[string, string]> = [
-    ['npm install', 'Install dependencies'],
-    ['npm run build', 'Build'],
-    ['npm run dev', 'Start dev server']
-  ]
-
-  const renderFileTreeNodes = (nodes: FileTreeNode[], depth = 0): ReactNode =>
-    nodes.map((node) => {
-      if (node.kind === 'folder') {
-        return (
-          <div key={node.id} className="space-y-1">
-            <div
-              className="flex items-center gap-2 rounded-xl px-2.5 py-1.5 text-[11px] font-medium text-[#cbd5e1]"
-              style={{ paddingLeft: `${10 + depth * 14}px` }}
-            >
-              {depth === 0 ? (
-                <FolderOpen className="h-3.5 w-3.5 text-amber-300" />
-              ) : (
-                <Folder className="h-3.5 w-3.5 text-amber-300/80" />
-              )}
-              <span className="truncate">{node.name}</span>
-            </div>
-            <div className="space-y-1">{renderFileTreeNodes(node.children, depth + 1)}</div>
-          </div>
-        )
-      }
-
-      const isActive = selectedFile === node.path
-      return (
-        <button
-          key={node.id}
-          onClick={() => setSelectedFile(node.path)}
-          className={`flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left text-[11px] transition ${
-            isActive
-              ? 'border border-cyan-400/40 bg-[#10151f] text-white shadow-[0_0_0_1px_rgba(34,211,238,0.12)]'
-              : 'border border-white/5 bg-[#12161f] text-[#c3c9d4] hover:bg-[#151b26]'
-          }`}
-          style={{ paddingLeft: `${10 + depth * 14}px` }}
-        >
-          <span className={isActive ? 'text-cyan-200' : 'text-[#94a3b8]'}>{getFileIcon(node.path)}</span>
-          <div className="min-w-0 flex-1">
-            <div className="truncate font-medium">{node.name}</div>
-            <div className={`truncate text-[10px] ${isActive ? 'text-white/55' : 'text-[#70829b]'}`}>{node.path}</div>
-          </div>
-          {selectedFileDirty && selectedFile === node.path && (
-            <span className="rounded-full bg-amber-400/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.18em] text-amber-200">
-              Edited
-            </span>
-          )}
-        </button>
-      )
-    })
 
   return (
-    <div className="h-screen w-screen overflow-hidden bg-[#06070b] text-[#f5f7fb]">
-      <style>{buildLoaderCss}</style>
-      <div className="absolute inset-0 bg-[linear-gradient(rgba(34,211,238,0.045)_1px,transparent_1px),linear-gradient(90deg,rgba(34,211,238,0.045)_1px,transparent_1px)] bg-[size:28px_28px]" />
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(124,58,237,0.2),transparent_24%),radial-gradient(circle_at_top_right,rgba(34,211,238,0.18),transparent_22%),radial-gradient(circle_at_bottom,rgba(17,24,39,0.8),transparent_36%)]" />
-
-      <div className="relative z-10 grid h-full grid-cols-[50px_352px_minmax(0,1fr)] gap-2.5 p-2.5">
-        <aside className="flex h-full flex-col items-center justify-between rounded-[16px] border border-white/10 bg-[#0a0d14]/95 py-2 shadow-[0_24px_80px_rgba(0,0,0,0.18)]">
-          <div className="flex flex-col items-center gap-3">
-            <div className="grid h-[36px] w-[36px] place-items-center rounded-[12px] bg-[#111318] text-white shadow-[0_0_0_1px_rgba(34,211,238,0.18),0_8px_24px_rgba(17,19,24,0.18)]">
-              <Sparkles className="h-[16px] w-[16px]" />
-            </div>
-            <button
-              aria-label="Open builder chat"
-              onClick={() => handleSidebarAction('chat')}
-              className={`grid h-[36px] w-[36px] place-items-center rounded-[12px] border ${
-                activeSidebarTab === 'chat'
-                  ? 'border-cyan-400/20 bg-cyan-400/10 text-cyan-300 shadow-[0_0_16px_rgba(34,211,238,0.12)]'
-                  : 'border-white/10 bg-white/5 text-[#94a3b8]'
-              }`}
-            >
-              <MessageSquare className="h-[16px] w-[16px]" />
-            </button>
-            <button
-              aria-label="Open coding agent"
-              onClick={() => handleSidebarAction('agent')}
-              className={`grid h-[36px] w-[36px] place-items-center rounded-[12px] border ${
-                activeSidebarTab === 'agent'
-                  ? 'border-cyan-400/20 bg-cyan-400/10 text-cyan-300 shadow-[0_0_16px_rgba(34,211,238,0.12)]'
-                  : 'border-white/10 bg-white/5 text-[#94a3b8]'
-              }`}
-            >
-              <Bot className="h-[16px] w-[16px]" />
-            </button>
-            <button
-              aria-label="Focus file tree"
-              onClick={() => handleSidebarAction('files')}
-              className="grid h-[36px] w-[36px] place-items-center rounded-[12px] border border-white/10 bg-white/5 text-[#94a3b8]"
-            >
-              <FolderTree className="h-[16px] w-[16px]" />
-            </button>
-            <button
-              aria-label="Focus terminal"
-              onClick={() => handleSidebarAction('terminal')}
-              className="grid h-[36px] w-[36px] place-items-center rounded-[12px] border border-white/10 bg-white/5 text-[#94a3b8]"
-            >
-              <Terminal className="h-[16px] w-[16px]" />
-            </button>
-            <button
-              aria-label="Add or configure model"
-              onClick={() => handleSidebarAction('models')}
-              className="grid h-[36px] w-[36px] place-items-center rounded-[12px] border border-white/10 bg-white/5 text-[#94a3b8]"
-            >
-              <Plus className="h-[16px] w-[16px]" />
-            </button>
-          </div>
-          <div className="flex flex-col items-center gap-3">
-            <button
-              aria-label="Open builder settings"
-              onClick={() => setShowModelModal(true)}
-              className="grid h-[36px] w-[36px] place-items-center rounded-[12px] border border-white/10 bg-white/5 text-[#94a3b8]"
-            >
-              <Settings2 className="h-[16px] w-[16px]" />
-            </button>
-            <button
-              onClick={() => void closeBuilderWindow()}
-              className="grid h-[36px] w-[36px] place-items-center rounded-[12px] border border-red-500/15 bg-red-500/8 text-red-300"
-            >
-              <X className="h-[16px] w-[16px]" />
-            </button>
-          </div>
-        </aside>
-
-        <section className="flex min-h-0 flex-col overflow-hidden rounded-[20px] border border-white/10 bg-[#0b0f1a]/96 text-[#f8fafc] shadow-[0_24px_80px_rgba(0,0,0,0.22)]">
-          <div className="border-b border-white/8 px-3 py-3">
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2">
-                <div className="grid h-8 w-8 place-items-center rounded-[12px] bg-[#111318] text-white">
-                  <Bot className="h-4 w-4" />
-                </div>
-                <div>
-                  <div className="text-[10px] font-semibold uppercase tracking-[0.3em] text-[#70829b]">Coding Agent</div>
-                  <div className="text-sm font-medium text-white">{currentModelLabel}</div>
-                </div>
-              </div>
-            </div>
-
-            <div className="mt-3 grid grid-cols-2 gap-1 rounded-[14px] border border-white/8 bg-white/5 p-1">
+    <>
+      <button
+        ref={buttonRef}
+        onClick={handleToggle}
+        className="flex h-6 items-center gap-1 rounded-md px-1.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground"
+      >
+        <Key size={11} />
+        <span>Access</span>
+        <ChevronDown size={9} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <div
+          ref={menuRef}
+          className="fixed z-[9999] w-64 rounded-xl border border-border bg-popover py-1.5 shadow-2xl shadow-black/70"
+          style={{ top: coords.top, left: coords.left, transform: 'translateY(-100%)' }}
+        >
+          <p className="px-3 pb-1.5 pt-0.5 text-[10px] font-medium uppercase tracking-widest text-muted-foreground/60">
+            How should actions be approved?
+          </p>
+          {ACCESS_OPTIONS.map((option) => {
+            const Icon = option.icon
+            const active = option.id === value
+            return (
               <button
-                aria-label="Show chat messages"
-                onClick={() => setActiveSidebarTab('chat')}
-                className={`rounded-[10px] px-2.5 py-1.5 text-left text-[11px] font-medium ${
-                  activeSidebarTab === 'chat' ? 'bg-cyan-400/12 text-cyan-200' : 'text-[#94a3b8]'
+                key={option.id}
+                onClick={() => {
+                  onChange(option.id)
+                  setOpen(false)
+                }}
+                className={`flex w-full items-start gap-3 px-3 py-2.5 text-left transition-colors ${
+                  active ? 'bg-white/5' : 'hover:bg-white/[0.04]'
                 }`}
               >
-                <span className="inline-flex items-center gap-2">
-                  <MessageSquare className="h-3.5 w-3.5" />
-                  Chat
-                </span>
-              </button>
-              <button
-                aria-label="Show agent details"
-                onClick={() => setActiveSidebarTab('agent')}
-                className={`rounded-[10px] px-2.5 py-1.5 text-left text-[11px] font-medium ${
-                  activeSidebarTab === 'agent' ? 'bg-cyan-400/12 text-cyan-200' : 'text-[#94a3b8]'
-                }`}
-              >
-                <span className="inline-flex items-center gap-2">
-                  <Bot className="h-3.5 w-3.5" />
-                  Agent
-                </span>
-              </button>
-            </div>
-
-            <div className="mt-3 grid grid-cols-[minmax(0,1fr)_112px] gap-2">
-              <label className="rounded-[14px] border border-white/8 bg-white/5 p-2.5 text-[11px]">
-                <div className="mb-1 text-[10px] uppercase tracking-[0.22em] text-[#70829b]">Model</div>
-                <select
-                  value={selectedModel}
-                  onChange={(event) => setSelectedModel(event.target.value as ModelProvider)}
-                  className="w-full bg-transparent text-[12px] text-white outline-none"
-                >
-                  {modelOptions.map((option) => (
-                    <option key={option.provider} value={option.provider}>
+                <Icon size={14} className={`mt-0.5 shrink-0 ${option.color}`} />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className={`text-xs font-medium ${active ? 'text-foreground' : 'text-muted-foreground'}`}>
                       {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button
-                onClick={() => setShowModelModal(true)}
-                className="rounded-[14px] border border-white/8 bg-white/5 px-2.5 py-2 text-[11px] font-medium text-[#dbe4f0]"
-              >
-                Add Model
+                    </span>
+                    {active && <Check size={11} className="shrink-0 text-primary" />}
+                  </div>
+                  <p className="mt-0.5 text-[10px] leading-snug text-muted-foreground/60">{option.desc}</p>
+                </div>
               </button>
-            </div>
+            )
+          })}
+        </div>
+      )}
+    </>
+  )
+}
 
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              {([
-                ['ask', 'Ask approval'],
-                ['safe', 'Approve safe'],
-                ['full', 'Project full']
-              ] as Array<[PermissionMode, string]>).map(([value, label]) => (
+const EMPTY_FORM = { provider: '', name: '', apiKey: '', baseUrl: '' }
+
+function ModelSelector({
+  value,
+  onChange,
+  options,
+  onAddCustom
+}: {
+  value: string
+  onChange: (value: string) => void
+  options: ProviderOption[]
+  onAddCustom: (model: CustomModel) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [showForm, setShowForm] = useState(false)
+  const [form, setForm] = useState(EMPTY_FORM)
+  const [formError, setFormError] = useState('')
+  const [showApiKey, setShowApiKey] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  const current = options.find((option) => option.id === value) || options[0]
+
+  useEffect(() => {
+    const handler = (event: MouseEvent) => {
+      if (ref.current && !ref.current.contains(event.target as Node)) {
+        setOpen(false)
+        setShowForm(false)
+        setForm(EMPTY_FORM)
+        setFormError('')
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+
+  const handleSaveModel = () => {
+    if (!form.provider.trim() || !form.name.trim()) {
+      setFormError('Provider and model name required')
+      return
+    }
+    if (!form.apiKey.trim()) {
+      setFormError('API key required')
+      return
+    }
+
+    const customModel: CustomModel = {
+      id: `custom-${Date.now()}`,
+      label: `${form.provider.trim()} / ${form.name.trim()}`,
+      provider: form.provider.trim(),
+      modelName: form.name.trim(),
+      baseUrl: form.baseUrl.trim()
+    }
+
+    onAddCustom(customModel)
+    onChange(customModel.id)
+    setOpen(false)
+    setShowForm(false)
+    setForm(EMPTY_FORM)
+    setFormError('')
+    setShowApiKey(false)
+    emitBuilderToast('success', `${customModel.label} added for this Builder session.`)
+  }
+
+  const inputClassName =
+    'w-full rounded-lg border border-border bg-[#0d0d10] px-2.5 py-1.5 text-xs text-foreground outline-none transition-colors placeholder:text-muted-foreground/50 focus:border-primary/50'
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => {
+          setOpen((state) => !state)
+          setShowForm(false)
+        }}
+        className="flex items-center gap-1.5 rounded-lg border border-border bg-muted/60 px-2.5 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+      >
+        <span className="max-w-[110px] truncate">{current?.label || 'Select model'}</span>
+        <ChevronDown size={11} className={`shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+
+      {open && (
+        <div className="absolute bottom-full left-0 z-50 mb-1.5 w-64 overflow-hidden rounded-xl border border-border bg-popover py-1 shadow-2xl shadow-black/50">
+          {!showForm ? (
+            <>
+              {options.map((option) => (
                 <button
-                  key={value}
-                  onClick={() => setPermissionMode(value)}
-                  className={`rounded-full px-2.5 py-1 text-[10px] ${
-                    permissionMode === value
-                      ? 'border border-cyan-400/30 bg-cyan-400/10 text-cyan-200'
-                      : 'border border-white/8 bg-white/5 text-[#94a3b8]'
+                  key={option.id}
+                  onClick={() => {
+                    onChange(option.id)
+                    setOpen(false)
+                  }}
+                  className={`flex w-full items-center justify-between px-3 py-2 text-left text-xs transition-colors ${
+                    option.id === value
+                      ? 'bg-primary/15 text-foreground'
+                      : 'text-muted-foreground hover:bg-white/5 hover:text-foreground'
                   }`}
                 >
-                  {label}
-                </button>
-              ))}
-            </div>
-
-            <div className="mt-3 rounded-[16px] border border-white/8 bg-white/5 p-3">
-              <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.28em] text-[#70829b]">Current Task</div>
-              <div className="line-clamp-3 text-[12px] leading-5 text-white">{latestUserPrompt}</div>
-              <div className="mt-2 flex items-center gap-2 text-[10px] text-[#7a8191]">
-                <span className="rounded-full border border-white/8 bg-black/20 px-2 py-0.5">AI PPT</span>
-                <span className="rounded-full border border-white/8 bg-black/20 px-2 py-0.5">Website</span>
-              </div>
-            </div>
-          </div>
-
-          <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
-            {emptyState ? (
-              <div className="space-y-3">
-                <div className="rounded-[16px] border border-white/8 bg-white/5 p-4 shadow-sm">
-                  <div className="mb-3 flex items-center gap-2">
-                    <div className="csse-bounce-dots">
-                      <span />
-                      <span />
-                      <span />
-                    </div>
-                    <span className="text-sm text-[#94a3b8]">Describe what you want to build.</span>
-                  </div>
-                  <div className="space-y-2 text-[12px] text-[#b8c2d1]">
-                    <p className="rounded-xl border border-white/8 bg-black/20 px-3 py-2">simple calculator website banao</p>
-                    <p className="rounded-xl border border-white/8 bg-black/20 px-3 py-2">portfolio website with glass hero and neon cards</p>
-                    <p className="rounded-xl border border-white/8 bg-black/20 px-3 py-2">CSS effect library with live demos and code copy</p>
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {chatMessages.map((message) => (
-                  <div key={message.id} className={message.role === 'user' ? 'flex justify-end' : 'flex justify-start'}>
-                    <div
-                      className={`max-w-[92%] rounded-[16px] px-3 py-2.5 text-[12px] leading-5 shadow-sm ${
-                        message.role === 'user'
-                          ? 'bg-[#111318] text-white'
-                          : message.role === 'system'
-                            ? 'border border-amber-200 bg-amber-50 text-amber-900'
-                            : 'border border-white/8 bg-white/5 text-[#dbe4f0]'
-                      }`}
-                    >
-                      {message.text}
-                    </div>
-                  </div>
-                ))}
-
-                {isBusy && (
-                  <div className="rounded-[16px] border border-white/8 bg-white/5 p-4 shadow-sm">
-                    <LoaderLabel label={projectState ? 'Applying files and refreshing preview' : 'Generating workspace'} />
-                  </div>
-                )}
-
-                {attachments.length > 0 && (
-                  <div className="flex flex-wrap gap-2">
-                    {attachments.map((attachment) => (
-                      <div
-                        key={attachment.id}
-                        className="inline-flex items-center gap-2 rounded-full border border-white/8 bg-white/5 px-2.5 py-1 text-[10px] text-[#dbe4f0]"
-                      >
-                        {attachment.kind === 'folder' ? (
-                          <Folder className="h-3 w-3 text-amber-300" />
-                        ) : attachment.kind === 'image' ? (
-                          <FileImage className="h-3 w-3 text-cyan-300" />
-                        ) : (
-                          <FileText className="h-3 w-3 text-violet-300" />
-                        )}
-                        <span>
-                          {attachment.name}
-                          {attachment.fileCount ? ` (${attachment.fileCount} files)` : ''}
-                        </span>
-                        <span className="text-[#70829b]">{formatBytes(attachment.size)}</span>
-                        <button
-                          onClick={() => setAttachments((prev) => prev.filter((item) => item.id !== attachment.id))}
-                          className="rounded-full p-1 text-[#9ca3af] hover:bg-[#f3f4f6] hover:text-[#111418]"
-                        >
-                          <X className="h-3 w-3" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {pendingApproval && (
-                <div className="rounded-[16px] border border-amber-400/25 bg-amber-500/10 p-4 text-sm text-amber-100">
-                    <div className="font-semibold">Approval required</div>
-                    <div className="mt-2">{pendingApproval.type === 'command' ? pendingApproval.command : pendingApproval.prompt}</div>
-                    <div className="mt-3 flex gap-2">
-                      <button
-                        onClick={() => void approvePendingAction()}
-                        className="rounded-lg bg-amber-500 px-2.5 py-1.5 text-[11px] font-medium text-white"
-                      >
-                        Approve
-                      </button>
-                      <button
-                        onClick={() => setPendingApproval(null)}
-                        className="rounded-lg border border-amber-200 bg-white px-2.5 py-1.5 text-[11px] text-amber-900"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {pendingFallbackPrompt && (
-                <div className="rounded-[16px] border border-violet-400/20 bg-violet-500/10 p-4 text-sm text-violet-100">
-                    <div className="font-semibold">Choose fallback provider</div>
-                    <div className="mt-2">{providerError || 'Selected model failed. Choose a fallback provider.'}</div>
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {(['gemini', 'openrouter', 'kimi', 'groq'] as Array<Exclude<ModelProvider, 'auto' | 'glm' | 'zai'>>).map(
-                        (provider) => (
-                          <button
-                            key={provider}
-                            onClick={() => void handleFallbackChoice(provider)}
-                            className="rounded-lg border border-violet-200 bg-white px-2.5 py-1.5 text-[11px] font-medium capitalize text-violet-900"
-                          >
-                            {provider}
-                          </button>
-                        )
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-
-          <div className="border-t border-white/8 px-3 py-3">
-            <div className="mb-2 flex flex-wrap gap-1.5">
-              <button
-                onClick={() => void handlePickAttachments('image')}
-                className="rounded-lg border border-white/8 bg-white/5 px-2 py-1.5 text-[10px] text-[#dbe4f0]"
-              >
-                <FileImage className="mr-1.5 inline h-3.5 w-3.5" />
-                Image
-              </button>
-              <button
-                onClick={() => void handlePickAttachments('file')}
-                className="rounded-lg border border-white/8 bg-white/5 px-2 py-1.5 text-[10px] text-[#dbe4f0]"
-              >
-                <FileUp className="mr-1.5 inline h-3.5 w-3.5" />
-                File
-              </button>
-              <button
-                onClick={() => void handlePickAttachments('folder')}
-                className="rounded-lg border border-white/8 bg-white/5 px-2 py-1.5 text-[10px] text-[#dbe4f0]"
-              >
-                <FolderUp className="mr-1.5 inline h-3.5 w-3.5" />
-                Folder
-              </button>
-              <button
-                onClick={() => setAttachments([])}
-                className="rounded-lg border border-white/8 bg-white/5 px-2 py-1.5 text-[10px] text-[#dbe4f0]"
-              >
-                <Upload className="mr-1.5 inline h-3.5 w-3.5" />
-                Clear
-              </button>
-            </div>
-
-            <form
-              onSubmit={(event) => {
-                event.preventDefault()
-                void handleAgentPrompt(chatInput)
-              }}
-              className="rounded-[16px] border border-white/8 bg-white/5 p-2.5 shadow-sm"
-            >
-              <textarea
-                value={chatInput}
-                onChange={(event) => setChatInput(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' && !event.shiftKey) {
-                    event.preventDefault()
-                    void handleAgentPrompt(chatInput)
-                  }
-                }}
-                placeholder="Describe your page, ask for file edits, or refine the design..."
-                className="min-h-[72px] w-full resize-none bg-transparent text-[12px] text-white outline-none placeholder:text-[#70829b]"
-              />
-              <div className="mt-2 flex items-center justify-between gap-3">
-                <div className="flex items-center gap-1.5 text-[10px] text-[#70829b]">
-                  <span className="rounded-full border border-white/8 px-2 py-1">Full-Stack</span>
-                  <span className="rounded-full border border-white/8 px-2 py-1">Tasks</span>
-                </div>
-                <button
-                  type="submit"
-                  disabled={!chatInput.trim() || isBusy}
-                  className="grid h-[30px] w-[30px] place-items-center rounded-full bg-cyan-400 text-[#081018] disabled:opacity-40"
-                >
-                  <ArrowUp className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            </form>
-          </div>
-
-        </section>
-
-        <section className="flex min-h-0 flex-col overflow-hidden rounded-[20px] border border-white/10 bg-[#090d14] text-white shadow-[0_28px_100px_rgba(0,0,0,0.28)]">
-          <div className="border-b border-white/8 bg-[#0b0f18] px-4 py-4">
-            <div className="flex flex-wrap items-start justify-between gap-4">
-              <div className="max-w-2xl">
-                <div className="mb-2 flex items-center gap-2">
-                  <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-white">
-                    {status}
-                  </span>
-                  <span className="rounded-full border border-cyan-400/18 bg-cyan-400/8 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-cyan-200">
-                    {currentModelLabel}
-                  </span>
-                  <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-[#94a3b8]">
-                    {currentModelStatus}
-                  </span>
-                </div>
-                <h1 className="text-[24px] font-semibold leading-tight tracking-[-0.02em] text-white">{projectDisplayName}</h1>
-                <p className="mt-2 max-w-2xl text-[13px] leading-6 text-[#94a3b8]">{providerError || statusMessage}</p>
-                <div className="mt-2 text-[11px] text-[#70829b]">{currentModelName}</div>
-              </div>
-
-              <div className="flex flex-col items-end gap-2">
-                <div className="flex items-center gap-2 rounded-xl border border-white/8 bg-white/5 px-3 py-2 text-[12px] text-[#94a3b8]">
-                  <FolderTree className="h-4 w-4 text-[#22d3ee]" />
-                  <span className="max-w-[320px] truncate">{workspacePath}</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={openPreviewWindow}
-                    disabled={!previewSource}
-                    className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] text-white disabled:opacity-40"
-                  >
-                    <ExternalLink className="mr-1.5 inline h-3.5 w-3.5" />
-                    Preview
-                  </button>
-                  <button
-                    onClick={() => void handleTopAction(refreshProject, 'Refreshing preview...')}
-                    disabled={!projectState || isBusy}
-                    className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] text-white disabled:opacity-40"
-                  >
-                    <RefreshCw className="mr-1.5 inline h-3.5 w-3.5" />
-                    Refresh
-                  </button>
-                  <button
-                    onClick={() => void persistFile(selectedFile, draftContent)}
-                    disabled={!selectedFile || isBusy || !selectedFileDirty}
-                    className="rounded-lg bg-emerald-500/90 px-2.5 py-1.5 text-[11px] text-white disabled:opacity-40"
-                  >
-                    <Save className="mr-1.5 inline h-3.5 w-3.5" />
-                    {selectedFileDirty ? 'Save' : 'Saved'}
-                  </button>
-                  <button
-                    onClick={() =>
-                      void handleTopAction(async () => {
-                        if (!projectState) return
-                        const result = await exportBuilderProjectZip(projectState.metadata.id)
-                        setStatusMessage(result.success ? `ZIP exported: ${result.exportPath}` : result.error || 'ZIP export failed.')
-                      }, 'Exporting ZIP...')
-                    }
-                    disabled={!projectState}
-                    className="rounded-lg bg-violet-500/85 px-2.5 py-1.5 text-[11px] text-white disabled:opacity-40"
-                  >
-                    <Download className="mr-1.5 inline h-3.5 w-3.5" />
-                    Export
-                  </button>
-                  <button
-                    onClick={() =>
-                      void handleTopAction(async () => {
-                        if (!projectState) return
-                        const result = await openBuilderProjectFolder(projectState.metadata.id)
-                        setStatusMessage(result.success ? 'Folder opened.' : result.error || 'Open folder failed.')
-                      })
-                    }
-                    disabled={!projectState}
-                    className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] text-white disabled:opacity-40"
-                  >
-                    <FolderTree className="mr-1.5 inline h-3.5 w-3.5" />
-                    Folder
-                  </button>
-                  <button
-                    onClick={() =>
-                      void handleTopAction(async () => {
-                        if (!projectState) return
-                        const result = await openBuilderProjectInVsCode(projectState.metadata.id)
-                        setStatusMessage(result.success ? 'VS Code opened.' : result.error || 'VS Code open failed.')
-                      })
-                    }
-                    disabled={!projectState}
-                    className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] text-white disabled:opacity-40"
-                  >
-                    <Code2 className="mr-1.5 inline h-3.5 w-3.5" />
-                    VS Code
-                  </button>
-                  <button
-                    onClick={() =>
-                      void handleTopAction(async () => {
-                        if (!projectState) return
-                        const result = await copyBuilderProjectPath(projectState.metadata.id)
-                        setStatusMessage(result.success ? 'Project path copied.' : result.error || 'Copy failed.')
-                      })
-                    }
-                    disabled={!projectState}
-                    className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] text-white disabled:opacity-40"
-                  >
-                    <Copy className="mr-1.5 inline h-3.5 w-3.5" />
-                    Copy
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-              {modeButtons.map(({ value, label, icon }) => (
-                <button
-                  key={value}
-                  onClick={() => setMode(value)}
-                  className={`rounded-full px-3 py-1.5 text-[11px] font-medium transition ${
-                    mode === value ? 'bg-[#111318] text-white shadow-sm' : 'border border-white/10 bg-white/5 text-[#94a3b8]'
-                  }`}
-                >
-                  <span className="inline-flex items-center gap-1.5">
-                    {icon}
-                    {label}
-                  </span>
-                </button>
-              ))}
-              {([
-                ['desktop', <Laptop className="h-4 w-4" />],
-                ['tablet', <MonitorSmartphone className="h-4 w-4" />],
-                ['mobile', <Smartphone className="h-4 w-4" />]
-              ] as Array<[DeviceMode, ReactNode]>).map(([value, icon]) => (
-                <button
-                  key={value}
-                  onClick={() => setDevice(value)}
-                  className={`grid h-8 w-8 place-items-center rounded-full ${
-                    device === value ? 'bg-[#111318] text-white' : 'border border-white/10 bg-white/5 text-[#94a3b8]'
-                  }`}
-                >
-                  {icon}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div
-            className={`grid min-h-0 flex-1 gap-3 p-3 ${
-              mode === 'preview'
-                ? 'grid-cols-1'
-                : mode === 'code'
-                  ? 'grid-cols-[240px_minmax(0,1fr)]'
-                  : 'grid-cols-[240px_minmax(0,1.1fr)_minmax(380px,0.95fr)]'
-            }`}
-          >
-            {mode !== 'preview' && (
-              <aside
-                ref={filePanelRef}
-                className="flex min-h-0 flex-col overflow-hidden rounded-[18px] border border-white/10 bg-[#0b0d12] text-white shadow-[0_16px_40px_rgba(0,0,0,0.24)]"
-              >
-                <div className="border-b border-white/10 px-4 py-3">
-                  <div className="text-[10px] font-semibold uppercase tracking-[0.28em] text-[#7d8795]">Files</div>
-                  <div className="mt-1 text-sm font-medium text-white">{totalFiles} project files</div>
-                </div>
-                <div className="min-h-0 flex-1 overflow-y-auto p-3">
-                  <div className="space-y-2">
-                    {fileTree.length ? (
-                      renderFileTreeNodes(fileTree)
-                    ) : (
-                      <div className="rounded-2xl border border-white/10 bg-[#12161f] p-4 text-sm text-[#93a0b5]">
-                        Files will appear here after generation.
-                      </div>
+                  <span className="truncate font-medium">{option.label}</span>
+                  <span className="flex shrink-0 items-center gap-1.5">
+                    {option.id === value && <Check size={11} className="text-primary" />}
+                    {option.badge && (
+                      <span className="rounded-md bg-primary/20 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
+                        {option.badge}
+                      </span>
                     )}
-                  </div>
-                </div>
-              </aside>
-            )}
-
-            {showPreview && (
-              <section className="flex min-h-0 flex-col overflow-hidden rounded-[20px] border border-white/10 bg-[#090b10] text-white shadow-[0_16px_40px_rgba(0,0,0,0.28)]">
-                <div className="border-b border-white/10 px-4 py-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <div className="text-[10px] font-semibold uppercase tracking-[0.28em] text-[#7d8795]">Preview</div>
-                      <div className="mt-1 text-sm font-medium text-white">{projectState?.metadata.projectPath || 'Live website preview'}</div>
-                    </div>
-                    <button
-                      onClick={openPreviewWindow}
-                      disabled={!previewSource}
-                      className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] text-white disabled:opacity-40"
-                    >
-                      Full Preview
-                    </button>
-                  </div>
-                </div>
-                <div className="min-h-0 flex-1 overflow-auto bg-[#07090d] p-4">
-                  {previewSource ? (
-                    <div className="flex min-h-full items-start justify-center">
-                      <div style={{ width: deviceWidths[device], maxWidth: '100%' }} className="transition-all duration-300">
-                        <iframe
-                          title="builder-preview"
-                          srcDoc={previewSource}
-                          sandbox="allow-scripts allow-same-origin"
-                          className="min-h-[780px] w-full rounded-[16px] border border-white/10 bg-white shadow-[0_24px_80px_rgba(0,0,0,0.32)]"
-                        />
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="flex h-full items-center justify-center">
-                      {isBusy ? (
-                        <div className="rounded-[20px] border border-white/10 bg-[#11141c] px-6 py-5 shadow-sm">
-                          <LoaderLabel label="Updating preview" />
-                        </div>
-                      ) : (
-                        <div className="rounded-[20px] border border-dashed border-white/15 bg-[#11141c] px-8 py-10 text-center text-[#93a0b5]">
-                          <Eye className="mx-auto mb-3 h-10 w-10 text-[#64748b]" />
-                          <div className="text-lg font-medium text-white">Preview canvas is ready</div>
-                          <div className="mt-2 text-sm">Generate or edit a project to render the website here.</div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </section>
-            )}
-
-            {mode !== 'preview' && (
-              <section className="grid min-h-0 grid-rows-[minmax(0,1fr)_240px] gap-3">
-                <div className="min-h-0 overflow-hidden rounded-[20px] border border-white/10 bg-[#0c1018] shadow-[0_16px_40px_rgba(0,0,0,0.18)]">
-                  <div className="border-b border-white/10 px-4 py-3">
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <div className="text-[10px] font-semibold uppercase tracking-[0.28em] text-[#8b93a5]">Code Editor</div>
-                        <div className="mt-1 flex items-center gap-2 text-sm font-medium text-white">
-                          <span>{selectedFile || 'No file selected'}</span>
-                          {selectedFileDirty && (
-                            <span className="rounded-full border border-amber-400/20 bg-amber-400/10 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.18em] text-amber-200">
-                              Unsaved
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                      {showVisual && (
-                        <button
-                          onClick={() => void handleVisualSave()}
-                          className="rounded-lg bg-[#111318] px-2.5 py-1.5 text-[11px] font-medium text-white"
-                        >
-                          <PencilLine className="mr-1.5 inline h-3.5 w-3.5" />
-                          Save Visual
-                        </button>
-                      )}
-                    </div>
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {activeFiles.map((file) => (
-                        <button
-                          key={file.path}
-                          onClick={() => setSelectedFile(file.path)}
-                          className={`rounded-full px-3 py-1.5 text-[11px] ${
-                            selectedFile === file.path
-                              ? 'bg-[#111318] text-white'
-                              : 'border border-white/10 bg-white/5 text-[#94a3b8]'
-                          }`}
-                        >
-                          {file.path.split('/').pop()}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="h-[calc(100%-96px)] overflow-hidden">
-                    {showCode && selectedFile ? (
-                      <Editor
-                        height="100%"
-                        language={languageForFile(selectedFile)}
-                        value={draftContent}
-                        onChange={(value) => setDraftContent(value || '')}
-                        theme="alpha-builder-window"
-                        options={{
-                          minimap: { enabled: false },
-                          fontSize: 13,
-                          wordWrap: 'on',
-                          fontFamily: "'Fira Code', monospace"
-                        }}
-                      />
-                    ) : showCode ? (
-                      <div className="flex h-full items-center justify-center bg-[#0b0e14] text-[#94a3b8]">
-                        Select a file to edit.
-                      </div>
-                    ) : showVisual ? (
-                      <div className="h-full overflow-y-auto bg-[#0b0e14] p-4">
-                        <div className="space-y-3">
-                          {editableTexts.length ? (
-                            editableTexts.map((item, index) => (
-                              <label key={item.id} className="block rounded-2xl border border-white/10 bg-white/5 p-3 shadow-sm">
-                                <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.24em] text-[#94a3b8]">{item.tag}</div>
-                                <input
-                                  value={item.text}
-                                  onChange={(event) =>
-                                    setEditableTexts((prev) =>
-                                      prev.map((entry, currentIndex) =>
-                                        currentIndex === index ? { ...entry, text: event.target.value } : entry
-                                      )
-                                    )
-                                  }
-                                  className="w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-sm text-white outline-none"
-                                />
-                              </label>
-                            ))
-                          ) : (
-                            <div className="flex h-full min-h-[300px] items-center justify-center text-[#94a3b8]">
-                              No editable text nodes found in the current preview.
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="flex h-full items-center justify-center text-[#6b7280]">Code view hidden in preview mode.</div>
-                    )}
-                  </div>
-                </div>
-
-                <div
-                  ref={terminalPanelRef}
-                  className="overflow-hidden rounded-[20px] border border-white/10 bg-[#0c0f15] text-white shadow-[0_16px_40px_rgba(0,0,0,0.24)]"
+                  </span>
+                </button>
+              ))}
+              <div className="mt-1 border-t border-border pt-1">
+                <button
+                  onClick={() => setShowForm(true)}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground"
                 >
-                  <div className="border-b border-white/10 px-4 py-3">
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.28em] text-[#7d8795]">
-                        <Terminal className="h-4 w-4" />
-                        Terminal + Output
-                      </div>
-                      {runningCommand && <LoaderLabel label="Running" />}
-                    </div>
-                  </div>
-                  <div className="grid h-[calc(100%-57px)] grid-cols-[minmax(0,1fr)_168px] gap-3 p-3">
-                    <div className="flex min-h-0 flex-col gap-3">
-                      <div className="flex flex-wrap gap-2">
-                        {quickCommandButtons.map(([command, label]) => (
-                          <button
-                            key={command}
-                            onClick={() => setTerminalCommand(command)}
-                            className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] text-[#d5d9e3]"
-                          >
-                            {label}
-                          </button>
-                        ))}
-                      </div>
-                      <div className="flex gap-2">
-                        <input
-                          value={terminalCommand}
-                          onChange={(event) => setTerminalCommand(event.target.value)}
-                          className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white outline-none placeholder:text-[#7d8795]"
-                          placeholder="Run command in current project folder"
-                        />
-                        <button
-                          onClick={() => void runTerminalCommand(terminalCommand)}
-                          className="rounded-lg bg-[#0ea5b7] px-3 py-1.5 text-[11px] font-medium text-white"
-                        >
-                          Run
-                        </button>
-                        <button
-                          onClick={() => void stopTerminalCommand()}
-                          disabled={!runningCommand}
-                          className="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-1.5 text-[11px] text-red-200 disabled:opacity-40"
-                        >
-                          Stop
-                        </button>
-                      </div>
-                      <div className="min-h-0 flex-1 overflow-y-auto rounded-[18px] border border-white/10 bg-[#090c12] p-3 font-mono text-xs whitespace-pre-wrap text-[#d7def7]">
-                        {terminalOutput.length ? terminalOutput.join('') : 'Terminal output will appear here.'}
-                      </div>
-                    </div>
-                    <div className="min-h-0 overflow-y-auto rounded-[18px] border border-white/10 bg-[#10141d] p-3">
-                      <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.24em] text-[#7d8795]">History</div>
-                      <div className="space-y-2">
-                        {terminalHistory.map((item, index) => (
-                          <button
-                            key={`${item}-${index}`}
-                            onClick={() => setTerminalCommand(item)}
-                            className="w-full rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-left text-[11px] text-[#d5d9e3]"
-                          >
-                            {item}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </section>
-            )}
-          </div>
-        </section>
-      </div>
+                  <Plus size={12} className="text-primary" />
+                  <span>Add model</span>
+                </button>
+              </div>
+            </>
+          ) : (
+            <div className="space-y-2.5 p-3">
+              <div className="mb-1 flex items-center justify-between">
+                <span className="text-xs font-semibold text-foreground">Add model</span>
+                <button
+                  onClick={() => {
+                    setShowForm(false)
+                    setForm(EMPTY_FORM)
+                    setFormError('')
+                  }}
+                  className="text-muted-foreground transition-colors hover:text-foreground"
+                >
+                  <X size={13} />
+                </button>
+              </div>
 
-      {showModelModal && (
-        <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/55 p-6 backdrop-blur-sm">
-          <div className="w-full max-w-2xl rounded-[28px] border border-white/10 bg-[#0c0f15] p-6 text-white shadow-[0_24px_120px_rgba(0,0,0,0.44)]">
-            <div className="mb-4 flex items-center justify-between">
               <div>
-                <div className="text-xs uppercase tracking-[0.3em] text-[#7d8795]">Add New Model</div>
-                <div className="mt-1 text-2xl font-semibold text-white">Provider + model configuration</div>
+                <label className="mb-1 block text-[10px] font-medium text-muted-foreground/70">
+                  Provider name *
+                </label>
+                <input
+                  className={inputClassName}
+                  placeholder="e.g. Gemini, Groq, Z.AI"
+                  value={form.provider}
+                  onChange={(event) => {
+                    setForm((prev) => ({ ...prev, provider: event.target.value }))
+                    setFormError('')
+                  }}
+                />
               </div>
-              <button onClick={() => setShowModelModal(false)} className="rounded-xl border border-white/10 bg-white/5 p-1.5 text-[#c2c9d6]">
-                <X className="h-4 w-4" />
-              </button>
-            </div>
 
-            <div className="grid grid-cols-2 gap-4">
-              <label className="rounded-2xl border border-white/10 bg-white/5 p-3 text-sm">
-                <div className="mb-2 text-xs uppercase tracking-[0.24em] text-[#7d8795]">Provider</div>
-                <select
-                  value={addModelDraft.group}
-                  onChange={(event) => setAddModelDraft((prev) => ({ ...prev, group: event.target.value as AddModelDraft['group'] }))}
-                  className="w-full bg-transparent text-white outline-none"
-                >
-                  <option value="glm">GLM</option>
-                  <option value="zai">Z.AI</option>
-                  <option value="geminiBrain">Gemini</option>
-                  <option value="openrouter">OpenRouter</option>
-                  <option value="kimi">Kimi</option>
-                  <option value="groq">Groq</option>
-                </select>
-              </label>
-              <label className="rounded-2xl border border-white/10 bg-white/5 p-3 text-sm">
-                <div className="mb-2 text-xs uppercase tracking-[0.24em] text-[#7d8795]">Slot</div>
-                <select
-                  value={addModelDraft.slot}
-                  onChange={(event) => setAddModelDraft((prev) => ({ ...prev, slot: Number(event.target.value) as 1 | 2 | 3 }))}
-                  className="w-full bg-transparent text-white outline-none"
-                >
-                  <option value={1}>Slot 1</option>
-                  <option value={2}>Slot 2</option>
-                  <option value={3}>Slot 3</option>
-                </select>
-              </label>
-              <label className="col-span-2 rounded-2xl border border-white/10 bg-white/5 p-3 text-sm">
-                <div className="mb-2 text-xs uppercase tracking-[0.24em] text-[#7d8795]">API Key</div>
+              <div>
+                <label className="mb-1 block text-[10px] font-medium text-muted-foreground/70">
+                  Model name *
+                </label>
                 <input
-                  value={addModelDraft.apiKey}
-                  onChange={(event) => setAddModelDraft((prev) => ({ ...prev, apiKey: event.target.value }))}
-                  className="w-full bg-transparent text-white outline-none"
+                  className={inputClassName}
+                  placeholder="e.g. glm-5.2, gemini-2.5-pro"
+                  value={form.name}
+                  onChange={(event) => {
+                    setForm((prev) => ({ ...prev, name: event.target.value }))
+                    setFormError('')
+                  }}
                 />
-              </label>
-              <label className="rounded-2xl border border-white/10 bg-white/5 p-3 text-sm">
-                <div className="mb-2 text-xs uppercase tracking-[0.24em] text-[#7d8795]">Base URL</div>
-                <input
-                  value={addModelDraft.baseUrl}
-                  onChange={(event) => setAddModelDraft((prev) => ({ ...prev, baseUrl: event.target.value }))}
-                  className="w-full bg-transparent text-white outline-none"
-                />
-              </label>
-              <label className="rounded-2xl border border-white/10 bg-white/5 p-3 text-sm">
-                <div className="mb-2 text-xs uppercase tracking-[0.24em] text-[#7d8795]">Model ID</div>
-                <input
-                  value={addModelDraft.modelId}
-                  onChange={(event) => setAddModelDraft((prev) => ({ ...prev, modelId: event.target.value }))}
-                  className="w-full bg-transparent text-white outline-none"
-                />
-              </label>
-              <label className="rounded-2xl border border-white/10 bg-white/5 p-3 text-sm">
-                <div className="mb-2 text-xs uppercase tracking-[0.24em] text-[#7d8795]">Provider Type</div>
-                <input
-                  value={addModelDraft.providerMode}
-                  onChange={(event) => setAddModelDraft((prev) => ({ ...prev, providerMode: event.target.value }))}
-                  className="w-full bg-transparent text-white outline-none"
-                />
-              </label>
-              <label className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/5 p-3 text-sm text-white">
-                <input
-                  type="checkbox"
-                  checked={addModelDraft.enabled}
-                  onChange={(event) => setAddModelDraft((prev) => ({ ...prev, enabled: event.target.checked }))}
-                />
-                Enable after save
-              </label>
-            </div>
+              </div>
 
-            <div className="mt-4 text-sm text-[#7d8795]">
-              {addModelMessage || 'Secure vault ke through save hoga. Full key logs me nahi jayegi.'}
+              <div>
+                <label className="mb-1 block text-[10px] font-medium text-muted-foreground/70">
+                  API key *
+                </label>
+                <div className="relative">
+                  <input
+                    className={`${inputClassName} pr-8`}
+                    type={showApiKey ? 'text' : 'password'}
+                    placeholder="api-key"
+                    value={form.apiKey}
+                    onChange={(event) => {
+                      setForm((prev) => ({ ...prev, apiKey: event.target.value }))
+                      setFormError('')
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowApiKey((state) => !state)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    {showApiKey ? <EyeOff size={12} /> : <Eye size={12} />}
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-[10px] font-medium text-muted-foreground/70">
+                  Base URL <span className="opacity-50">(optional)</span>
+                </label>
+                <input
+                  className={inputClassName}
+                  placeholder="e.g. https://api.example.com"
+                  value={form.baseUrl}
+                  onChange={(event) => setForm((prev) => ({ ...prev, baseUrl: event.target.value }))}
+                />
+              </div>
+
+              {formError && <p className="text-[11px] text-red-400">{formError}</p>}
+
+              <div className="flex gap-2 pt-0.5">
+                <button
+                  onClick={handleSaveModel}
+                  className="flex-1 rounded-lg bg-primary py-1.5 text-xs font-medium text-white transition-colors hover:bg-primary/85"
+                >
+                  Save
+                </button>
+                <button
+                  onClick={() => {
+                    setShowForm(false)
+                    setForm(EMPTY_FORM)
+                    setFormError('')
+                    setShowApiKey(false)
+                  }}
+                  className="flex-1 rounded-lg border border-border py-1.5 text-xs text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground"
+                >
+                  Cancel
+                </button>
+              </div>
             </div>
-            <div className="mt-4 flex gap-2">
-              <button onClick={() => void testModelDraft()} className="rounded-xl border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] text-white">
-                Test
-              </button>
-              <button onClick={() => void saveModelDraft()} className="rounded-xl bg-white px-3 py-1.5 text-[11px] text-[#111318]">
-                Save Model
-              </button>
-              <button
-                onClick={async () => {
-                  await refreshModelOptions()
-                  setShowModelModal(false)
-                }}
-                className="rounded-xl border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] text-white"
-              >
-                Manage API Keys
-              </button>
-            </div>
-          </div>
+          )}
         </div>
       )}
     </div>
+  )
+}
+
+function ChatMessage({ message }: { message: Message }) {
+  const isUser = message.role === 'user'
+  return (
+    <div className={`flex gap-3 ${isUser ? 'flex-row-reverse' : ''}`}>
+      <div
+        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${
+          isUser ? 'bg-primary/20 text-primary' : 'bg-violet-500/10 text-violet-400'
+        }`}
+      >
+        {isUser ? <User size={13} /> : <Bot size={13} />}
+      </div>
+      <div className={`flex max-w-[80%] flex-col gap-1 ${isUser ? 'items-end' : 'items-start'}`}>
+        <div
+          className={`whitespace-pre-wrap rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed ${
+            isUser
+              ? 'rounded-tr-sm bg-primary text-white'
+              : 'rounded-tl-sm border border-border bg-card text-foreground'
+          }`}
+          dangerouslySetInnerHTML={{
+            __html: escapeHtml(message.content).replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+          }}
+        />
+        <span className="px-1 text-[10px] text-muted-foreground/60">
+          {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+        </span>
+      </div>
+    </div>
+  )
+}
+
+function CodeEditor({
+  content,
+  onChange
+}: {
+  content: string
+  onChange: (value: string) => void
+}) {
+  const lines = content.split('\n')
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const lineNumberRef = useRef<HTMLDivElement>(null)
+
+  const syncScroll = () => {
+    if (textareaRef.current && lineNumberRef.current) {
+      lineNumberRef.current.scrollTop = textareaRef.current.scrollTop
+    }
+  }
+
+  return (
+    <div className="flex h-full overflow-hidden font-mono text-xs leading-[1.6]">
+      <div
+        ref={lineNumberRef}
+        className="w-10 shrink-0 select-none overflow-hidden border-r border-border bg-background"
+        style={{ scrollbarWidth: 'none' }}
+      >
+        {lines.map((_, index) => (
+          <div
+            key={index}
+            className="pr-2.5 text-right text-[11px] text-muted-foreground/40"
+            style={{ lineHeight: '1.6' }}
+          >
+            {index + 1}
+          </div>
+        ))}
+      </div>
+      <textarea
+        ref={textareaRef}
+        spellCheck={false}
+        value={content}
+        onChange={(event) => onChange(event.target.value)}
+        onScroll={syncScroll}
+        className="flex-1 resize-none overflow-auto bg-transparent px-4 py-0 text-[11px] text-foreground/90 outline-none"
+        style={{
+          fontFamily: "'Geist Mono', 'JetBrains Mono', monospace",
+          lineHeight: '1.6',
+          scrollbarWidth: 'thin',
+          scrollbarColor: 'rgba(255,255,255,0.1) transparent'
+        }}
+      />
+    </div>
+  )
+}
+
+function PreviewPanel({
+  previewMarkup,
+  loading
+}: {
+  previewMarkup: string
+  loading: boolean
+}) {
+  if (!previewMarkup && !loading) {
+    return (
+      <div className="relative flex h-full flex-1 items-center justify-center overflow-hidden bg-[#0c0c0f]">
+        <div
+          className="absolute inset-0 opacity-[0.04]"
+          style={{
+            backgroundImage:
+              'linear-gradient(rgba(255,255,255,0.5) 1px, transparent 1px),linear-gradient(90deg, rgba(255,255,255,0.5) 1px, transparent 1px)',
+            backgroundSize: '32px 32px'
+          }}
+        />
+        <div className="relative z-10 text-center">
+          <div className="text-3xl font-semibold tracking-tight text-foreground">Describe what you want to build.</div>
+          <p className="mt-2 text-sm text-muted-foreground">Preview will appear here once files are generated.</p>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="relative h-full flex-1 overflow-hidden bg-[#0c0c0f]">
+      {loading && (
+        <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#0c0c0f]/65 backdrop-blur-sm">
+          <div className="flex items-center gap-2 rounded-2xl border border-border bg-card px-4 py-3 text-xs text-muted-foreground">
+            <Loader2 size={13} className="animate-spin text-primary" />
+            <span>Updating preview...</span>
+          </div>
+        </div>
+      )}
+      <iframe
+        title="ALPHA Builder Preview"
+        srcDoc={previewMarkup}
+        sandbox="allow-scripts allow-same-origin allow-forms allow-modals"
+        className="h-full w-full border-0 bg-white"
+      />
+    </div>
+  )
+}
+
+function CodePanel({
+  tree,
+  selectedFilePath,
+  onSelectFile,
+  content,
+  onContentChange,
+  onDownloadFile
+}: {
+  tree: FileTreeNodeData[]
+  selectedFilePath: string[]
+  onSelectFile: (path: string[]) => void
+  content: string
+  onContentChange: (value: string) => void
+  onDownloadFile: (path: string[], name: string) => void
+}) {
+  const fileName = selectedFilePath[selectedFilePath.length - 1]
+  const ext = fileName?.split('.').pop()?.toLowerCase()
+
+  return (
+    <div className="flex h-full">
+      <div
+        className="w-48 shrink-0 overflow-y-auto border-r border-border bg-card py-2"
+        style={{ scrollbarWidth: 'thin', scrollbarColor: 'rgba(255,255,255,0.06) transparent' }}
+      >
+        <div className="px-3 pb-1.5">
+          <span className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/60">
+            Explorer
+          </span>
+        </div>
+        {tree.map((node) => (
+          <FileTreeNode
+            key={node.name}
+            node={node}
+            depth={0}
+            selectedPath={selectedFilePath}
+            onSelect={onSelectFile}
+            onDownload={onDownloadFile}
+            currentPath={[]}
+          />
+        ))}
+      </div>
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex shrink-0 items-center overflow-x-auto border-b border-border bg-card">
+          <div className="flex items-center gap-2 border-r border-primary/30 bg-background/60 px-4 py-2">
+            <FileIcon ext={ext} />
+            <span className={`font-mono text-xs font-medium ${extColorMap[ext || ''] || 'text-foreground'}`}>
+              {fileName || 'Select a file'}
+            </span>
+            <div className="h-1.5 w-1.5 rounded-full bg-primary/60" />
+          </div>
+        </div>
+        <div className="flex-1 overflow-hidden">
+          {selectedFilePath.length ? (
+            <CodeEditor content={content} onChange={onContentChange} />
+          ) : (
+            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+              Select a file to edit.
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export default function BuilderWindow() {
+  const [panel, setPanel] = useState<RightPanel>('preview')
+  const [messages, setMessages] = useState<Message[]>([])
+  const [input, setInput] = useState('')
+  const [selectedModel, setSelectedModel] = useState<string>('glm')
+  const [sending, setSending] = useState(false)
+  const [selectedFilePath, setSelectedFilePath] = useState<string[]>([])
+  const [panelWidth, setPanelWidth] = useState(340)
+  const [isDragging, setIsDragging] = useState(false)
+  const [fileContents, setFileContents] = useState<Record<string, string>>({})
+  const [copied, setCopied] = useState(false)
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>('ask')
+  const [attachments, setAttachments] = useState<BuilderAttachmentDescriptor[]>([])
+  const [projectState, setProjectState] = useState<BuilderProjectState | null>(null)
+  const [previewHtml, setPreviewHtml] = useState('')
+  const [previewLoading, setPreviewLoading] = useState(false)
+  const [modelStatuses, setModelStatuses] = useState<BuilderModelStatuses>({})
+  const [customModels, setCustomModels] = useState<CustomModel[]>([])
+  const [dirtyFiles, setDirtyFiles] = useState<Record<string, boolean>>({})
+  const [toasts, setToasts] = useState<BuilderToast[]>([])
+
+  const dragStartX = useRef(0)
+  const dragStartWidth = useRef(0)
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+  const lastAutoRunKeyRef = useRef<string>('')
+
+  const draft = useMemo(() => readDraft(), [])
+
+  useEffect(() => {
+    if (!draft) return
+    if (typeof draft.input === 'string') setInput(draft.input)
+    if (draft.panel === 'preview' || draft.panel === 'code') setPanel(draft.panel)
+    if (typeof draft.selectedModel === 'string') setSelectedModel(draft.selectedModel)
+    if (draft.permissionMode === 'ask' || draft.permissionMode === 'approve' || draft.permissionMode === 'full') {
+      setPermissionMode(draft.permissionMode)
+    }
+    if (typeof draft.panelWidth === 'number') {
+      setPanelWidth(Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, draft.panelWidth)))
+    }
+  }, [draft])
+
+  useEffect(() => {
+    localStorage.setItem(
+      DRAFT_STORAGE_KEY,
+      JSON.stringify({
+        input,
+        panel,
+        selectedModel,
+        permissionMode,
+        panelWidth,
+        updatedAt: new Date().toISOString()
+      })
+    )
+  }, [input, panel, selectedModel, permissionMode, panelWidth])
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages, sending])
+
+  useEffect(() => {
+    const handleToast = (event: Event) => {
+      const detail = (event as CustomEvent<{ tone: 'success' | 'error'; message: string }>).detail
+      if (!detail?.message) return
+      const id = makeId()
+      setToasts((current) => [...current, { id, tone: detail.tone, message: detail.message }])
+      window.setTimeout(() => {
+        setToasts((current) => current.filter((toastItem) => toastItem.id !== id))
+      }, 2800)
+    }
+    window.addEventListener(BUILDER_TOAST_EVENT, handleToast as EventListener)
+    return () => window.removeEventListener(BUILDER_TOAST_EVENT, handleToast as EventListener)
+  }, [])
+
+  const providerOptions = useMemo<ProviderOption[]>(() => {
+    const base: ProviderOption[] = (Object.keys(PROVIDER_LABELS) as KnownProvider[]).map((provider) => {
+      const groupKey = provider === 'gemini' ? 'geminiBrain' : provider
+      const slots = modelStatuses[groupKey] || []
+      const activeSlot = slots.find((slot) => slot.enabled && slot.hasKey)
+      const firstSlot = slots[0]
+      const configured = Boolean(activeSlot || slots.some((slot) => slot.hasKey))
+      const descriptor = activeSlot || firstSlot
+      const modelId = descriptor?.modelId?.trim()
+      const label = modelId ? `${PROVIDER_LABELS[provider]} / ${modelId}` : PROVIDER_LABELS[provider]
+      return {
+        id: provider,
+        provider,
+        label,
+        badge: configured ? 'Ready' : 'Missing',
+        configured
+      }
+    })
+
+    const custom = customModels.map<ProviderOption>((model) => ({
+      id: model.id,
+      provider: model.provider,
+      label: model.label,
+      badge: 'Custom',
+      configured: true,
+      isCustom: true
+    }))
+
+    return [...base, ...custom]
+  }, [customModels, modelStatuses])
+
+  const fileTree = useMemo(() => buildFileTree(projectState?.files || []), [projectState])
+
+  const selectedFileKey = selectedFilePath.length ? arrayPathToString(selectedFilePath) : ''
+  const selectedContent = selectedFileKey ? fileContents[selectedFileKey] || '' : ''
+  const activePreviewHtml = useMemo(() => {
+    if (previewHtml) return previewHtml
+    return projectState ? inlinePreviewHtml(projectState.files) : ''
+  }, [previewHtml, projectState])
+
+  const loadStatuses = useCallback(async () => {
+    try {
+      const result = await getBuilderModelStatuses()
+      if (result.success && result.statuses) {
+        setModelStatuses(result.statuses)
+      }
+    } catch {
+      // leave selector usable without hard failure
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadStatuses()
+  }, [loadStatuses])
+
+  const syncProjectState = useCallback(
+    (state: BuilderProjectState, incomingPreviewHtml?: string, prompt?: string, providerError?: string) => {
+      setProjectState(state)
+      setFileContents(mapFilesToRecord(state.files))
+      setDirtyFiles({})
+      setPreviewHtml(incomingPreviewHtml || inlinePreviewHtml(state.files))
+      setPreviewLoading(false)
+
+      setSelectedFilePath((current) => {
+        const currentKey = arrayPathToString(current)
+        if (currentKey && state.files.some((file) => file.path === currentKey)) return current
+        return state.files[0] ? stringPathToArray(state.files[0].path) : []
+      })
+
+      const provider = normalizeProvider(state.metadata.providerUsed) || normalizeProvider(state.metadata.modelUsed)
+      if (provider) setSelectedModel(provider)
+
+      const nextMessages: Message[] = []
+      if (prompt) {
+        nextMessages.push({
+          id: `prompt-${makeId()}`,
+          role: 'user',
+          content: prompt,
+          timestamp: new Date()
+        })
+      }
+      nextMessages.push({
+        id: `ack-${makeId()}`,
+        role: 'assistant',
+        content: providerError
+          ? `Builder shell ready.\n\n${providerError}`
+          : `Project ready in **${providerDisplayName(state.metadata.providerUsed)}**. Preview and code are synced.`,
+        timestamp: new Date()
+      })
+      setMessages(nextMessages)
+    },
+    []
+  )
+
+  const submitPrompt = useCallback(
+    async ({
+      prompt,
+      providerId,
+      preserveUserMessage = false,
+      projectId
+    }: {
+      prompt: string
+      providerId?: string
+      preserveUserMessage?: boolean
+      projectId?: string | null
+    }) => {
+      const trimmed = prompt.trim()
+      if (!trimmed || sending) return
+
+      const providerChoice =
+        normalizeProvider(providerId) ||
+        normalizeProvider(
+          providerOptions.find((option) => option.id === providerId)?.provider ||
+            providerOptions.find((option) => option.id === selectedModel)?.provider ||
+            selectedModel
+        ) ||
+        'glm'
+
+      const messageText = `${trimmed}${summarizeAttachments(attachments)}`
+
+      if (!preserveUserMessage) {
+        setMessages((current) => [
+          ...current,
+          { id: `user-${makeId()}`, role: 'user', content: trimmed, timestamp: new Date() }
+        ])
+      }
+
+      setSending(true)
+      setPreviewLoading(true)
+
+      try {
+        const response = projectId
+          ? await updateBuilderProject(projectId, messageText, providerChoice)
+          : await createBuilderProject(messageText, providerChoice)
+
+        if (response.success && response.state) {
+          syncProjectState(response.state, response.previewHtml, preserveUserMessage ? trimmed : undefined)
+          if (!preserveUserMessage) {
+            setMessages((current) => [
+              ...current,
+              {
+                id: `assistant-${makeId()}`,
+                role: 'assistant',
+                content: `Applied changes with **${providerDisplayName(
+                  response.state?.metadata.providerUsed || providerChoice
+                )}**.`,
+                timestamp: new Date()
+              }
+            ])
+          }
+          setInput('')
+          setAttachments([])
+          return
+        }
+
+        setMessages((current) => [
+          ...current,
+          {
+            id: `error-${makeId()}`,
+            role: 'assistant',
+            content:
+              response.providerError ||
+              response.message ||
+              response.error ||
+              'Builder request failed. Try another configured provider.',
+            timestamp: new Date()
+          }
+        ])
+      } catch (error) {
+        setMessages((current) => [
+          ...current,
+          {
+            id: `exception-${makeId()}`,
+            role: 'assistant',
+            content: error instanceof Error ? error.message : 'Builder request failed.',
+            timestamp: new Date()
+          }
+        ])
+      } finally {
+        setSending(false)
+        setPreviewLoading(false)
+      }
+    },
+    [attachments, providerOptions, selectedModel, sending, syncProjectState]
+  )
+
+  const applyWindowPayload = useCallback(
+    async (payload?: WindowPayload) => {
+      if (!payload) return
+
+      if (payload.state) {
+        syncProjectState(payload.state, payload.previewHtml, payload.prompt, payload.providerError)
+        return
+      }
+
+      if (payload.prompt) {
+        setInput(payload.prompt)
+      }
+
+      if (payload.autoStart && payload.prompt) {
+        const autoKey = JSON.stringify({
+          prompt: payload.prompt,
+          provider: payload.selectedProvider || selectedModel
+        })
+
+        if (lastAutoRunKeyRef.current !== autoKey) {
+          lastAutoRunKeyRef.current = autoKey
+          setMessages([
+            {
+              id: `autostart-${makeId()}`,
+              role: 'user',
+              content: payload.prompt,
+              timestamp: new Date()
+            }
+          ])
+          await submitPrompt({
+            prompt: payload.prompt,
+            providerId: payload.selectedProvider || selectedModel,
+            preserveUserMessage: true
+          })
+        }
+      }
+    },
+    [selectedModel, submitPrompt, syncProjectState]
+  )
+
+  useEffect(() => {
+    void (async () => {
+      const state = await getBuilderWindowState()
+      if (state.success && state.payload) {
+        await applyWindowPayload(state.payload)
+      }
+    })()
+
+    const cleanup = window.electron.ipcRenderer.on('builder-window-state', async (_event, payload) => {
+      await applyWindowPayload(payload as WindowPayload)
+    })
+
+    return () => {
+      cleanup?.()
+    }
+  }, [applyWindowPayload])
+
+  useEffect(() => {
+    if (!projectState?.metadata.id || !selectedFileKey || !dirtyFiles[selectedFileKey]) return
+
+    const timer = window.setTimeout(async () => {
+      try {
+        const response = await saveBuilderProjectFile(
+          projectState.metadata.id,
+          selectedFileKey,
+          fileContents[selectedFileKey] || ''
+        )
+        if (response.success && response.state) {
+          setProjectState(response.state)
+          setPreviewHtml(response.previewHtml || inlinePreviewHtml(response.state.files))
+          setDirtyFiles((current) => ({ ...current, [selectedFileKey]: false }))
+        } else {
+          emitBuilderToast('error', response.error || response.message || 'File save failed.')
+        }
+      } catch (error) {
+        emitBuilderToast('error', error instanceof Error ? error.message : 'File save failed.')
+      }
+    }, 800)
+
+    return () => window.clearTimeout(timer)
+  }, [dirtyFiles, fileContents, projectState, selectedFileKey])
+
+  useEffect(() => {
+    const handleKeydown = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+        event.preventDefault()
+        if (!projectState?.metadata.id || !selectedFileKey) return
+        setDirtyFiles((current) => ({ ...current, [selectedFileKey]: true }))
+      }
+    }
+
+    window.addEventListener('keydown', handleKeydown)
+    return () => window.removeEventListener('keydown', handleKeydown)
+  }, [projectState?.metadata.id, selectedFileKey])
+
+  const onDividerMouseDown = (event: React.MouseEvent) => {
+    event.preventDefault()
+    dragStartX.current = event.clientX
+    dragStartWidth.current = panelWidth
+    setIsDragging(true)
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      const delta = moveEvent.clientX - dragStartX.current
+      setPanelWidth(Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, dragStartWidth.current + delta)))
+    }
+
+    const onMouseUp = () => {
+      setIsDragging(false)
+      window.removeEventListener('mousemove', onMouseMove)
+      window.removeEventListener('mouseup', onMouseUp)
+    }
+
+    window.addEventListener('mousemove', onMouseMove)
+    window.addEventListener('mouseup', onMouseUp)
+  }
+
+  const handleSend = () => {
+    void submitPrompt({
+      prompt: input,
+      providerId: selectedModel,
+      projectId: projectState?.metadata.id || null
+    })
+  }
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(selectedContent)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1800)
+    } catch {
+      emitBuilderToast('error', 'Copy failed.')
+    }
+  }
+
+  const handleFileDownload = (pathParts: string[], name: string) => {
+    const key = arrayPathToString(pathParts)
+    const content = fileContents[key] ?? ''
+    const blob = new Blob([content], { type: 'text/plain' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = name
+    anchor.click()
+    URL.revokeObjectURL(url)
+    emitBuilderToast('success', `${name} downloaded`)
+  }
+
+  const handleOpenInWindow = () => {
+    if (panel === 'preview') {
+      openPreviewWindow(activePreviewHtml, projectState?.metadata.name || 'ALPHA Preview')
+      return
+    }
+    const name = selectedFilePath[selectedFilePath.length - 1] || 'file'
+    openCodeWindow(name, selectedContent)
+  }
+
+  const handleZipDownload = async () => {
+    if (!projectState?.metadata.id) {
+      emitBuilderToast('error', 'No project available to download yet.')
+      return
+    }
+    const response = await exportBuilderProjectZip(projectState.metadata.id)
+    if (response.success) {
+      emitBuilderToast(
+        'success',
+        response.exportPath ? `ZIP exported: ${response.exportPath}` : 'Project ZIP exported.'
+      )
+    } else {
+      emitBuilderToast('error', response.error || response.message || 'ZIP export failed.')
+    }
+  }
+
+  const handleAddCustomModel = (model: CustomModel) => {
+    setCustomModels((current) => [...current, model])
+  }
+
+  const handlePickAttachment = async () => {
+    const response = await pickBuilderAttachments('file')
+    if (!response.success) {
+      emitBuilderToast('error', response.error || 'Attachment pick failed.')
+      return
+    }
+    if (response.cancelled || !response.attachments?.length) return
+    setAttachments((current) => [...current, ...response.attachments!])
+    emitBuilderToast(
+      'success',
+      `${response.attachments.length} attachment${response.attachments.length > 1 ? 's' : ''} added.`
+    )
+  }
+
+  const handleSelectFile = (pathParts: string[]) => {
+    setSelectedFilePath(pathParts)
+    setPanel('code')
+  }
+
+  const handleEditorChange = (value: string) => {
+    if (!selectedFileKey) return
+    setFileContents((current) => ({ ...current, [selectedFileKey]: value }))
+    setDirtyFiles((current) => ({ ...current, [selectedFileKey]: true }))
+  }
+
+  const currentModelLabel = providerOptions.find((option) => option.id === selectedModel)?.label || 'GLM 5.2'
+
+  return (
+    <>
+      <style>{BUILDER_THEME_CSS}</style>
+      <div className="pointer-events-none fixed bottom-4 right-4 z-[9999] flex flex-col gap-2">
+        {toasts.map((toastItem) => (
+          <div
+            key={toastItem.id}
+            className={`min-w-[220px] rounded-xl border px-3 py-2 text-sm shadow-2xl ${
+              toastItem.tone === 'success'
+                ? 'border-emerald-500/25 bg-[#18181e] text-emerald-200'
+                : 'border-red-500/25 bg-[#18181e] text-red-200'
+            }`}
+          >
+            {toastItem.message}
+          </div>
+        ))}
+      </div>
+
+      <div
+        className={`builderwindow-root flex h-screen w-full overflow-hidden bg-background ${
+          isDragging ? 'cursor-col-resize select-none' : ''
+        }`}
+      >
+        <div className="flex shrink-0 flex-col bg-card" style={{ width: panelWidth }}>
+          <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3">
+            <div className="flex items-center gap-2">
+              <div className="h-2 w-2 rounded-full bg-primary animate-pulse" />
+              <span className="text-sm font-semibold tracking-tight text-foreground">Agent</span>
+            </div>
+            <span className="rounded-full bg-muted px-2 py-0.5 font-mono text-[10px] text-muted-foreground">
+              {currentModelLabel.split(' ').slice(-2).join(' ')}
+            </span>
+          </div>
+
+          <div
+            className="flex-1 space-y-5 overflow-y-auto px-4 py-4"
+            style={{ scrollbarWidth: 'thin', scrollbarColor: 'rgba(255,255,255,0.06) transparent' }}
+          >
+            {messages.length === 0 && !sending ? (
+              <div className="flex h-full min-h-[220px] items-center justify-center text-center">
+                <div>
+                  <div className="text-lg font-semibold tracking-tight text-foreground">Describe what you want to build.</div>
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    Your project-specific coding chat will appear here.
+                  </p>
+                </div>
+              </div>
+            ) : (
+              messages.map((message) => <ChatMessage key={message.id} message={message} />)
+            )}
+
+            {sending && (
+              <div className="flex gap-3">
+                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-violet-500/10 text-violet-400">
+                  <Bot size={13} />
+                </div>
+                <div className="flex items-center gap-2 rounded-2xl rounded-tl-sm border border-border bg-card px-3.5 py-3">
+                  <Loader2 size={13} className="animate-spin text-primary" />
+                  <span className="text-xs text-muted-foreground">Thinking...</span>
+                </div>
+              </div>
+            )}
+            <div ref={messagesEndRef} />
+          </div>
+
+          <div className="shrink-0 border-t border-border px-2.5 py-2">
+            <div className="rounded-lg border border-border bg-muted/40 transition-all focus-within:border-primary/40 focus-within:ring-1 focus-within:ring-primary/20">
+              <textarea
+                value={input}
+                onChange={(event) => setInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && !event.shiftKey) {
+                    event.preventDefault()
+                    handleSend()
+                  }
+                }}
+                placeholder="Describe what to build..."
+                rows={2}
+                className="w-full resize-none bg-transparent px-3 pb-1 pt-2.5 text-xs leading-relaxed text-foreground outline-none placeholder:text-muted-foreground/50"
+                style={{ scrollbarWidth: 'none' }}
+              />
+              <div className="flex items-center justify-between px-2 pb-2 pt-0.5">
+                <div className="flex items-center gap-0.5">
+                  <button
+                    onClick={handlePickAttachment}
+                    className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground"
+                    aria-label="Add attachment"
+                    title={attachments.length ? `${attachments.length} attachment(s) selected` : 'Add attachment'}
+                  >
+                    <Plus size={13} />
+                  </button>
+                  <AccessMenu value={permissionMode} onChange={setPermissionMode} />
+                </div>
+
+                <div className="flex items-center gap-1.5">
+                  <ModelSelector
+                    value={selectedModel}
+                    onChange={setSelectedModel}
+                    options={providerOptions}
+                    onAddCustom={handleAddCustomModel}
+                  />
+                  <button
+                    onClick={handleSend}
+                    disabled={!input.trim() || sending}
+                    className="flex h-7 w-7 items-center justify-center rounded-md bg-primary text-white transition-all hover:bg-primary/85 disabled:cursor-not-allowed disabled:opacity-30"
+                    aria-label="Send builder prompt"
+                  >
+                    {sending ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div
+          onMouseDown={onDividerMouseDown}
+          className={`group relative flex w-[3px] shrink-0 cursor-col-resize items-center justify-center transition-colors duration-150 ${
+            isDragging ? 'bg-primary' : 'bg-border hover:bg-primary'
+          }`}
+        >
+          <div className={`flex flex-col gap-[3px] transition-opacity ${isDragging ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
+            {[0, 1, 2].map((index) => (
+              <div key={index} className="h-[3px] w-[3px] rounded-full bg-white/60" />
+            ))}
+          </div>
+          <div className="absolute inset-y-0 -left-1.5 -right-1.5" />
+        </div>
+
+        <div className="flex min-w-0 flex-1 flex-col bg-background">
+          <div className="flex shrink-0 items-center justify-between border-b border-border bg-card px-4 py-2.5">
+            <div className="flex items-center gap-0.5 rounded-lg border border-border bg-muted/60 p-0.5">
+              {(['preview', 'code'] as RightPanel[]).map((mode) => (
+                <button
+                  key={mode}
+                  onClick={() => setPanel(mode)}
+                  className={`flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-all ${
+                    panel === mode
+                      ? 'bg-background text-foreground shadow-sm'
+                      : 'text-muted-foreground hover:text-foreground'
+                  }`}
+                >
+                  {mode === 'preview' ? <Eye size={13} /> : <Code2 size={13} />}
+                  <span className="capitalize">{mode}</span>
+                </button>
+              ))}
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleOpenInWindow}
+                title="Open in window"
+                className="flex items-center justify-center rounded-lg border border-border bg-[#21262d] px-[8px] py-[6px] text-muted-foreground transition-colors hover:bg-[#30363d] hover:text-foreground"
+              >
+                <ExternalLink size={16} />
+              </button>
+
+              {panel === 'code' && (
+                <button
+                  onClick={handleCopy}
+                  className="flex items-center gap-1.5 rounded-lg border border-border bg-[#21262d] px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-[#30363d] hover:text-foreground"
+                >
+                  {copied ? <Check size={12} className="text-green-400" /> : <Copy size={12} />}
+                  <span>{copied ? 'Copied' : 'Copy'}</span>
+                </button>
+              )}
+
+              <button
+                onClick={handleZipDownload}
+                className="flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-medium text-black transition-colors hover:bg-white/90"
+              >
+                <Download size={12} />
+                <span>Download</span>
+              </button>
+            </div>
+          </div>
+
+          <div className="min-h-0 flex-1 bg-background">
+            {panel === 'preview' ? (
+              <PreviewPanel previewMarkup={activePreviewHtml} loading={previewLoading} />
+            ) : (
+              <CodePanel
+                tree={fileTree}
+                selectedFilePath={selectedFilePath}
+                onSelectFile={handleSelectFile}
+                content={selectedContent}
+                onContentChange={handleEditorChange}
+                onDownloadFile={handleFileDownload}
+              />
+            )}
+          </div>
+        </div>
+      </div>
+    </>
   )
 }
