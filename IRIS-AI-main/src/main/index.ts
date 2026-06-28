@@ -41,6 +41,7 @@ import registerAlphaCoder from './services/alpha-coder'
 import registerBuilderWindow from './services/builder-window'
 import registerProjectBuilder from './services/project-builder'
 import registerPlaywrightBrowser from './services/playwright-browser'
+import registerKiloBridge from './kilo/kilo-bridge'
 import registerTelekinesis from './logic/telekinesis'
 import registerPermanentMemory from './logic/permanent-memory'
 import registerWormhole from './services/wormhole'
@@ -941,6 +942,7 @@ app.whenReady().then(() => {
   registerPermanentMemory({ ipcMain, app })
   registerTelekinesis({ ipcMain })
   registerAlphaCoder({ ipcMain, app })
+  registerKiloBridge({ ipcMain })
   registerProjectBuilder({ ipcMain })
   registerBuilderWindow({
     ipcMain,

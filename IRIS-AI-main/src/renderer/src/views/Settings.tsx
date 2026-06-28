@@ -2,6 +2,14 @@ import { useEffect, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import * as faceapi from 'face-api.js'
 import type { BrowserAutomationState } from '@renderer/services/browser-automation'
+import {
+  clearKiloTaskHistory,
+  getKiloSettings,
+  healthCheckKilo,
+  openKiloTaskFolder,
+  saveKiloSettings as persistKiloSettings,
+  testKiloConfiguration
+} from '@renderer/services/kilo-code'
 import { GiArtificialIntelligence } from 'react-icons/gi'
 import {
   RiKey2Line,
@@ -44,6 +52,9 @@ type KeyGroup =
   | 'kimi'
   | 'openrouter'
 type PlaywrightBrowser = 'chromium' | 'chrome' | 'edge'
+type KiloExecutionMode = 'cli' | 'local-service' | 'adapter-stub'
+type KiloPermissionMode = 'ask' | 'approve' | 'full'
+type KiloWorkingDirectoryPolicy = 'project-only' | 'workspace-only' | 'user-approved'
 type PlaywrightSettings = {
   enabled: boolean
   browser: PlaywrightBrowser
@@ -51,6 +62,20 @@ type PlaywrightSettings = {
   headless: boolean
   lastTestedAt?: string
   lastStatus?: string
+}
+type KiloSettings = {
+  enabled: boolean
+  executionMode: KiloExecutionMode
+  commandPath: string
+  workingDirectoryPolicy: KiloWorkingDirectoryPolicy
+  timeoutMs: number
+  defaultPermissionMode: KiloPermissionMode
+  autoGitCheckpoint: boolean
+  autoBuildTest: boolean
+  autoCommit: boolean
+  lastHealthCheckAt?: string
+  lastHealthStatus?: string
+  lastError?: string
 }
 type GlmProviderMode = 'zenmux' | 'custom-compatible' | 'direct-zai'
 type ZaiProviderMode = 'zai-chat' | 'zai-coding' | 'zai-compatible'
@@ -155,6 +180,21 @@ const defaultPlaywrightSettings: PlaywrightSettings = {
   lastTestedAt: ''
 }
 
+const defaultKiloSettings: KiloSettings = {
+  enabled: false,
+  executionMode: 'adapter-stub',
+  commandPath: '',
+  workingDirectoryPolicy: 'project-only',
+  timeoutMs: 120000,
+  defaultPermissionMode: 'ask',
+  autoGitCheckpoint: true,
+  autoBuildTest: false,
+  autoCommit: false,
+  lastHealthCheckAt: '',
+  lastHealthStatus: 'unknown',
+  lastError: ''
+}
+
 const emptySlotInputs = (): Record<KeyGroup, string[]> => ({
   geminiBrain: ['', '', ''],
   geminiAgent: ['', '', ''],
@@ -222,6 +262,8 @@ const SettingsView = ({ isSystemActive }: SettingsProps) => {
   const [launchOnStartup, setLaunchOnStartup] = useState(false)
   const [playwrightSettings, setPlaywrightSettings] = useState<PlaywrightSettings>(defaultPlaywrightSettings)
   const [playwrightMessage, setPlaywrightMessage] = useState('')
+  const [kiloSettings, setKiloSettings] = useState<KiloSettings>(defaultKiloSettings)
+  const [kiloMessage, setKiloMessage] = useState('')
   const [browserAutomationState, setBrowserAutomationState] = useState<BrowserAutomationState | null>(null)
 
   const [isSecurityUnlocked, setIsSecurityUnlocked] = useState(false)
@@ -287,6 +329,9 @@ const SettingsView = ({ isSystemActive }: SettingsProps) => {
         }
         if (res?.openrouterModel) setOpenRouterModel(res.openrouterModel)
         if (res?.playwrightSettings) setPlaywrightSettings({ ...defaultPlaywrightSettings, ...res.playwrightSettings })
+      })
+      getKiloSettings().then((res) => {
+        if (res?.settings) setKiloSettings({ ...defaultKiloSettings, ...res.settings })
       })
       window.electron.ipcRenderer.invoke('browser:get-state').then((res) => {
         if (res?.state) setBrowserAutomationState(res.state)
@@ -519,6 +564,41 @@ const SettingsView = ({ isSystemActive }: SettingsProps) => {
     const res = await window.electron.ipcRenderer.invoke('browser:get-state')
     if (res?.state) setBrowserAutomationState(res.state)
   }
+
+  const updateKiloSetting = <K extends keyof KiloSettings>(key: K, value: KiloSettings[K]) => {
+    setKiloSettings((prev) => ({ ...prev, [key]: value }))
+  }
+
+  const saveKiloSettings = async () => {
+    const res = await persistKiloSettings(kiloSettings)
+    if (res?.settings) setKiloSettings({ ...defaultKiloSettings, ...res.settings })
+    setKiloMessage(res?.success ? 'Kilo settings saved.' : 'Kilo settings save failed.')
+  }
+
+  const runKiloHealthCheck = async () => {
+    const res = await healthCheckKilo()
+    setKiloMessage(res?.message || 'Kilo health check complete.')
+    const settings = await getKiloSettings()
+    if (settings?.settings) setKiloSettings({ ...defaultKiloSettings, ...settings.settings })
+  }
+
+  const runKiloConfigTest = async () => {
+    const res = await testKiloConfiguration()
+    setKiloMessage(res?.message || (res?.success ? 'Kilo test complete.' : 'Kilo test failed.'))
+    const settings = await getKiloSettings()
+    if (settings?.settings) setKiloSettings({ ...defaultKiloSettings, ...settings.settings })
+  }
+
+  const clearKiloHistory = async () => {
+    const res = await clearKiloTaskHistory()
+    setKiloMessage(res?.success ? 'Kilo task history cleared.' : 'Kilo task history clear failed.')
+  }
+
+  const revealKiloTaskFolder = async () => {
+    const res = await openKiloTaskFolder()
+    setKiloMessage(res?.success ? `Kilo task folder opened: ${res?.path || ''}` : `Open failed: ${res?.error || 'unknown error'}`)
+  }
+
   const toggleLaunchOnStartup = async () => {
     const next = !launchOnStartup
     setLaunchOnStartup(next)
@@ -1197,6 +1277,146 @@ const SettingsView = ({ isSystemActive }: SettingsProps) => {
                         <p>Error/status: {browserAutomationState?.lastError || playwrightSettings.lastStatus || 'n/a'}</p>
                         <p>Screenshot path: {browserAutomationState?.screenshotPath || 'n/a'}</p>
                       </div>
+                    </div>
+                    <div className="flex flex-col gap-4 md:col-span-2 border border-fuchsia-500/20 rounded-xl p-5 bg-fuchsia-500/5">
+                      <div className="flex flex-col md:flex-row md:items-center justify-between gap-2">
+                        <label className="text-[10px] text-fuchsia-300 font-mono tracking-widest uppercase flex items-center gap-2">
+                          <RiCpuLine size={14} /> Kilo Code Execution Agent
+                        </label>
+                        <span className="text-[10px] text-zinc-400 font-mono">
+                          Gemini main brain rahega. Kilo sirf coding execution layer ke liye.
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <button
+                          onClick={() => updateKiloSetting('enabled', !kiloSettings.enabled)}
+                          className={`rounded-lg border px-4 py-3 text-[11px] font-bold tracking-widest transition-all ${
+                            kiloSettings.enabled
+                              ? 'border-fuchsia-500/30 bg-fuchsia-500/10 text-fuchsia-200'
+                              : 'border-white/10 bg-black/20 text-zinc-500'
+                          }`}
+                        >
+                          {kiloSettings.enabled ? 'KILO ENABLED' : 'KILO DISABLED'}
+                        </button>
+                        <select
+                          value={kiloSettings.executionMode}
+                          onChange={(e) => updateKiloSetting('executionMode', e.target.value as KiloExecutionMode)}
+                          className="bg-[#050505] border border-white/10 rounded-lg px-4 py-3 text-sm font-mono text-zinc-100 outline-none focus:border-white/30"
+                        >
+                          <option value="cli">CLI</option>
+                          <option value="local-service">Local Service</option>
+                          <option value="adapter-stub">Adapter Stub</option>
+                        </select>
+                        <div className="md:col-span-2 flex flex-col gap-2">
+                          <label className="text-[10px] text-zinc-500 font-mono tracking-widest uppercase">
+                            Kilo command / path
+                          </label>
+                          <input
+                            type="text"
+                            value={kiloSettings.commandPath}
+                            onChange={(e) => updateKiloSetting('commandPath', e.target.value)}
+                            placeholder="CLI command ya local service URL..."
+                            className="bg-[#050505] border border-white/10 rounded-lg px-4 py-3 text-sm font-mono text-zinc-100 outline-none focus:border-white/30 placeholder:text-zinc-700"
+                          />
+                        </div>
+                        <select
+                          value={kiloSettings.defaultPermissionMode}
+                          onChange={(e) => updateKiloSetting('defaultPermissionMode', e.target.value as KiloPermissionMode)}
+                          className="bg-[#050505] border border-white/10 rounded-lg px-4 py-3 text-sm font-mono text-zinc-100 outline-none focus:border-white/30"
+                        >
+                          <option value="ask">Ask for approval</option>
+                          <option value="approve">Approve for me</option>
+                          <option value="full">Project full access</option>
+                        </select>
+                        <select
+                          value={kiloSettings.workingDirectoryPolicy}
+                          onChange={(e) => updateKiloSetting('workingDirectoryPolicy', e.target.value as KiloWorkingDirectoryPolicy)}
+                          className="bg-[#050505] border border-white/10 rounded-lg px-4 py-3 text-sm font-mono text-zinc-100 outline-none focus:border-white/30"
+                        >
+                          <option value="project-only">Project only</option>
+                          <option value="workspace-only">Workspace only</option>
+                          <option value="user-approved">User approved folder</option>
+                        </select>
+                        <div className="md:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <label className="flex items-center justify-between rounded-lg border border-white/10 bg-black/20 px-4 py-3 text-[11px] font-mono text-zinc-300">
+                            <span>Auto git checkpoint</span>
+                            <input
+                              type="checkbox"
+                              checked={kiloSettings.autoGitCheckpoint}
+                              onChange={(e) => updateKiloSetting('autoGitCheckpoint', e.target.checked)}
+                            />
+                          </label>
+                          <label className="flex items-center justify-between rounded-lg border border-white/10 bg-black/20 px-4 py-3 text-[11px] font-mono text-zinc-300">
+                            <span>Auto build/test</span>
+                            <input
+                              type="checkbox"
+                              checked={kiloSettings.autoBuildTest}
+                              onChange={(e) => updateKiloSetting('autoBuildTest', e.target.checked)}
+                            />
+                          </label>
+                          <label className="flex items-center justify-between rounded-lg border border-white/10 bg-black/20 px-4 py-3 text-[11px] font-mono text-zinc-300 md:col-span-2">
+                            <span>Auto commit</span>
+                            <input
+                              type="checkbox"
+                              checked={kiloSettings.autoCommit}
+                              onChange={(e) => updateKiloSetting('autoCommit', e.target.checked)}
+                            />
+                          </label>
+                        </div>
+                        <div className="flex flex-col gap-2">
+                          <label className="text-[10px] text-zinc-500 font-mono tracking-widest uppercase">
+                            Timeout (ms)
+                          </label>
+                          <input
+                            type="number"
+                            min={15000}
+                            step={5000}
+                            value={kiloSettings.timeoutMs}
+                            onChange={(e) => updateKiloSetting('timeoutMs', Number(e.target.value || 120000))}
+                            className="bg-[#050505] border border-white/10 rounded-lg px-4 py-3 text-sm font-mono text-zinc-100 outline-none focus:border-white/30"
+                          />
+                        </div>
+                        <div className="flex items-end">
+                          <button
+                            onClick={saveKiloSettings}
+                            className="w-full rounded-lg bg-white text-black px-4 py-3 text-[11px] font-bold tracking-widest hover:bg-zinc-200 transition-all"
+                          >
+                            SAVE KILO
+                          </button>
+                        </div>
+                        <button
+                          onClick={runKiloHealthCheck}
+                          className="rounded-lg border border-fuchsia-500/30 px-4 py-3 text-[11px] font-bold tracking-widest text-fuchsia-200 hover:bg-fuchsia-500/10 transition-all"
+                        >
+                          HEALTH CHECK
+                        </button>
+                        <button
+                          onClick={runKiloConfigTest}
+                          className="rounded-lg border border-cyan-500/30 px-4 py-3 text-[11px] font-bold tracking-widest text-cyan-300 hover:bg-cyan-500/10 transition-all"
+                        >
+                          TEST KILO
+                        </button>
+                        <button
+                          onClick={clearKiloHistory}
+                          className="rounded-lg border border-orange-500/30 px-4 py-3 text-[11px] font-bold tracking-widest text-orange-300 hover:bg-orange-500/10 transition-all"
+                        >
+                          CLEAR TASK HISTORY
+                        </button>
+                        <button
+                          onClick={revealKiloTaskFolder}
+                          className="rounded-lg border border-white/10 px-4 py-3 text-[11px] font-bold tracking-widest text-zinc-300 hover:bg-white/5 transition-all"
+                        >
+                          OPEN TASK FOLDER
+                        </button>
+                      </div>
+                      <p className="text-[10px] text-zinc-500 font-mono">
+                        Status: {kiloSettings.lastHealthStatus || 'unknown'}
+                        {kiloSettings.lastHealthCheckAt ? ` | Last checked: ${kiloSettings.lastHealthCheckAt}` : ''}
+                      </p>
+                      <p className="text-[10px] text-zinc-500 font-mono">
+                        Scope safety: project-scoped paths only, destructive/system commands blocked, git push explicit approval ke bina disabled.
+                      </p>
+                      {kiloMessage && <p className="text-[10px] text-emerald-300 font-mono">{kiloMessage}</p>}
                     </div>
                     <div className="flex flex-col gap-2 md:col-span-2 border border-white/10 rounded-xl p-5 bg-white/[0.02]">
                       <label className="text-[10px] text-zinc-400 font-mono tracking-widest uppercase flex items-center gap-2">

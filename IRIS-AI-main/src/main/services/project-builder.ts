@@ -3,6 +3,7 @@ import path from 'path'
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'child_process'
 import { promisify } from 'util'
 import { app, BrowserWindow, IpcMain, safeStorage, shell } from 'electron'
+import { getKiloService } from '../kilo/kilo-bridge'
 
 type ProjectFile = {
   path: string
@@ -69,6 +70,9 @@ const projectTypeRules: Array<{ type: string; pattern: RegExp }> = [
   { type: 'c', pattern: /\bc(?:\s+code)?\b/i }
 ]
 
+const kiloExecutionPromptPattern =
+  /\b(run build|fix errors?|debug|refactor|tests?\s+run|run tests?|build error|file edit|apply patch|lint|npm run build|npm test|package install|component banao|implement|fix this)\b/i
+
 const ensureDir = (targetPath: string) => {
   if (!fs.existsSync(targetPath)) {
     fs.mkdirSync(targetPath, { recursive: true })
@@ -102,6 +106,25 @@ const debugBuilder = (stage: string, payload: Record<string, unknown>) => {
     Object.entries(payload).filter(([, value]) => value !== undefined)
   )
   console.info(`[BUILDER_DEBUG] ${stage}`, sanitized)
+}
+
+const shouldUseKiloForPrompt = (prompt: string) => kiloExecutionPromptPattern.test(prompt || '')
+
+const resolveProviderName = (provider: string | undefined, providerUsed: string): ProviderName => {
+  if (provider === 'zai') return 'zai'
+  if (provider === 'gemini') return 'gemini'
+  if (provider === 'openrouter') return 'openrouter'
+  if (provider === 'kimi') return 'kimi'
+  if (provider === 'groq') return 'groq'
+  if (provider === 'glm') return 'glm'
+
+  const normalized = (providerUsed || '').toLowerCase()
+  if (normalized.includes('gemini')) return 'gemini'
+  if (normalized.includes('z.ai')) return 'zai'
+  if (normalized.includes('openrouter')) return 'openrouter'
+  if (normalized.includes('kimi')) return 'kimi'
+  if (normalized.includes('groq')) return 'groq'
+  return 'glm'
 }
 
 const loadJson = (value: string) => {
@@ -1188,21 +1211,58 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
 
   ipcMain.handle('project-builder-update', async (_, { projectId, prompt, provider }) => {
     const existing = readProjectState(projectId)
-    const generated = await callProvider(
-      provider || ((existing.metadata.providerUsed || '').toLowerCase().includes('gemini')
-        ? 'gemini'
-        : (existing.metadata.providerUsed || '').toLowerCase().includes('z.ai')
-          ? 'zai'
-        : (existing.metadata.providerUsed || '').toLowerCase().includes('openrouter')
-          ? 'openrouter'
-          : (existing.metadata.providerUsed || '').toLowerCase().includes('kimi')
-            ? 'kimi'
-            : (existing.metadata.providerUsed || '').toLowerCase().includes('groq')
-              ? 'groq'
-              : 'glm'),
-      prompt || '',
-      existing.files
-    )
+    const kiloService = getKiloService()
+    const kiloRequested = provider === 'kilo' || shouldUseKiloForPrompt(prompt || '')
+    const fallbackProvider = resolveProviderName(provider, existing.metadata.providerUsed)
+
+    if (kiloRequested && kiloService?.getSettings().enabled) {
+      const kiloResult = await kiloService.executeCodingTask({
+        prompt: prompt || '',
+        projectRoot: existing.metadata.projectPath,
+        projectId,
+        currentFiles: existing.files,
+        selectedFiles: existing.files.map((file) => file.path),
+        source: 'builder'
+      })
+
+      debugBuilder('kilo-route', {
+        enabled: true,
+        success: kiloResult.success,
+        taskId: kiloResult.taskId,
+        filesChanged: kiloResult.filesChanged.length,
+        needsApproval: kiloResult.needsApproval || false
+      })
+
+      if (kiloResult.success && kiloResult.resultingFiles?.length) {
+        const safeFiles = kiloResult.resultingFiles.filter((file) => file.path !== 'project.json')
+        const state = writeProjectState(
+          projectId,
+          existing.metadata.name,
+          prompt || '',
+          safeFiles.length ? safeFiles : existing.files,
+          'Kilo Code'
+        )
+        return {
+          success: true,
+          state,
+          previewHtml: inlinePreviewHtml(state.files),
+          message: kiloResult.summary || `Kilo ne ${kiloResult.filesChanged.length} file update ki.`
+        }
+      }
+
+      return {
+        success: true,
+        state: existing,
+        previewHtml: inlinePreviewHtml(existing.files),
+        providerError: kiloResult.error || 'Kilo task complete nahi hua.'
+      }
+    }
+
+    const kiloDisabledMessage = kiloRequested
+      ? 'Kilo Code disabled hai. Existing coding provider se continue kar raha hoon.'
+      : ''
+
+    const generated = await callProvider(fallbackProvider, prompt || '', existing.files)
     if (!generated.success) {
       const fallbackFiles = normalizeFiles({ files: existing.files }, prompt || '', existing.metadata.type)
       const state = writeProjectState(
@@ -1216,7 +1276,7 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
         success: true,
         state,
         previewHtml: inlinePreviewHtml(state.files),
-        providerError: generated.message,
+        providerError: kiloDisabledMessage ? `${kiloDisabledMessage}\n\n${generated.message}` : generated.message,
         providerCode: generated.code
       }
     }
@@ -1234,7 +1294,8 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
     return {
       success: true,
       state,
-      previewHtml: inlinePreviewHtml(state.files)
+      previewHtml: inlinePreviewHtml(state.files),
+      ...(kiloDisabledMessage ? { message: kiloDisabledMessage } : {})
     }
   })
 
