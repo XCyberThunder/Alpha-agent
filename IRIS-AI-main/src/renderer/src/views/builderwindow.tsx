@@ -28,10 +28,13 @@ import {
 
 import {
   BuilderAttachmentDescriptor,
+  BuilderChatResponse,
   BuilderModelStatuses,
   BuilderProviderSelection,
   BuilderProjectFile,
   BuilderProjectState,
+  cancelBuilderRequest,
+  chatBuilderPrompt,
   createBuilderProject,
   exportBuilderProjectZip,
   getBuilderModelStatuses,
@@ -79,6 +82,13 @@ type FileTreeNodeData = {
   ext?: string
   children?: FileTreeNodeData[]
 }
+
+type BuilderPromptIntent =
+  | 'NORMAL_CHAT'
+  | 'CODING_GENERATE'
+  | 'CODING_EDIT'
+  | 'RUN_COMMAND'
+  | 'EXPLAIN_CODE'
 
 type ProviderOption = {
   id: string
@@ -579,6 +589,49 @@ const summarizeAttachments = (attachments: BuilderAttachmentDescriptor[]) => {
     return `[ATTACHMENT:${attachment.kind}] ${attachment.name}${contentPreview}`
   })
   return `\n\nAdditional references:\n${parts.join('\n\n')}`
+}
+
+const classifyBuilderPrompt = (prompt: string, hasProject: boolean): BuilderPromptIntent => {
+  const normalized = prompt.toLowerCase().replace(/\s+/g, ' ').trim()
+  if (!normalized) return 'NORMAL_CHAT'
+
+  if (
+    /^(hey|hi|hello|hii|yo|thanks|thank you|ok|okay|hmm|hm|cool|great|nice)$/.test(normalized) ||
+    /^(kya haal hai|kaise ho|how are you|what can you do)\??$/.test(normalized)
+  ) {
+    return 'NORMAL_CHAT'
+  }
+
+  if (
+    /\b(npm|pnpm|yarn|bun|node|python|pip|gradle|cargo)\b/.test(normalized) &&
+    /\b(run|start|build|test|install|chalao|execute)\b/.test(normalized)
+  ) {
+    return 'RUN_COMMAND'
+  }
+
+  if (
+    /\b(index\.html|style\.css|script\.js|readme\.md|fix|edit|update|change|modify|refactor|replace|implement|add|remove)\b/.test(
+      normalized
+    ) &&
+    (hasProject || /\b(file|component|css|html|js|tsx?|react|python|java|c\+\+|cpp)\b/.test(normalized))
+  ) {
+    return 'CODING_EDIT'
+  }
+
+  if (
+    /\b(website|web app|webapp|landing page|portfolio|dashboard|app|project|calculator|game|discord|youtube|chrome|browser|page|ui)\b/.test(
+      normalized
+    ) &&
+    /\b(banao|banado|bana do|build|create|generate|make|develop|design)\b/.test(normalized)
+  ) {
+    return 'CODING_GENERATE'
+  }
+
+  if (/\b(explain|samjhao|review|analyze|analysis|summary|what is|how does)\b/.test(normalized)) {
+    return 'EXPLAIN_CODE'
+  }
+
+  return 'NORMAL_CHAT'
 }
 
 const readDraft = () => {
@@ -1361,6 +1414,7 @@ export default function BuilderWindow() {
   const lastAutoRunKeyRef = useRef<string>('')
   const sidebarMenuRef = useRef<HTMLDivElement>(null)
   const sidebarMenuButtonRef = useRef<HTMLButtonElement>(null)
+  const activeRequestIdRef = useRef<string | null>(null)
 
   const draft = useMemo(() => readDraft(), [])
 
@@ -1709,17 +1763,26 @@ export default function BuilderWindow() {
       const trimmed = prompt.trim()
       if (!trimmed || sending) return
       setInput('')
-      setStatusText(`Sending request to ${providerDisplayName(providerId || selectedModel)}...`)
 
       const selectedOption =
         providerOptions.find((option) => option.id === providerId) ||
         providerOptions.find((option) => option.id === selectedModel) ||
         providerOptions[0]
       const providerChoice = toProviderSelection(selectedOption)
+      const intent = classifyBuilderPrompt(trimmed, Boolean(projectId || projectState?.metadata.id))
+      const requestId = `builder-${makeId()}`
+      activeRequestIdRef.current = requestId
+
+      setStatusText(
+        intent === 'NORMAL_CHAT' || intent === 'EXPLAIN_CODE'
+          ? `Chatting with ${providerDisplayName(providerId || selectedModel)}...`
+          : `Sending request to ${providerDisplayName(providerId || selectedModel)}...`
+      )
 
       const messageText = `${trimmed}${summarizeAttachments(attachments)}`
       if (import.meta.env.DEV) {
         console.info('[BUILDER_DEBUG] submit', {
+          intent,
           provider: providerChoice?.provider,
           modelId: providerChoice?.modelId || '',
           slot: providerChoice?.slot || null,
@@ -1741,9 +1804,65 @@ export default function BuilderWindow() {
       setPreviewLoading(true)
 
       try {
+        if (intent === 'NORMAL_CHAT' || intent === 'EXPLAIN_CODE') {
+          const response: BuilderChatResponse = await chatBuilderPrompt(
+            messageText,
+            providerChoice,
+            projectId || projectState?.metadata.id,
+            requestId
+          )
+
+          if (response.success) {
+            setMessages((current) => [
+              ...current,
+              {
+                id: `assistant-${makeId()}`,
+                role: 'assistant',
+                content: response.message || 'Main yahan hoon. Batao kya build ya explain karna hai.',
+                timestamp: new Date()
+              }
+            ])
+            setStatusText('Chat response ready.')
+            setAttachments([])
+            return
+          }
+
+          if (response.cancelled) {
+            setStatusText('Request cancelled.')
+            return
+          }
+
+          setStatusText('Chat request failed.')
+          setMessages((current) => [
+            ...current,
+            {
+              id: `chat-error-${makeId()}`,
+              role: 'assistant',
+              content: response.error || 'Builder chat request failed.',
+              timestamp: new Date()
+            }
+          ])
+          return
+        }
+
+        if (intent === 'RUN_COMMAND') {
+          setStatusText('Command prompts should use terminal controls for now.')
+          setMessages((current) => [
+            ...current,
+            {
+              id: `assistant-${makeId()}`,
+              role: 'assistant',
+              content:
+                'Yeh command-type prompt lag raha hai. Abhi isse file generation me nahi bhej raha hoon - terminal controls se run karo.',
+              timestamp: new Date()
+            }
+          ])
+          return
+        }
+
         const response = projectId
-          ? await updateBuilderProject(projectId, messageText, providerChoice)
-          : await createBuilderProject(messageText, providerChoice)
+          ? await updateBuilderProject(projectId, messageText, providerChoice, requestId)
+          : await createBuilderProject(messageText, providerChoice, requestId)
 
         if (response.success && response.state) {
           syncProjectState(response.state, response.previewHtml, undefined, response.providerError, true)
@@ -1754,7 +1873,7 @@ export default function BuilderWindow() {
                 id: `assistant-${makeId()}`,
                 role: 'assistant',
                 content: response.providerError
-                  ? `Provider returned fallback shell.\n\n${response.providerError}`
+                  ? response.providerError
                   : `Applied changes with **${providerDisplayName(
                       response.state?.metadata.providerUsed || providerChoice?.label || providerChoice?.provider
                     )}**.`,
@@ -1764,7 +1883,7 @@ export default function BuilderWindow() {
           }
           setStatusText(
             response.providerError
-              ? `Fallback shell ready for ${response.state.metadata.name}.`
+              ? `${response.state.metadata.name} updated with prompt-aware fallback.`
               : `${response.state.files.length} files updated in ${response.state.metadata.name}.`
           )
           if (!activeSessionId) {
@@ -1794,6 +1913,11 @@ export default function BuilderWindow() {
           return
         }
 
+        if (response.cancelled) {
+          setStatusText('Request cancelled.')
+          return
+        }
+
         setStatusText('Provider returned an error. Check the latest assistant message.')
         setMessages((current) => [
           ...current,
@@ -1820,11 +1944,22 @@ export default function BuilderWindow() {
           }
         ])
       } finally {
+        activeRequestIdRef.current = null
         setSending(false)
         setPreviewLoading(false)
       }
     },
-    [activeSessionId, attachments, messages, persistSession, providerOptions, selectedModel, sending, syncProjectState]
+    [
+      activeSessionId,
+      attachments,
+      messages,
+      persistSession,
+      projectState?.metadata.id,
+      providerOptions,
+      selectedModel,
+      sending,
+      syncProjectState
+    ]
   )
 
   const applyWindowPayload = useCallback(
@@ -1937,6 +2072,17 @@ export default function BuilderWindow() {
       providerId: selectedModel,
       projectId: projectState?.metadata.id || null
     })
+  }
+
+  const handleStop = async () => {
+    const requestId = activeRequestIdRef.current
+    if (!requestId) return
+    setStatusText('Cancelling request...')
+    try {
+      await cancelBuilderRequest(requestId)
+    } catch {
+      emitBuilderToast('error', 'Cancel request failed.')
+    }
   }
 
   const handleCopy = async () => {
@@ -2259,12 +2405,12 @@ export default function BuilderWindow() {
                   />
                 </div>
                 <button
-                  onClick={handleSend}
-                  disabled={!input.trim() || sending}
+                  onClick={sending ? () => void handleStop() : handleSend}
+                  disabled={sending ? false : !input.trim()}
                   className="flex h-6.5 w-6.5 items-center justify-center rounded-full bg-[#2f81f7] text-white shadow-[0_8px_18px_rgba(47,129,247,0.16)] transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-30"
-                  aria-label="Send builder prompt"
+                  aria-label={sending ? 'Stop builder request' : 'Send builder prompt'}
                 >
-                  {sending ? <Loader2 size={10} className="animate-spin" /> : <Send size={10} />}
+                  {sending ? <X size={10} /> : <Send size={10} />}
                 </button>
               </div>
             </div>

@@ -63,10 +63,27 @@ type ProviderSelection = {
 
 type ProviderResult =
   | { success: true; payload: any; providerLabel: string }
-  | { success: false; code: string; message: string; providerLabel: string }
+  | { success: false; code: string; message: string; providerLabel: string; cancelled?: boolean }
+
+type ProviderChatResult =
+  | { success: true; content: string; providerLabel: string }
+  | { success: false; code: string; message: string; providerLabel: string; cancelled?: boolean }
+
+type BuilderPromptIntent =
+  | 'NORMAL_CHAT'
+  | 'CODING_GENERATE'
+  | 'CODING_EDIT'
+  | 'RUN_COMMAND'
+  | 'EXPLAIN_CODE'
+
+type FileExtractionResult = {
+  files: ProjectFile[]
+  source: 'structured' | 'codeblocks' | 'fallback'
+}
 
 const execFileAsync = promisify(execFile)
 const activeProjectProcesses = new Map<string, ChildProcessWithoutNullStreams>()
+const activeBuilderRequests = new Map<string, AbortController>()
 
 const PROJECT_MODEL = 'glm-5.2'
 const ZENMUX_DEFAULT_BASE_URL = 'https://zenmux.ai/api/v1'
@@ -132,6 +149,59 @@ const debugBuilder = (stage: string, payload: Record<string, unknown>) => {
 }
 
 const shouldUseKiloForPrompt = (prompt: string) => kiloExecutionPromptPattern.test(prompt || '')
+
+const normalizePrompt = (prompt: string) => prompt.toLowerCase().replace(/\s+/g, ' ').trim()
+
+const classifyBuilderPrompt = (prompt: string, currentFiles?: ProjectFile[]): BuilderPromptIntent => {
+  const normalized = normalizePrompt(prompt)
+  if (!normalized) return 'NORMAL_CHAT'
+
+  if (
+    /^(hey|hi|hello|hii|yo|thanks|thank you|ok|okay|hmm|hm|cool|great|nice)$/.test(normalized) ||
+    /^(kya haal hai|kaise ho|how are you|what can you do)\??$/.test(normalized)
+  ) {
+    return 'NORMAL_CHAT'
+  }
+
+  if (
+    /\b(npm|pnpm|yarn|bun|node|python|pip|gradle|cargo)\b/.test(normalized) &&
+    /\b(run|start|build|test|install|chalao|execute)\b/.test(normalized)
+  ) {
+    return 'RUN_COMMAND'
+  }
+
+  if (
+    /\b(index\.html|style\.css|script\.js|readme\.md|src\/|component|file|folder|fix|edit|update|change|modify|refactor|replace|add|remove|implement)\b/.test(
+      normalized
+    ) &&
+    (currentFiles?.length || /\b(css|html|javascript|js|ts|tsx|react|python|java|c\+\+|cpp)\b/.test(normalized))
+  ) {
+    return 'CODING_EDIT'
+  }
+
+  if (
+    /\b(website|web app|webapp|landing page|portfolio|dashboard|admin panel|app|project|calculator|game|discord|youtube|chrome|browser|page|ui)\b/.test(
+      normalized
+    ) &&
+    /\b(banao|banado|bana do|build|create|generate|make|develop|design)\b/.test(normalized)
+  ) {
+    return 'CODING_GENERATE'
+  }
+
+  if (
+    /\b(explain|samjhao|review|analyze|analysis|what is|how does|read this|understand|summary)\b/.test(normalized)
+  ) {
+    return 'EXPLAIN_CODE'
+  }
+
+  if (
+    /\b(fix error|bug|debug|login page|feature add|responsive karo|dark theme|style update)\b/.test(normalized)
+  ) {
+    return currentFiles?.length ? 'CODING_EDIT' : 'CODING_GENERATE'
+  }
+
+  return 'NORMAL_CHAT'
+}
 
 const resolveProviderName = (provider: string | undefined, providerUsed: string): ProviderName => {
   if (provider === 'kiloGateway') return 'kiloGateway'
@@ -244,6 +314,27 @@ const extractCodeBlockFiles = (raw: string): ProjectFile[] => {
 const createFallbackWebsiteFiles = (prompt: string): ProjectFile[] => {
   const lower = prompt.toLowerCase()
   const escapedPrompt = prompt.replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+  if (/\b(car game|racing game|race game|driving game|car racing|vehicle game)\b/.test(lower)) {
+    return [
+      {
+        path: 'index.html',
+        content: `<!doctype html><html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>ALPHA Turbo Run</title><link rel="stylesheet" href="style.css"/></head><body><main class="game-shell"><header class="hud"><div><p class="eyebrow">ALPHA ARCADE</p><h1>Turbo Run</h1><p>${escapedPrompt}</p></div><div class="scoreboard"><span>Score</span><strong id="score">0</strong></div></header><section class="arena-wrap"><canvas id="gameCanvas" width="420" height="640" aria-label="Car game canvas"></canvas><aside class="controls"><h2>Controls</h2><p>Use left/right arrows or A/D to dodge traffic.</p><button id="restartBtn">Restart</button></aside></section></main><script src="script.js"></script></body></html>`
+      },
+      {
+        path: 'style.css',
+        content: `*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at top,#38bdf81f,transparent 24%),radial-gradient(circle at 78% 10%,#f472b61a,transparent 24%),#050505;color:#fff;font-family:Inter,system-ui,sans-serif}.game-shell{min-height:100vh;padding:24px;display:grid;gap:18px}.hud,.arena-wrap,.controls{border:1px solid rgba(255,255,255,.08);background:linear-gradient(160deg,rgba(12,14,18,.92),rgba(15,18,26,.84));backdrop-filter:blur(24px);box-shadow:0 24px 80px rgba(0,0,0,.4),inset 0 1px 0 rgba(255,255,255,.04)}.hud{border-radius:28px;padding:24px;display:flex;align-items:end;justify-content:space-between;gap:16px}.eyebrow{text-transform:uppercase;letter-spacing:.28em;font-size:11px;color:#22d3ee}.hud h1{margin:8px 0 10px;font-size:40px}.hud p{margin:0;color:#a1a1aa;max-width:640px}.scoreboard{min-width:120px;padding:16px 18px;border-radius:22px;background:rgba(255,255,255,.04);display:grid;gap:6px;text-align:right}.scoreboard span{font-size:12px;color:#a1a1aa}.scoreboard strong{font-size:36px}.arena-wrap{border-radius:32px;padding:20px;display:grid;grid-template-columns:minmax(0,420px) 260px;gap:18px;justify-content:center;align-items:start}.controls{border-radius:26px;padding:22px}.controls h2{margin:0 0 10px}.controls p{margin:0 0 18px;color:#a1a1aa;line-height:1.6}#restartBtn{border:none;border-radius:16px;padding:12px 16px;background:linear-gradient(135deg,#22d3ee,#8b5cf6);color:#fff;font-weight:700;cursor:pointer}canvas{width:100%;max-width:420px;border-radius:26px;background:linear-gradient(180deg,#0b1220,#111827);border:1px solid rgba(255,255,255,.06);justify-self:center}@media(max-width:960px){.arena-wrap{grid-template-columns:1fr}.controls{order:-1}}`
+      },
+      {
+        path: 'script.js',
+        content: `const canvas=document.getElementById('gameCanvas');const ctx=canvas.getContext('2d');const scoreEl=document.getElementById('score');const restartBtn=document.getElementById('restartBtn');const laneWidth=100;const roadX=60;let state;const reset=()=>{state={playerLane:1,cars:[],score:0,tick:0,gameOver:false}};const spawnCar=()=>{const lane=Math.floor(Math.random()*3);state.cars.push({lane,y:-120,speed:4+Math.random()*2})};const drawRoad=()=>{ctx.fillStyle='#0f172a';ctx.fillRect(roadX,0,laneWidth*3,canvas.height);ctx.strokeStyle='rgba(255,255,255,0.18)';ctx.lineWidth=4;for(let i=1;i<3;i++){ctx.setLineDash([24,18]);ctx.beginPath();ctx.moveTo(roadX+laneWidth*i,0);ctx.lineTo(roadX+laneWidth*i,canvas.height);ctx.stroke()}ctx.setLineDash([])};const drawCar=(x,y,color)=>{ctx.fillStyle=color;ctx.fillRect(x+18,y,64,108);ctx.fillStyle='rgba(255,255,255,0.25)';ctx.fillRect(x+28,y+10,44,20)};const loop=()=>{ctx.clearRect(0,0,canvas.width,canvas.height);drawRoad();if(!state.gameOver){state.tick+=1;if(state.tick%36===0)spawnCar();state.cars.forEach((car)=>{car.y+=car.speed;if(car.y>canvas.height+120){state.score+=10;scoreEl.textContent=String(state.score)}});state.cars=state.cars.filter((car)=>car.y<canvas.height+120);const playerX=roadX+state.playerLane*laneWidth;drawCar(playerX,500,'#22d3ee');state.cars.forEach((car)=>{const x=roadX+car.lane*laneWidth;drawCar(x,car.y,'#f472b6');if(car.lane===state.playerLane&&car.y+108>500&&car.y<608){state.gameOver=true}})}else{ctx.fillStyle='rgba(0,0,0,0.6)';ctx.fillRect(0,0,canvas.width,canvas.height);ctx.fillStyle='#fff';ctx.font='bold 36px Inter';ctx.fillText('Game Over',110,280);ctx.font='16px Inter';ctx.fillText('Press Restart to play again',110,320)}requestAnimationFrame(loop)};window.addEventListener('keydown',(event)=>{if(state.gameOver)return;if(event.key==='ArrowLeft'||event.key.toLowerCase()==='a')state.playerLane=Math.max(0,state.playerLane-1);if(event.key==='ArrowRight'||event.key.toLowerCase()==='d')state.playerLane=Math.min(2,state.playerLane+1)});restartBtn?.addEventListener('click',()=>{reset();scoreEl.textContent='0'});reset();loop();`
+      },
+      {
+        path: 'README.md',
+        content: `# ALPHA Turbo Run\n\nPrompt: ${prompt}\n\nCar game fallback scaffold with canvas driving gameplay.\n`
+      }
+    ]
+  }
 
   if (/\bcalculator\b/.test(lower)) {
     return [
@@ -399,7 +490,7 @@ const inlinePreviewHtml = (files: ProjectFile[]) => {
   return html
 }
 
-const normalizeFiles = (payload: any, prompt: string, projectType: string): ProjectFile[] => {
+const extractProviderFiles = (payload: any, prompt: string, projectType: string): FileExtractionResult => {
   if (Array.isArray(payload)) {
     payload = { files: payload }
   } else if (payload?.project && Array.isArray(payload.project.files)) {
@@ -427,7 +518,7 @@ const normalizeFiles = (payload: any, prompt: string, projectType: string): Proj
       structuredFiles: files.length,
       fallbackUsed: false
     })
-    return files
+    return { files, source: 'structured' }
   }
 
   if (typeof payload?.rawText === 'string') {
@@ -440,32 +531,44 @@ const normalizeFiles = (payload: any, prompt: string, projectType: string): Proj
         fallbackUsed: false
       })
       const hasReadme = codeBlockFiles.some((file) => file.path.toLowerCase() === 'readme.md')
-      return hasReadme
-        ? codeBlockFiles
-        : [
-            ...codeBlockFiles,
-            {
-              path: 'README.md',
-              content: `# ALPHA generated project\n\nPrompt: ${prompt}\n`
-            }
-          ]
+      return {
+        files: hasReadme
+          ? codeBlockFiles
+          : [
+              ...codeBlockFiles,
+              {
+                path: 'README.md',
+                content: `# ALPHA generated project\n\nPrompt: ${prompt}\n`
+              }
+            ],
+        source: 'codeblocks'
+      }
     }
-  }
-
-  if (projectType === 'website' || projectType === 'react') {
-    debugBuilder('provider-parse', {
-      projectType,
-      promptLength: prompt.length,
-      codeBlockFiles: 0,
-      fallbackUsed: true
-    })
-    return createFallbackWebsiteFiles(prompt)
   }
 
   debugBuilder('provider-parse', {
     projectType,
     promptLength: prompt.length,
     codeBlockFiles: 0,
+    fallbackUsed: false,
+    usableFiles: false
+  })
+  return { files: [], source: 'fallback' }
+}
+
+const createPromptAwareFallbackFiles = (prompt: string, projectType: string): ProjectFile[] => {
+  if (projectType === 'website' || projectType === 'react') {
+    debugBuilder('provider-fallback', {
+      projectType,
+      promptLength: prompt.length,
+      fallbackUsed: true
+    })
+    return createFallbackWebsiteFiles(prompt)
+  }
+
+  debugBuilder('provider-fallback', {
+    projectType,
+    promptLength: prompt.length,
     fallbackUsed: true
   })
   return [
@@ -894,6 +997,9 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
       'For websites include at least index.html, style.css, script.js, README.md.',
       'For React/webapp prompts prefer package.json, index.html, src/main.tsx, src/App.tsx, src/styles.css, README.md.',
       'For calculator prompts return a real working calculator UI and JS interactions.',
+      /\b(car game|racing game|drive|driving|race)\b/i.test(prompt)
+        ? 'For car-game requests create a game-themed project with game area or canvas, controls, score/state, and real gameplay logic. Do not return a presentation scaffold.'
+        : '',
       /\bdiscord|friend add|dm|community|chat\b/i.test(prompt)
         ? 'For Discord-like requests create an original community/chat UI with server rail, friends list, message area, and add-friend flow. Do not return a generic presentation scaffold.'
         : '',
@@ -914,6 +1020,31 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
     currentFiles?.length
       ? `Update this existing project for the request.\nDetected project type: ${projectType}\nRequest: ${prompt}\nCurrent file tree:\n${currentFiles.map((file) => file.path).join('\n')}\nCurrent files:\n${JSON.stringify(currentFiles.slice(0, 12))}`
       : `Create a project for this request.\nDetected project type: ${projectType}\nRequest: ${prompt}`
+
+  const buildChatSystemPrompt = (
+    providerLabel: string,
+    prompt: string,
+    currentFiles?: ProjectFile[]
+  ) =>
+    [
+      `You are ALPHA Builder assistant using ${providerLabel}.`,
+      'Reply conversationally in concise plain text.',
+      'Do not return project JSON, file maps, or markdown code fences unless the user explicitly asks for code snippets.',
+      'If the user is greeting, answering casually is enough.',
+      currentFiles?.length
+        ? `You currently have project context with these files:\n${currentFiles.map((file) => file.path).slice(0, 24).join('\n')}`
+        : 'No active project files are required for this reply.',
+      /\b(explain|samjhao|review|analyze|summary)\b/i.test(prompt)
+        ? 'Focus on explanation and guidance only. Do not edit files.'
+        : 'Answer helpfully without editing files.'
+    ]
+      .filter(Boolean)
+      .join(' ')
+
+  const buildChatUserPrompt = (prompt: string, currentFiles?: ProjectFile[]) =>
+    currentFiles?.length
+      ? `Answer this builder chat message without changing files.\nUser message: ${prompt}\nRelevant file tree:\n${currentFiles.map((file) => file.path).join('\n')}`
+      : `Answer this builder chat message without changing files.\nUser message: ${prompt}`
 
   const extractCompatibleResponseText = (data: any) => {
     const direct = data?.choices?.[0]?.message?.content
@@ -963,7 +1094,11 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
     return { success: true, payload: parsed, providerLabel }
   }
 
-  const callGeminiProjectProvider = async (prompt: string, currentFiles?: ProjectFile[]): Promise<ProviderResult> => {
+  const callGeminiProjectProvider = async (
+    prompt: string,
+    currentFiles?: ProjectFile[],
+    signal?: AbortSignal
+  ): Promise<ProviderResult> => {
     const secureData = readSecureVault()
     const geminiSlot = secureData.keySlots?.geminiBrain?.find((slot: KeySlot) => {
       const key = decryptVaultValue(slot?.key)
@@ -987,33 +1122,52 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
       projectType,
       existingFiles: currentFiles?.length || 0
     })
-    const response = await fetch(
-      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' +
-        encodeURIComponent(geminiKey),
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: buildProjectSystemPrompt('Gemini 2.5 Flash', prompt, projectType, currentFiles) }] },
-          contents: [{ role: 'user', parts: [{ text: buildProjectUserPrompt(prompt, projectType, currentFiles) }] }],
-          generationConfig: { temperature: 0.35, maxOutputTokens: 4096 }
-        })
+    try {
+      const response = await fetch(
+        'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' +
+          encodeURIComponent(geminiKey),
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal,
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: buildProjectSystemPrompt('Gemini 2.5 Flash', prompt, projectType, currentFiles) }] },
+            contents: [{ role: 'user', parts: [{ text: buildProjectUserPrompt(prompt, projectType, currentFiles) }] }],
+            generationConfig: { temperature: 0.35, maxOutputTokens: 4096 }
+          })
+        }
+      )
+
+      if (!response.ok) {
+        const errorBody = await response.text()
+        const exactMessage =
+          response.status === 401 || response.status === 403
+            ? 'Gemini auth failed. Gemini key/settings check karo ya OpenRouter/Kimi choose karo.'
+            : response.status === 429
+              ? 'Gemini rate limit/quota hit hua. Dusra fallback choose karo.'
+              : `Gemini provider error ${response.status}: ${errorBody.slice(0, 180)}`
+        return { success: false, code: `GEMINI_${response.status}`, message: exactMessage, providerLabel: 'Gemini' }
       }
-    )
 
-    if (!response.ok) {
-      const errorBody = await response.text()
-      const exactMessage =
-        response.status === 401 || response.status === 403
-          ? 'Gemini auth failed. Gemini key/settings check karo ya OpenRouter/Kimi choose karo.'
-          : response.status === 429
-            ? 'Gemini rate limit/quota hit hua. Dusra fallback choose karo.'
-            : `Gemini provider error ${response.status}: ${errorBody.slice(0, 180)}`
-      return { success: false, code: `GEMINI_${response.status}`, message: exactMessage, providerLabel: 'Gemini' }
+      const data = await response.json()
+      return parseProviderPayload(normalizeGeminiText(data), 'Gemini')
+    } catch (error: any) {
+      if (error?.name === 'AbortError') {
+        return {
+          success: false,
+          code: 'REQUEST_CANCELLED',
+          message: 'Builder request cancelled.',
+          providerLabel: 'Gemini',
+          cancelled: true
+        }
+      }
+      return {
+        success: false,
+        code: 'GEMINI_NETWORK_ERROR',
+        message: error?.message || 'Gemini request failed.',
+        providerLabel: 'Gemini'
+      }
     }
-
-    const data = await response.json()
-    return parseProviderPayload(normalizeGeminiText(data), 'Gemini')
   }
 
   const callOpenAICompatibleProvider = async (
@@ -1025,7 +1179,8 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
       model: string
       providerLabel: string
       headers?: Record<string, string>
-    }
+    },
+    signal?: AbortSignal
   ): Promise<ProviderResult> => {
     const projectType = detectProjectType(prompt)
     debugBuilder('provider-call', {
@@ -1035,44 +1190,64 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
       projectType,
       existingFiles: currentFiles?.length || 0
     })
-    const response = await fetch(config.endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${config.key}`,
-        ...(config.headers || {})
-      },
-      body: JSON.stringify({
-        model: config.model,
-        temperature: 0.35,
-        messages: [
-          { role: 'system', content: buildProjectSystemPrompt(config.providerLabel, prompt, projectType, currentFiles) },
-          { role: 'user', content: buildProjectUserPrompt(prompt, projectType, currentFiles) }
-        ]
+    try {
+      const response = await fetch(config.endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${config.key}`,
+          ...(config.headers || {})
+        },
+        signal,
+        body: JSON.stringify({
+          model: config.model,
+          temperature: 0.35,
+          messages: [
+            { role: 'system', content: buildProjectSystemPrompt(config.providerLabel, prompt, projectType, currentFiles) },
+            { role: 'user', content: buildProjectUserPrompt(prompt, projectType, currentFiles) }
+          ]
+        })
       })
-    })
 
-    if (!response.ok) {
-      const body = await response.text()
-      let message = `${config.providerLabel} provider error ${response.status}: ${body.slice(0, 180)}`
-      if (response.status === 401 || response.status === 403) {
-        message = `${config.providerLabel} auth failed. API key/settings check karo.`
-      } else if (response.status === 404) {
-        message = `${config.providerLabel} model invalid lag raha hai. Model/settings check karo.`
-      } else if (response.status === 429) {
-        message = `${config.providerLabel} rate limit/quota hit hua.`
+      if (!response.ok) {
+        const body = await response.text()
+        let message = `${config.providerLabel} provider error ${response.status}: ${body.slice(0, 180)}`
+        if (response.status === 401 || response.status === 403) {
+          message = `${config.providerLabel} auth failed. API key/settings check karo.`
+        } else if (response.status === 404) {
+          message = `${config.providerLabel} model invalid lag raha hai. Model/settings check karo.`
+        } else if (response.status === 429) {
+          message = `${config.providerLabel} rate limit/quota hit hua.`
+        }
+        return { success: false, code: `${config.providerLabel.toUpperCase()}_${response.status}`, message, providerLabel: config.providerLabel }
       }
-      return { success: false, code: `${config.providerLabel.toUpperCase()}_${response.status}`, message, providerLabel: config.providerLabel }
-    }
 
-    const data = await response.json()
-    return parseProviderPayload(extractCompatibleResponseText(data), config.providerLabel)
+      const data = await response.json()
+      return parseProviderPayload(extractCompatibleResponseText(data), config.providerLabel)
+    } catch (error: any) {
+      if (error?.name === 'AbortError') {
+        return {
+          success: false,
+          code: 'REQUEST_CANCELLED',
+          message: 'Builder request cancelled.',
+          providerLabel: config.providerLabel,
+          cancelled: true
+        }
+      }
+      return {
+        success: false,
+        code: `${config.providerLabel.toUpperCase()}_NETWORK_ERROR`,
+        message: error?.message || `${config.providerLabel} request failed.`,
+        providerLabel: config.providerLabel
+      }
+    }
   }
 
   const callGlm = async (
     prompt: string,
     currentFiles?: ProjectFile[],
-    selection?: ProviderSelection
+    selection?: ProviderSelection,
+    signal?: AbortSignal
   ): Promise<ProviderResult> => {
     const secureData = readSecureVault()
     const normalizedSlots = normalizeGlmSlots(secureData)
@@ -1134,6 +1309,7 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
               }
             : {})
         },
+        signal,
         body: JSON.stringify({
           model: modelId,
           temperature: 0.35,
@@ -1178,6 +1354,15 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
       }
       return parsed
     } catch (error: any) {
+      if (error?.name === 'AbortError') {
+        return {
+          success: false,
+          code: 'REQUEST_CANCELLED',
+          message: 'Builder request cancelled.',
+          providerLabel,
+          cancelled: true
+        }
+      }
       if (selectedSlot) {
         const secureDataOnFailure = readSecureVault()
         markGlmFailure(secureDataOnFailure, selectedSlot.slot, 'failed', error?.message || 'GLM request failed')
@@ -1195,7 +1380,8 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
   const callZai = async (
     prompt: string,
     currentFiles?: ProjectFile[],
-    selection?: ProviderSelection
+    selection?: ProviderSelection,
+    signal?: AbortSignal
   ): Promise<ProviderResult> => {
     const secureData = readSecureVault()
     const normalizedSlots = normalizeZaiSlots(secureData)
@@ -1247,6 +1433,7 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
           'Content-Type': 'application/json',
           Authorization: `Bearer ${key}`
         },
+        signal,
         body: JSON.stringify({
           model: modelId,
           temperature: 0.35,
@@ -1289,6 +1476,15 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
       }
       return parsed
     } catch (error: any) {
+      if (error?.name === 'AbortError') {
+        return {
+          success: false,
+          code: 'REQUEST_CANCELLED',
+          message: 'Builder request cancelled.',
+          providerLabel,
+          cancelled: true
+        }
+      }
       if (selectedSlot) {
         const secureDataOnFailure = readSecureVault()
         markZaiFailure(secureDataOnFailure, selectedSlot.slot, 'failed', error?.message || 'Z.AI request failed')
@@ -1404,13 +1600,14 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
   const callProvider = async (
     providerInput: ProviderSelection | ProviderName | string | undefined,
     prompt: string,
-    currentFiles?: ProjectFile[]
+    currentFiles?: ProjectFile[],
+    signal?: AbortSignal
   ): Promise<ProviderResult> => {
     const selection = parseProviderSelection(providerInput)
 
-    if (selection.provider === 'glm') return callGlm(prompt, currentFiles, selection)
-    if (selection.provider === 'zai') return callZai(prompt, currentFiles, selection)
-    if (selection.provider === 'gemini') return callGeminiProjectProvider(prompt, currentFiles)
+    if (selection.provider === 'glm') return callGlm(prompt, currentFiles, selection, signal)
+    if (selection.provider === 'zai') return callZai(prompt, currentFiles, selection, signal)
+    if (selection.provider === 'gemini') return callGeminiProjectProvider(prompt, currentFiles, signal)
 
     const resolved = resolveSelectedCompatibleConfig(selection)
     if ('error' in resolved) return resolved.error
@@ -1421,7 +1618,7 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
       model: resolved.model,
       providerLabel: resolved.providerLabel,
       headers: resolved.headers
-    })
+    }, signal)
 
     if (result.success) {
       if (resolved.statusGroup && resolved.slot) {
@@ -1445,6 +1642,323 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
     }
 
     return result
+  }
+
+  const callGeminiChatProvider = async (
+    prompt: string,
+    currentFiles?: ProjectFile[],
+    signal?: AbortSignal
+  ): Promise<ProviderChatResult> => {
+    const secureData = readSecureVault()
+    const geminiSlot = secureData.keySlots?.geminiBrain?.find((slot: KeySlot) => {
+      const key = decryptVaultValue(slot?.key)
+      return slot?.enabled && key
+    })
+    const geminiKey = decryptVaultValue(geminiSlot?.key) || decryptVaultValue(secureData.gemini)
+    if (!geminiKey) {
+      return {
+        success: false,
+        code: 'GEMINI_MISSING_KEY',
+        message: 'Selected provider API key missing hai.',
+        providerLabel: 'Gemini'
+      }
+    }
+
+    try {
+      const response = await fetch(
+        'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' +
+          encodeURIComponent(geminiKey),
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal,
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: buildChatSystemPrompt('Gemini 2.5 Flash', prompt, currentFiles) }] },
+            contents: [{ role: 'user', parts: [{ text: buildChatUserPrompt(prompt, currentFiles) }] }],
+            generationConfig: { temperature: 0.4, maxOutputTokens: 1536 }
+          })
+        }
+      )
+
+      if (!response.ok) {
+        const errorBody = await response.text()
+        const message =
+          response.status === 401 || response.status === 403
+            ? 'Gemini auth failed. Gemini key/settings check karo.'
+            : response.status === 429
+              ? 'Gemini rate limit/quota hit hua.'
+              : `Gemini provider error ${response.status}: ${errorBody.slice(0, 180)}`
+        return { success: false, code: `GEMINI_${response.status}`, message, providerLabel: 'Gemini' }
+      }
+
+      const data = await response.json()
+      const content = normalizeGeminiText(data)
+      return { success: true, content: content || 'Main yahan hoon. Batao kya build ya explain karna hai.', providerLabel: 'Gemini' }
+    } catch (error: any) {
+      if (error?.name === 'AbortError') {
+        return {
+          success: false,
+          code: 'REQUEST_CANCELLED',
+          message: 'Builder request cancelled.',
+          providerLabel: 'Gemini',
+          cancelled: true
+        }
+      }
+      return {
+        success: false,
+        code: 'GEMINI_NETWORK_ERROR',
+        message: error?.message || 'Gemini request failed.',
+        providerLabel: 'Gemini'
+      }
+    }
+  }
+
+  const callOpenAICompatibleChatProvider = async (
+    prompt: string,
+    currentFiles: ProjectFile[] | undefined,
+    config: {
+      endpoint: string
+      key: string
+      model: string
+      providerLabel: string
+      headers?: Record<string, string>
+    },
+    signal?: AbortSignal
+  ): Promise<ProviderChatResult> => {
+    try {
+      const response = await fetch(config.endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${config.key}`,
+          ...(config.headers || {})
+        },
+        signal,
+        body: JSON.stringify({
+          model: config.model,
+          temperature: 0.4,
+          messages: [
+            { role: 'system', content: buildChatSystemPrompt(config.providerLabel, prompt, currentFiles) },
+            { role: 'user', content: buildChatUserPrompt(prompt, currentFiles) }
+          ]
+        })
+      })
+
+      if (!response.ok) {
+        const body = await response.text()
+        let message = `${config.providerLabel} provider error ${response.status}: ${body.slice(0, 180)}`
+        if (response.status === 401 || response.status === 403) message = `${config.providerLabel} auth failed. API key/settings check karo.`
+        else if (response.status === 404) message = `${config.providerLabel} model invalid lag raha hai. Model/settings check karo.`
+        else if (response.status === 429) message = `${config.providerLabel} rate limit/quota hit hua.`
+        return { success: false, code: `${config.providerLabel.toUpperCase()}_${response.status}`, message, providerLabel: config.providerLabel }
+      }
+
+      const data = await response.json()
+      return {
+        success: true,
+        content: extractCompatibleResponseText(data) || 'Main yahan hoon. Batao kya build ya explain karna hai.',
+        providerLabel: config.providerLabel
+      }
+    } catch (error: any) {
+      if (error?.name === 'AbortError') {
+        return {
+          success: false,
+          code: 'REQUEST_CANCELLED',
+          message: 'Builder request cancelled.',
+          providerLabel: config.providerLabel,
+          cancelled: true
+        }
+      }
+      return {
+        success: false,
+        code: `${config.providerLabel.toUpperCase()}_NETWORK_ERROR`,
+        message: error?.message || `${config.providerLabel} request failed.`,
+        providerLabel: config.providerLabel
+      }
+    }
+  }
+
+  const callProviderChat = async (
+    providerInput: ProviderSelection | ProviderName | string | undefined,
+    prompt: string,
+    currentFiles?: ProjectFile[],
+    signal?: AbortSignal
+  ): Promise<ProviderChatResult> => {
+    const selection = parseProviderSelection(providerInput)
+
+    if (selection.provider === 'gemini') {
+      return callGeminiChatProvider(prompt, currentFiles, signal)
+    }
+
+    if (selection.provider === 'glm') {
+      const directKey = selection.apiKey?.trim() || ''
+      const secureData = readSecureVault()
+      const normalizedSlots = normalizeGlmSlots(secureData)
+      const selectedSlot =
+        selection.slot != null
+          ? normalizedSlots.find((slot) => slot.slot === selection.slot && slot.enabled && decryptVaultValue(slot.key)) || null
+          : getActiveGlmSlot(secureData)
+      if (!selectedSlot && !directKey) {
+        return {
+          success: false,
+          code: 'MISSING_GLM_KEY',
+          message: 'Selected provider API key missing hai.',
+          providerLabel: selection.label || 'GLM 5.2'
+        }
+      }
+      const key = directKey || decryptVaultValue(selectedSlot?.key).trim()
+      const providerMode = selection.providerMode || selectedSlot?.providerMode || 'openai-compatible'
+      const baseUrl = selection.baseUrl || selectedSlot?.baseUrl || ZENMUX_DEFAULT_BASE_URL
+      const modelId = selection.modelId || selectedSlot?.modelId || ZENMUX_DEFAULT_MODEL_ID
+      const providerLabel = selection.label || 'ZenMux Compatible GLM'
+      const endpoint =
+        providerMode === 'direct-zai'
+          ? `${baseUrl.replace(/\/+$/, '')}/chat/completions`
+          : normalizeCompatibleBaseUrl(baseUrl)
+      return callOpenAICompatibleChatProvider(
+        prompt,
+        currentFiles,
+        {
+          endpoint,
+          key,
+          model: modelId,
+          providerLabel,
+          headers:
+            providerMode === 'direct-zai'
+              ? {
+                  'HTTP-Referer': 'https://alpha.local',
+                  'X-Title': 'alpha'
+                }
+              : undefined
+        },
+        signal
+      )
+    }
+
+    if (selection.provider === 'zai') {
+      const directKey = selection.apiKey?.trim() || ''
+      const secureData = readSecureVault()
+      const normalizedSlots = normalizeZaiSlots(secureData)
+      const selectedSlot =
+        selection.slot != null
+          ? normalizedSlots.find((slot) => slot.slot === selection.slot && slot.enabled && decryptVaultValue(slot.key)) || null
+          : getActiveZaiSlot(secureData)
+      if (!selectedSlot && !directKey) {
+        return {
+          success: false,
+          code: 'MISSING_ZAI_KEY',
+          message: 'Selected provider API key missing hai.',
+          providerLabel: selection.label || 'Z.AI'
+        }
+      }
+      const key = directKey || decryptVaultValue(selectedSlot?.key).trim()
+      const providerMode = selection.providerMode || selectedSlot?.providerMode || 'zai-coding'
+      const baseUrl = selection.baseUrl || selectedSlot?.baseUrl || ZAI_DEFAULT_BASE_URL
+      const modelId = selection.modelId || selectedSlot?.modelId || ZAI_DEFAULT_MODEL_ID
+      const endpoint =
+        providerMode === 'zai-compatible'
+          ? normalizeCompatibleBaseUrl(baseUrl)
+          : `${baseUrl.replace(/\/+$/, '')}/chat/completions`
+      return callOpenAICompatibleChatProvider(
+        prompt,
+        currentFiles,
+        {
+          endpoint,
+          key,
+          model: modelId,
+          providerLabel: selection.label || 'Z.AI'
+        },
+        signal
+      )
+    }
+
+    const resolved = resolveSelectedCompatibleConfig(selection)
+    if ('error' in resolved) {
+      const errorResult = resolved.error as Extract<ProviderResult, { success: false }>
+      return {
+        success: false,
+        code: errorResult.code,
+        message: errorResult.message,
+        providerLabel: errorResult.providerLabel,
+        cancelled: errorResult.cancelled
+      }
+    }
+    return callOpenAICompatibleChatProvider(
+      prompt,
+      currentFiles,
+      {
+        endpoint: resolved.endpoint,
+        key: resolved.key,
+        model: resolved.model,
+        providerLabel: resolved.providerLabel,
+        headers: resolved.headers
+      },
+      signal
+    )
+  }
+
+  const buildStructuredRetryPrompt = (prompt: string) =>
+    `Original request: ${prompt}\n\nYour previous response was not in usable file format. Return strict JSON only using this schema: {"projectName":"string","projectType":"string","summary":"string","files":[{"path":"relative/path","content":"file contents"}]}. Do not include markdown or explanation.`
+
+  const runAbortableBuilderRequest = async <T>(
+    requestId: string | undefined,
+    runner: (signal?: AbortSignal) => Promise<T>
+  ) => {
+    if (!requestId) {
+      return runner(undefined)
+    }
+
+    const controller = new AbortController()
+    activeBuilderRequests.set(requestId, controller)
+    try {
+      return await runner(controller.signal)
+    } finally {
+      activeBuilderRequests.delete(requestId)
+    }
+  }
+
+  const resolveGeneratedProjectFiles = async (
+    providerSelection: ProviderSelection,
+    prompt: string,
+    projectType: string,
+    generated: Extract<ProviderResult, { success: true }>,
+    currentFiles?: ProjectFile[],
+    signal?: AbortSignal
+  ): Promise<{
+    files: ProjectFile[]
+    usedFallback: boolean
+    providerNotice?: string
+  }> => {
+    const initial = extractProviderFiles(generated.payload || {}, prompt, projectType)
+    if (initial.source !== 'fallback') {
+      return { files: initial.files, usedFallback: false }
+    }
+
+    const retry = await callProvider(
+      providerSelection,
+      buildStructuredRetryPrompt(prompt),
+      currentFiles,
+      signal
+    )
+
+    if (retry.success) {
+      const retried = extractProviderFiles(retry.payload || {}, prompt, projectType)
+      if (retried.source !== 'fallback') {
+        return {
+          files: retried.files,
+          usedFallback: false,
+          providerNotice: 'Provider ko strict file retry bheja gaya aur usable files mil gayi.'
+        }
+      }
+    } else if (retry.cancelled) {
+      throw Object.assign(new Error('Builder request cancelled.'), { name: 'AbortError' })
+    }
+
+    return {
+      files: createPromptAwareFallbackFiles(prompt, projectType),
+      usedFallback: true,
+      providerNotice: 'Provider response usable file format me nahi tha, local prompt-aware scaffold use kiya.'
+    }
   }
 
   const writeProjectState = (
@@ -1520,54 +2034,110 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
     })
   }
 
-  ipcMain.handle('project-builder-create', async (_, { prompt, provider = 'kiloGateway' }) => {
+  ipcMain.handle('project-builder-create', async (_, { prompt, provider = 'kiloGateway', requestId }) => {
+    const intent = classifyBuilderPrompt(prompt || '')
+    if (intent === 'NORMAL_CHAT' || intent === 'EXPLAIN_CODE' || intent === 'RUN_COMMAND') {
+      return {
+        success: false,
+        error:
+          intent === 'RUN_COMMAND'
+            ? 'This prompt looks like a terminal command. Use Builder terminal controls instead.'
+            : 'This prompt is chat/explanation only. Use Builder chat route instead.',
+        code: intent === 'RUN_COMMAND' ? 'BUILDER_COMMAND_ONLY' : 'BUILDER_CHAT_ONLY'
+      }
+    }
+
     const projectType = detectProjectType(prompt || '')
     const providerSelection = parseProviderSelection(provider)
-    const generated = await callProvider(providerSelection, prompt || '')
     const selectedModelId = providerSelection.modelId || getProviderDefaults(providerSelection.provider).modelId
-    if (!generated.success) {
-      const projectName = guessProjectName(prompt || 'website builder', projectType)
-      const files = normalizeFiles({ files: [] }, prompt || '', projectType)
+    debugBuilder('create-request', {
+      intent,
+      provider: providerSelection.provider,
+      modelId: selectedModelId,
+      promptLength: (prompt || '').length,
+      requestId
+    })
+
+    try {
+      const generated = await runAbortableBuilderRequest(requestId, (signal) =>
+        callProvider(providerSelection, prompt || '', undefined, signal)
+      )
+
+      if (!generated.success) {
+        debugBuilder('create-result', {
+          provider: providerSelection.provider,
+          success: false,
+          code: generated.code,
+          cancelled: generated.cancelled || false
+        })
+        return {
+          success: false,
+          cancelled: generated.cancelled,
+          error: generated.message,
+          code: generated.code,
+          providerError: generated.message,
+          providerCode: generated.code
+        }
+      }
+
+      const payload = generated.payload || {}
+      const projectName = slugify(payload.projectName || guessProjectName(prompt || '', projectType))
+      const resolved = await runAbortableBuilderRequest(requestId, (signal) =>
+        resolveGeneratedProjectFiles(providerSelection, prompt || '', projectType, generated, undefined, signal)
+      )
+      debugBuilder('create-result', {
+        provider: providerSelection.provider,
+        success: true,
+        responseParsedAsFiles: !resolved.usedFallback,
+        fallbackUsed: resolved.usedFallback,
+        files: resolved.files.length
+      })
       const state = writeProjectState(
         projectName,
         projectName,
         prompt || '',
-        files,
+        resolved.files,
         generated.providerLabel,
-        selectedModelId || PROJECT_MODEL
+        providerSelection.modelId || payload.modelId || payload.projectModel || selectedModelId || PROJECT_MODEL
       )
+
       return {
         success: true,
         state,
         previewHtml: inlinePreviewHtml(state.files),
-        providerError: generated.message,
-        providerCode: generated.code
+        ...(resolved.providerNotice ? { providerError: resolved.providerNotice, usedFallback: resolved.usedFallback } : {})
       }
-    }
-
-    const payload = generated.payload || {}
-    const projectName = slugify(payload.projectName || guessProjectName(prompt || '', projectType))
-    const files = normalizeFiles(payload, prompt || '', projectType)
-    const state = writeProjectState(
-      projectName,
-      projectName,
-      prompt || '',
-      files,
-      generated.providerLabel,
-      providerSelection.modelId || payload.modelId || payload.projectModel || selectedModelId || PROJECT_MODEL
-    )
-
-    return {
-      success: true,
-      state,
-      previewHtml: inlinePreviewHtml(state.files)
+    } catch (error: any) {
+      if (error?.name === 'AbortError') {
+        return { success: false, cancelled: true, error: 'Builder request cancelled.', code: 'REQUEST_CANCELLED' }
+      }
+      throw error
     }
   })
 
-  ipcMain.handle('project-builder-update', async (_, { projectId, prompt, provider }) => {
+  ipcMain.handle('project-builder-update', async (_, { projectId, prompt, provider, requestId }) => {
     const existing = readProjectState(projectId)
+    const intent = classifyBuilderPrompt(prompt || '', existing.files)
+    if (intent === 'NORMAL_CHAT' || intent === 'EXPLAIN_CODE' || intent === 'RUN_COMMAND') {
+      return {
+        success: false,
+        error:
+          intent === 'RUN_COMMAND'
+            ? 'This prompt looks like a terminal command. Use Builder terminal controls instead.'
+            : 'This prompt is chat/explanation only. Use Builder chat route instead.',
+        code: intent === 'RUN_COMMAND' ? 'BUILDER_COMMAND_ONLY' : 'BUILDER_CHAT_ONLY'
+      }
+    }
     const kiloService = getKiloService()
     const providerSelection = parseProviderSelection(provider, existing.metadata.providerUsed)
+    debugBuilder('update-request', {
+      intent,
+      provider: providerSelection.provider,
+      modelId: providerSelection.modelId || existing.metadata.modelUsed,
+      promptLength: (prompt || '').length,
+      requestId,
+      projectId
+    })
     const kiloRequested =
       (typeof provider === 'string' && provider === 'kilo') || shouldUseKiloForPrompt(prompt || '')
 
@@ -1619,33 +2189,49 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
       ? 'Kilo Code disabled hai. Existing coding provider se continue kar raha hoon.'
       : ''
 
-    const generated = await callProvider(providerSelection, prompt || '', existing.files)
+    const generated = await runAbortableBuilderRequest(requestId, (signal) =>
+      callProvider(providerSelection, prompt || '', existing.files, signal)
+    )
     if (!generated.success) {
-      const fallbackFiles = normalizeFiles({ files: existing.files }, prompt || '', existing.metadata.type)
-      const state = writeProjectState(
-        projectId,
-        existing.metadata.name,
-        prompt || '',
-        fallbackFiles.length ? fallbackFiles : existing.files,
-        existing.metadata.providerUsed || generated.providerLabel,
-        providerSelection.modelId || existing.metadata.modelUsed || PROJECT_MODEL
-      )
+      debugBuilder('update-result', {
+        provider: providerSelection.provider,
+        success: false,
+        code: generated.code,
+        cancelled: generated.cancelled || false
+      })
       return {
-        success: true,
-        state,
-        previewHtml: inlinePreviewHtml(state.files),
+        success: false,
+        cancelled: generated.cancelled,
+        error: kiloDisabledMessage ? `${kiloDisabledMessage}\n\n${generated.message}` : generated.message,
+        code: generated.code,
         providerError: kiloDisabledMessage ? `${kiloDisabledMessage}\n\n${generated.message}` : generated.message,
         providerCode: generated.code
       }
     }
 
     const payload = generated.payload || {}
-    const files = normalizeFiles(payload, prompt || '', existing.metadata.type)
+    const resolved = await runAbortableBuilderRequest(requestId, (signal) =>
+      resolveGeneratedProjectFiles(
+        providerSelection,
+        prompt || '',
+        existing.metadata.type,
+        generated,
+        existing.files,
+        signal
+      )
+    )
+    debugBuilder('update-result', {
+      provider: providerSelection.provider,
+      success: true,
+      responseParsedAsFiles: !resolved.usedFallback,
+      fallbackUsed: resolved.usedFallback,
+      files: resolved.files.length
+    })
     const state = writeProjectState(
       projectId,
       existing.metadata.name,
       prompt || '',
-      files,
+      resolved.files,
       generated.providerLabel,
       providerSelection.modelId || payload.modelId || payload.projectModel || existing.metadata.modelUsed || PROJECT_MODEL
     )
@@ -1654,8 +2240,54 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
       success: true,
       state,
       previewHtml: inlinePreviewHtml(state.files),
-      ...(kiloDisabledMessage ? { message: kiloDisabledMessage } : {})
+      ...(kiloDisabledMessage ? { message: kiloDisabledMessage } : {}),
+      ...(resolved.providerNotice ? { providerError: resolved.providerNotice, usedFallback: resolved.usedFallback } : {})
     }
+  })
+
+  ipcMain.handle('project-builder-chat', async (_, { prompt, provider = 'kiloGateway', projectId, requestId }) => {
+    const currentFiles = projectId ? readProjectState(projectId).files : undefined
+    const providerSelection = parseProviderSelection(provider)
+    debugBuilder('chat-request', {
+      provider: providerSelection.provider,
+      modelId: providerSelection.modelId || getProviderDefaults(providerSelection.provider).modelId,
+      promptLength: (prompt || '').length,
+      requestId,
+      projectId
+    })
+    try {
+      const result = await runAbortableBuilderRequest(requestId, (signal) =>
+        callProviderChat(providerSelection, prompt || '', currentFiles, signal)
+      )
+      if (!result.success) {
+        return {
+          success: false,
+          cancelled: result.cancelled,
+          error: result.message,
+          code: result.code,
+          providerLabel: result.providerLabel
+        }
+      }
+
+      return {
+        success: true,
+        message: result.content,
+        providerLabel: result.providerLabel
+      }
+    } catch (error: any) {
+      if (error?.name === 'AbortError') {
+        return { success: false, cancelled: true, error: 'Builder request cancelled.', code: 'REQUEST_CANCELLED' }
+      }
+      throw error
+    }
+  })
+
+  ipcMain.handle('project-builder-cancel', async (_, { requestId }) => {
+    if (requestId && activeBuilderRequests.has(requestId)) {
+      activeBuilderRequests.get(requestId)?.abort()
+      activeBuilderRequests.delete(requestId)
+    }
+    return { success: true }
   })
 
   ipcMain.handle('project-builder-save-file', async (_, { projectId, filePath, content }) => {

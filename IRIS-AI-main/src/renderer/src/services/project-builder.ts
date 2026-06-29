@@ -32,6 +32,17 @@ export type BuilderProjectResponse = {
   providerCode?: string
   exportPath?: string
   projectPath?: string
+  cancelled?: boolean
+  usedFallback?: boolean
+}
+
+export type BuilderChatResponse = {
+  success: boolean
+  message?: string
+  error?: string
+  code?: string
+  providerLabel?: string
+  cancelled?: boolean
 }
 
 export type BuilderTerminalResult = {
@@ -104,17 +115,42 @@ export type BuilderProviderSelection =
 
 export const createBuilderProject = async (
   prompt: string,
-  provider: BuilderProviderSelection = 'kiloGateway'
+  provider: BuilderProviderSelection = 'kiloGateway',
+  requestId?: string
 ): Promise<BuilderProjectResponse> => {
-  return window.electron.ipcRenderer.invoke('project-builder-create', { prompt, provider })
+  return window.electron.ipcRenderer.invoke('project-builder-create', { prompt, provider, requestId })
 }
 
 export const updateBuilderProject = async (
   projectId: string,
   prompt: string,
-  provider?: BuilderProviderSelection
+  provider?: BuilderProviderSelection,
+  requestId?: string
 ): Promise<BuilderProjectResponse> => {
-  return window.electron.ipcRenderer.invoke('project-builder-update', { projectId, prompt, provider })
+  return window.electron.ipcRenderer.invoke('project-builder-update', {
+    projectId,
+    prompt,
+    provider,
+    requestId
+  })
+}
+
+export const chatBuilderPrompt = async (
+  prompt: string,
+  provider: BuilderProviderSelection = 'kiloGateway',
+  projectId?: string,
+  requestId?: string
+): Promise<BuilderChatResponse> => {
+  return window.electron.ipcRenderer.invoke('project-builder-chat', {
+    prompt,
+    provider,
+    projectId,
+    requestId
+  })
+}
+
+export const cancelBuilderRequest = async (requestId: string): Promise<{ success: boolean }> => {
+  return window.electron.ipcRenderer.invoke('project-builder-cancel', { requestId })
 }
 
 export const readBuilderProject = async (projectId: string): Promise<BuilderProjectResponse> => {
