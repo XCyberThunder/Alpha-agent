@@ -1,9 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
+  ArrowUp,
+  AtSign,
+  Blocks,
   Bot,
+  Bug,
   Check,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Code2,
   Copy,
   Download,
@@ -11,19 +17,29 @@ import {
   Eye,
   EyeOff,
   FileCode,
+  Files,
   FileJson,
   Folder,
   FolderOpen,
+  GitBranch,
+  History,
   Key,
   Loader2,
   MoreHorizontal,
+  Paperclip,
   Plus,
   Send,
+  Settings,
   ShieldAlert,
   ShieldCheck,
+  Sparkles,
+  Square,
+  TerminalSquare,
   Unlock,
   User,
-  X
+  Wrench,
+  X,
+  Minus
 } from 'lucide-react'
 
 import {
@@ -48,7 +64,7 @@ import {
   updateBuilderProject
 } from '@renderer/services/project-builder'
 
-type RightPanel = 'preview' | 'code'
+type RightPanel = 'preview' | 'code' | 'split'
 type PermissionMode = 'ask' | 'approve' | 'full'
 type KnownProvider =
   | 'glm'
@@ -141,6 +157,8 @@ type ChatStore = {
 }
 
 type SidebarMenuSection = 'project' | 'more' | null
+type ActivityView = 'explorer' | 'search' | 'agent' | 'scm' | 'debug' | 'extensions' | 'account'
+type AgentMode = 'agent' | 'edit' | 'build'
 
 const MIN_WIDTH = 220
 const MAX_WIDTH = 560
@@ -242,6 +260,15 @@ const BUILDER_THEME_CSS = `
 }
 .builderwindow-root ::-webkit-scrollbar-thumb {
   background: rgba(255,255,255,0.08);
+  border-radius: 999px;
+}
+.builderwindow-root .alpha-scroll::-webkit-scrollbar,
+.builderwindow-root .alpha-scroll-thin::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.builderwindow-root .alpha-scroll-thin::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.12);
   border-radius: 999px;
 }
 .builderwindow-root textarea,
@@ -384,6 +411,17 @@ const BUILDER_THEME_CSS = `
   box-shadow:
     0 8px 24px rgba(0,0,0,0.28),
     inset 0 1px 0 rgba(255,255,255,0.03);
+}
+.builderwindow-root .activity-indicator {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 2px;
+  height: 24px;
+  background: #10b981;
+  border-radius: 0 2px 2px 0;
+  box-shadow: 0 0 8px rgba(16,185,129,0.35);
 }
 @keyframes builder-fade-scale {
   from {
@@ -826,17 +864,20 @@ function AccessMenu({
     setOpen((value) => !value)
   }
 
+  const currentOption = ACCESS_OPTIONS.find((option) => option.id === value) || ACCESS_OPTIONS[0]
+  const CurrentIcon = currentOption.icon
+
   return (
     <>
       <button
         ref={buttonRef}
         onClick={handleToggle}
-        className="minimal-control flex h-6.5 items-center gap-1 rounded-md px-1.5 text-[11px] font-medium"
+        className="flex h-6 max-w-[120px] items-center gap-1 rounded-md px-1.5 text-[11px] font-medium text-[#cccccc] transition-colors hover:bg-white/[0.08]"
         aria-expanded={open}
         aria-label="Access permissions"
       >
-        <Key size={11} />
-        <span>Access</span>
+        <CurrentIcon size={11} className={currentOption.color} />
+        <span className="truncate">{value === 'approve' ? 'Safe' : value === 'full' ? 'Full' : 'Ask'}</span>
         <ChevronDown size={9} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
       {open &&
@@ -1003,11 +1044,12 @@ function ModelSelector({
           setOpen((state) => !state)
           setShowForm(false)
         }}
-        className="minimal-control flex h-6.5 w-[74px] min-w-0 max-w-[74px] items-center justify-between gap-1 rounded-md px-1.5 text-[11px] font-medium"
+        className="flex h-6 max-w-[170px] items-center gap-1 rounded-md px-1.5 text-[11px] font-medium text-[#cccccc] transition-colors hover:bg-white/[0.08]"
         title={current?.label || 'Select model'}
         aria-label={current?.label || 'Select model'}
       >
-        <span className="truncate">Model</span>
+        <Sparkles size={11} className="shrink-0 text-[#10b981]" />
+        <span className="truncate">{current?.label || 'Model'}</span>
         <ChevronDown size={9} className={`shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
 
@@ -1323,7 +1365,8 @@ function CodePanel({
   onSelectFile,
   content,
   onContentChange,
-  onDownloadFile
+  onDownloadFile,
+  showExplorer = true
 }: {
   tree: FileTreeNodeData[]
   selectedFilePath: string[]
@@ -1331,33 +1374,36 @@ function CodePanel({
   content: string
   onContentChange: (value: string) => void
   onDownloadFile: (path: string[], name: string) => void
+  showExplorer?: boolean
 }) {
   const fileName = selectedFilePath[selectedFilePath.length - 1]
   const ext = fileName?.split('.').pop()?.toLowerCase()
 
   return (
     <div className="flex h-full">
-      <div
-        className="codex-editor-gutter codex-editor-border w-48 shrink-0 overflow-y-auto border-r py-2"
-        style={{ scrollbarWidth: 'thin', scrollbarColor: 'rgba(255,255,255,0.06) transparent' }}
-      >
-        <div className="px-3 pb-1.5">
-            <span className="text-[9px] font-semibold uppercase tracking-[0.18em] text-muted-foreground/60">
-              Explorer
-            </span>
+      {showExplorer && (
+        <div
+          className="codex-editor-gutter codex-editor-border w-48 shrink-0 overflow-y-auto border-r py-2"
+          style={{ scrollbarWidth: 'thin', scrollbarColor: 'rgba(255,255,255,0.06) transparent' }}
+        >
+          <div className="px-3 pb-1.5">
+              <span className="text-[9px] font-semibold uppercase tracking-[0.18em] text-muted-foreground/60">
+                Explorer
+              </span>
+          </div>
+          {tree.map((node) => (
+            <FileTreeNode
+              key={node.name}
+              node={node}
+              depth={0}
+              selectedPath={selectedFilePath}
+              onSelect={onSelectFile}
+              onDownload={onDownloadFile}
+              currentPath={[]}
+            />
+          ))}
         </div>
-        {tree.map((node) => (
-          <FileTreeNode
-            key={node.name}
-            node={node}
-            depth={0}
-            selectedPath={selectedFilePath}
-            onSelect={onSelectFile}
-            onDownload={onDownloadFile}
-            currentPath={[]}
-          />
-        ))}
-      </div>
+      )}
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="codex-editor-tab codex-editor-border flex shrink-0 items-center overflow-x-auto border-b">
           <div className="flex items-center gap-2 border-r border-white/5 bg-black/10 px-3 py-1.5">
@@ -1384,6 +1430,8 @@ function CodePanel({
 
 export default function BuilderWindow() {
   const [panel, setPanel] = useState<RightPanel>('preview')
+  const [activityView, setActivityView] = useState<ActivityView>('agent')
+  const [agentMode, setAgentMode] = useState<AgentMode>('agent')
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [selectedModel, setSelectedModel] = useState<string>('kiloGateway-default')
@@ -1404,6 +1452,7 @@ export default function BuilderWindow() {
   const [toasts, setToasts] = useState<BuilderToast[]>([])
   const [activeSessionId, setActiveSessionId] = useState('')
   const [recentSessions, setRecentSessions] = useState<ChatSession[]>([])
+  const [openTabs, setOpenTabs] = useState<string[]>([])
   const [sidebarMenuOpen, setSidebarMenuOpen] = useState(false)
   const [sidebarMenuSection, setSidebarMenuSection] = useState<SidebarMenuSection>(null)
   const [statusText, setStatusText] = useState('Describe what you want to build.')
@@ -1568,10 +1617,19 @@ export default function BuilderWindow() {
 
   const selectedFileKey = selectedFilePath.length ? arrayPathToString(selectedFilePath) : ''
   const selectedContent = selectedFileKey ? fileContents[selectedFileKey] || '' : ''
+  const selectedFileName = selectedFilePath[selectedFilePath.length - 1] || ''
+  const breadcrumbPath = selectedFileKey
+    ? ['ALPHA-MAIN', ...(selectedFileKey ? selectedFileKey.split('/') : [])].join(' / ')
+    : projectState?.metadata.projectPath || 'ALPHA-MAIN / Builder'
   const activePreviewHtml = useMemo(() => {
     if (previewHtml) return previewHtml
     return projectState ? inlinePreviewHtml(projectState.files) : ''
   }, [previewHtml, projectState])
+
+  useEffect(() => {
+    if (!selectedFileKey) return
+    setOpenTabs((current) => (current.includes(selectedFileKey) ? current : [...current, selectedFileKey]))
+  }, [selectedFileKey])
 
   const loadStatuses = useCallback(async () => {
     try {
@@ -2205,6 +2263,24 @@ export default function BuilderWindow() {
   const handleSelectFile = (pathParts: string[]) => {
     setSelectedFilePath(pathParts)
     setPanel('code')
+    setActivityView('agent')
+    const fileKey = arrayPathToString(pathParts)
+    setOpenTabs((current) => (current.includes(fileKey) ? current : [...current, fileKey]))
+  }
+
+  const handleCloseTab = (filePath: string) => {
+    setOpenTabs((current) => {
+      const next = current.filter((tab) => tab !== filePath)
+      if (selectedFileKey === filePath) {
+        const fallback = next[next.length - 1]
+        if (fallback) {
+          setSelectedFilePath(stringPathToArray(fallback))
+        } else {
+          setSelectedFilePath([])
+        }
+      }
+      return next
+    })
   }
 
   const handleEditorChange = (value: string) => {
@@ -2215,6 +2291,613 @@ export default function BuilderWindow() {
 
   const currentModelLabel =
     providerOptions.find((option) => option.id === selectedModel)?.label || 'Kilo Gateway / laguna-m.1:free'
+  const activeProviderLabel = providerDisplayName(projectState?.metadata.providerUsed || selectedModel)
+  const activeTabs = openTabs.map((path) => ({
+    path,
+    name: path.split('/').pop() || path,
+    dirty: Boolean(dirtyFiles[path])
+  }))
+  const showWorkspace = Boolean(projectState || messages.length || sending || previewHtml)
+  const sidebarTitleMap: Record<Exclude<ActivityView, 'agent' | 'explorer'>, string> = {
+    search: 'Search',
+    scm: 'Source Control',
+    debug: 'Run & Debug',
+    extensions: 'Extensions',
+    account: 'Profile'
+  }
+
+  if (true) {
+    return (
+      <>
+        <style>{BUILDER_THEME_CSS}</style>
+        <div className="pointer-events-none fixed bottom-4 right-4 z-[9999] flex flex-col gap-2">
+          {toasts.map((toastItem) => (
+            <div
+              key={toastItem.id}
+              className={`min-w-[220px] rounded-xl border px-3 py-2 text-sm shadow-2xl ${
+                toastItem.tone === 'success'
+                  ? 'border-emerald-500/25 bg-[#18181e] text-emerald-200'
+                  : 'border-red-500/25 bg-[#18181e] text-red-200'
+              }`}
+            >
+              {toastItem.message}
+            </div>
+          ))}
+        </div>
+
+        <div className="builderwindow-root flex h-screen w-full flex-col overflow-hidden bg-[#1e1e1e] text-[#cccccc]">
+          <div className="flex h-9 shrink-0 items-center justify-between border-b border-black/40 bg-[#3c3c3c] px-2 text-[12px] text-[#cccccc]">
+            <div className="flex items-center gap-3">
+              <span className="text-[12px] font-medium text-white">ALPHA</span>
+              <div className="hidden items-center gap-3 md:flex">
+                {['File', 'Edit', 'Selection', 'View', 'Go', 'Run', 'Terminal', 'Help'].map((item) => (
+                  <button key={item} className="text-[12px] text-[#cccccc] transition-colors hover:text-white">
+                    {item}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="absolute left-1/2 top-1/2 hidden w-[min(440px,40vw)] -translate-x-1/2 -translate-y-1/2 md:flex">
+              <div className="flex h-6 w-full items-center gap-2 rounded-md border border-[#4a4a4a] bg-[#252526] px-2 text-[12px] text-[#969696]">
+                <Sparkles size={12} className="text-[#10b981]" />
+                <span className="truncate">ALPHA Builder Workspace</span>
+                <ChevronDown size={12} className="ml-auto text-[#6a6a6a]" />
+              </div>
+            </div>
+            <div className="flex items-center">
+              <button className="flex h-9 w-11 items-center justify-center text-[#cccccc] transition-colors hover:bg-white/10">
+                <Minus size={14} strokeWidth={1.5} />
+              </button>
+              <button className="flex h-9 w-11 items-center justify-center text-[#cccccc] transition-colors hover:bg-white/10">
+                <Square size={11} strokeWidth={1.5} />
+              </button>
+              <button className="flex h-9 w-11 items-center justify-center text-[#cccccc] transition-colors hover:bg-[#e81123] hover:text-white">
+                <X size={14} strokeWidth={1.5} />
+              </button>
+            </div>
+          </div>
+
+          <div className="flex min-h-0 flex-1">
+            <div className="relative z-20 flex h-full w-12 shrink-0 flex-col items-center justify-between border-r border-black/40 bg-[#333333] py-1">
+              <div className="flex flex-col items-center gap-0.5">
+                {[
+                  { id: 'explorer', icon: Files, label: 'Explorer' },
+                  { id: 'search', icon: EyeOff, label: 'Search' },
+                  { id: 'agent', icon: Sparkles, label: 'Coding Agent' },
+                  { id: 'scm', icon: GitBranch, label: 'Source Control' },
+                  { id: 'debug', icon: Bug, label: 'Run and Debug' },
+                  { id: 'extensions', icon: Blocks, label: 'Extensions' }
+                ].map((item) => {
+                  const Icon = item.icon
+                  const active = activityView === (item.id as ActivityView)
+                  return (
+                    <button
+                      key={item.id}
+                      title={item.label}
+                      onClick={() => setActivityView(item.id as ActivityView)}
+                      className={`group relative flex h-10 w-10 items-center justify-center rounded-md transition-colors ${
+                        active ? 'text-white' : 'text-[#858585] hover:text-[#cccccc]'
+                      }`}
+                    >
+                      {active && <span className="activity-indicator" />}
+                      <Icon size={18} strokeWidth={1.6} className={item.id === 'agent' ? 'text-[#10b981]' : ''} />
+                    </button>
+                  )
+                })}
+              </div>
+              <div className="flex flex-col items-center gap-0.5">
+                <button
+                  title="Account"
+                  onClick={() => setActivityView('account')}
+                  className={`group relative flex h-10 w-10 items-center justify-center rounded-md transition-colors ${
+                    activityView === 'account' ? 'text-white' : 'text-[#858585] hover:text-[#cccccc]'
+                  }`}
+                >
+                  {activityView === 'account' && <span className="activity-indicator" />}
+                  <User size={18} strokeWidth={1.6} />
+                </button>
+                <button title="Settings" className="group relative flex h-10 w-10 items-center justify-center rounded-md text-[#858585] transition-colors hover:text-[#cccccc]">
+                  <Settings size={18} strokeWidth={1.6} />
+                </button>
+              </div>
+            </div>
+
+            <aside className={`shrink-0 border-r border-[#2b2b2b] bg-[#252526] ${activityView === 'agent' ? 'w-[320px]' : 'w-[280px]'}`}>
+              {activityView === 'agent' ? (
+                <div className="flex h-full flex-col bg-[#252526] text-[#cccccc]">
+                  <div className="relative flex h-9 shrink-0 items-center justify-between border-b border-[#1f1f1f] px-3">
+                    <div className="flex items-center gap-1.5">
+                      <Sparkles size={14} className="text-[#10b981]" />
+                      <span className="text-[11px] font-semibold tracking-[0.14em] text-[#cccccc]">CODING AGENT</span>
+                    </div>
+                    <div className="flex items-center gap-0.5">
+                      <button onClick={handleNewChat} className="rounded p-1 text-[#858585] transition-colors hover:bg-white/[0.06] hover:text-[#cccccc]" title="New chat">
+                        <Plus size={14} />
+                      </button>
+                      <button className="rounded p-1 text-[#858585] transition-colors hover:bg-white/[0.06] hover:text-[#cccccc]" title="History">
+                        <History size={14} />
+                      </button>
+                      <button
+                        ref={sidebarMenuButtonRef}
+                        onClick={() => {
+                          setSidebarMenuOpen((value) => !value)
+                          setSidebarMenuSection(null)
+                        }}
+                        className="rounded p-1 text-[#858585] transition-colors hover:bg-white/[0.06] hover:text-[#cccccc]"
+                        title="More"
+                      >
+                        <MoreHorizontal size={14} />
+                      </button>
+                    </div>
+
+                    {sidebarMenuOpen && (
+                      <div ref={sidebarMenuRef} className="menu-surface absolute right-2 top-[calc(100%-2px)] z-50 w-[260px] rounded-xl p-2 text-xs shadow-2xl">
+                        <div className="space-y-1">
+                          <button onClick={handleNewChat} className="flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-[#cccccc] transition-colors hover:bg-[#2a2d2e]">
+                            <span>New chat</span>
+                            <span className="text-[10px] text-[#858585]">Clear thread</span>
+                          </button>
+                          <button
+                            onClick={() => setSidebarMenuSection((current) => (current === 'project' ? null : 'project'))}
+                            className="flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-[#cccccc] transition-colors hover:bg-[#2a2d2e]"
+                          >
+                            <span>Project</span>
+                            <ChevronDown size={12} className={`transition-transform ${sidebarMenuSection === 'project' ? 'rotate-180' : ''}`} />
+                          </button>
+                          {sidebarMenuSection === 'project' && (
+                            <div className="space-y-1 px-2 pb-1">
+                              <button onClick={handleOpenProjectFolder} className="flex w-full rounded-lg px-3 py-2 text-left text-[#969696] transition-colors hover:bg-[#2a2d2e] hover:text-white">Open folder</button>
+                              <button onClick={handleOpenProjectInVsCode} className="flex w-full rounded-lg px-3 py-2 text-left text-[#969696] transition-colors hover:bg-[#2a2d2e] hover:text-white">Open in VS Code</button>
+                              <button onClick={handleCopyProjectPath} className="flex w-full rounded-lg px-3 py-2 text-left text-[#969696] transition-colors hover:bg-[#2a2d2e] hover:text-white">Copy path</button>
+                              <button onClick={handleZipDownload} className="flex w-full rounded-lg px-3 py-2 text-left text-[#969696] transition-colors hover:bg-[#2a2d2e] hover:text-white">Download ZIP</button>
+                            </div>
+                          )}
+                          <button
+                            onClick={() => setSidebarMenuSection((current) => (current === 'more' ? null : 'more'))}
+                            className="flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-[#cccccc] transition-colors hover:bg-[#2a2d2e]"
+                          >
+                            <span>More</span>
+                            <ChevronDown size={12} className={`transition-transform ${sidebarMenuSection === 'more' ? 'rotate-180' : ''}`} />
+                          </button>
+                          {sidebarMenuSection === 'more' && (
+                            <div className="space-y-1 px-2 pb-1">
+                              <button onClick={() => { void loadStatuses(); setStatusText('Model statuses refreshed.'); setSidebarMenuOpen(false) }} className="flex w-full rounded-lg px-3 py-2 text-left text-[#969696] transition-colors hover:bg-[#2a2d2e] hover:text-white">Refresh models</button>
+                              <button onClick={() => { handleOpenInWindow(); setSidebarMenuOpen(false) }} className="flex w-full rounded-lg px-3 py-2 text-left text-[#969696] transition-colors hover:bg-[#2a2d2e] hover:text-white">Open current panel</button>
+                            </div>
+                          )}
+                          <div className="pt-2">
+                            <div className="px-3 pb-1 text-[10px] uppercase tracking-[0.24em] text-[#6a6a6a]">Recent chats</div>
+                            <div className="space-y-1">
+                              {recentSessions.length ? (
+                                recentSessions.map((session) => (
+                                  <button
+                                    key={session.id}
+                                    onClick={() => {
+                                      setSidebarMenuOpen(false)
+                                      void loadSessionById(session.id)
+                                    }}
+                                    className={`flex w-full flex-col rounded-lg px-3 py-2 text-left transition-colors ${
+                                      session.id === activeSessionId ? 'bg-[#37373d] text-white' : 'text-[#969696] hover:bg-[#2a2d2e] hover:text-white'
+                                    }`}
+                                  >
+                                    <span className="truncate text-[12px]">{session.title}</span>
+                                    <span className="text-[10px] opacity-60">
+                                      {new Date(session.updatedAt).toLocaleDateString([], { month: 'short', day: 'numeric' })}
+                                    </span>
+                                  </button>
+                                ))
+                              ) : (
+                                <div className="px-3 py-2 text-[11px] text-[#858585]">No saved Builder chats yet.</div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex shrink-0 items-center gap-1 px-3 py-2">
+                    {[
+                      { id: 'agent', label: 'Agent', icon: Sparkles },
+                      { id: 'edit', label: 'Edit', icon: Code2 },
+                      { id: 'build', label: 'Build', icon: Wrench }
+                    ].map((mode) => {
+                      const ModeIcon = mode.icon
+                      const active = agentMode === mode.id
+                      return (
+                        <button
+                          key={mode.id}
+                          onClick={() => setAgentMode(mode.id as AgentMode)}
+                          className={`flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
+                            active
+                              ? 'bg-[#10b981]/15 text-[#10b981] ring-1 ring-[#10b981]/30'
+                              : 'text-[#858585] hover:bg-white/[0.05] hover:text-[#cccccc]'
+                          }`}
+                        >
+                          <ModeIcon size={12} />
+                          {mode.label}
+                        </button>
+                      )
+                    })}
+                  </div>
+
+                  <div className="alpha-scroll-thin flex-1 overflow-y-auto px-3 pb-3">
+                    {messages.length === 0 && !sending ? (
+                      <>
+                        <div className="flex flex-col items-center justify-center px-3 py-8 text-center">
+                          <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[#10b981]/15 ring-1 ring-[#10b981]/30">
+                            <Bot size={22} className="text-[#10b981]" />
+                          </div>
+                          <div className="mt-3 text-[14px] font-semibold text-[#ffffff]">Start a new session</div>
+                          <div className="mt-1 max-w-[260px] text-[11.5px] leading-relaxed text-[#858585]">
+                            Ask ALPHA to build features, refactor code, or explain the current project.
+                          </div>
+                        </div>
+                        <div className="space-y-1.5">
+                          <div className="px-1 text-[10px] uppercase tracking-wider text-[#6a6a6a]">Quick actions</div>
+                          {[
+                            'Explain selected code',
+                            'Find bugs in this file',
+                            'Generate unit tests',
+                            'Refactor selection'
+                          ].map((label) => (
+                            <button
+                              key={label}
+                              onClick={() => setInput(label)}
+                              className="flex w-full items-center gap-2 rounded-md border border-[#3c3c3c] bg-[#1e1e1e] px-2 py-1.5 text-left text-[12px] text-[#cccccc] hover:border-[#10b981]/30 hover:bg-[#10b981]/[0.04]"
+                            >
+                              <Sparkles size={13} className="shrink-0 text-[#10b981]" />
+                              <span className="flex-1 truncate">{label}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </>
+                    ) : (
+                      <div className="space-y-3 py-2">
+                        {messages.map((message) => (
+                          <ChatMessage key={message.id} message={message} />
+                        ))}
+                        {sending && (
+                          <div className="flex gap-2">
+                            <div className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-white/8 bg-[#232326] text-zinc-300">
+                              <Bot size={9} />
+                            </div>
+                            <div className="accent-status flex items-center gap-2 rounded-2xl rounded-tl-md px-3 py-1.5">
+                              <Loader2 size={10} className="animate-spin text-cyan-300" />
+                              <span className="text-[11px] text-muted-foreground">{statusText}</span>
+                            </div>
+                          </div>
+                        )}
+                        <div ref={messagesEndRef} />
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="shrink-0 border-t border-[#1f1f1f] px-3 pb-3 pt-2">
+                    <div className="rounded-lg border border-[#3c3c3c] bg-[#1e1e1e] p-2 shadow-inner">
+                      <textarea
+                        value={input}
+                        onChange={(event) => setInput(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' && !event.shiftKey) {
+                            event.preventDefault()
+                            handleSend()
+                          }
+                        }}
+                        placeholder="Ask ALPHA to build something..."
+                        rows={2}
+                        className="w-full resize-none bg-transparent text-[13px] leading-relaxed text-[#cccccc] placeholder:text-[#6a6a6a] focus:outline-none"
+                      />
+                      <div className="mt-1.5 flex items-center justify-between">
+                        <div className="flex items-center gap-1">
+                          <button onClick={handlePickAttachment} className="rounded p-1 text-[#858585] transition-colors hover:bg-white/[0.06] hover:text-[#cccccc]" title={attachments.length ? `${attachments.length} attachment(s) selected` : 'Attach file'}>
+                            <Paperclip size={13} />
+                          </button>
+                          <button className="rounded p-1 text-[#858585] transition-colors hover:bg-white/[0.06] hover:text-[#cccccc]" title="Mention">
+                            <AtSign size={13} />
+                          </button>
+                        </div>
+                        <button
+                          onClick={sending ? () => void handleStop() : handleSend}
+                          disabled={sending ? false : !input.trim()}
+                          className={`flex h-6 w-6 items-center justify-center rounded-md transition-colors ${
+                            sending || input.trim()
+                              ? 'bg-[#10b981] text-black hover:bg-[#34d399]'
+                              : 'bg-white/[0.05] text-[#6a6a6a]'
+                          }`}
+                          aria-label={sending ? 'Stop builder request' : 'Send builder prompt'}
+                        >
+                          {sending ? <X size={14} strokeWidth={2.4} /> : <ArrowUp size={14} strokeWidth={2.4} />}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="mt-2 flex h-7 items-center justify-between gap-1">
+                      <ModelSelector value={selectedModel} onChange={setSelectedModel} options={providerOptions} onAddCustom={handleAddCustomModel} />
+                      <div className="flex items-center gap-1">
+                        <span className="h-3 w-px bg-[#3c3c3c]" />
+                        <AccessMenu value={permissionMode} onChange={setPermissionMode} />
+                        <span className="h-3 w-px bg-[#3c3c3c]" />
+                        <button className="flex h-6 items-center gap-1 rounded-md px-1.5 text-[11px] text-[#858585] transition-colors hover:bg-white/[0.08] hover:text-[#cccccc]" title="Local workspace">
+                          <TerminalSquare size={11} />
+                          Local
+                          <ChevronDown size={11} />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : activityView === 'explorer' ? (
+                <div className="flex h-full flex-col bg-[#252526] text-[#cccccc]">
+                  <div className="flex h-9 items-center justify-between px-3 pt-2">
+                    <span className="text-[11px] font-semibold tracking-[0.14em] text-[#cccccc]">EXPLORER</span>
+                    <MoreHorizontal size={14} className="text-[#858585]" />
+                  </div>
+                  <div className="group flex h-6 items-center justify-between pl-2 pr-3 text-[11px] font-bold tracking-[0.12em] text-[#cccccc]">
+                    <button className="flex items-center gap-1 hover:text-white">
+                      <ChevronDown size={14} className="text-[#858585]" />
+                      {projectState?.metadata.name || 'ALPHA-BUILDER-PROJECT'}
+                    </button>
+                  </div>
+                  <div className="alpha-scroll-thin min-h-0 flex-1 overflow-y-auto pb-3 text-[13px] leading-6">
+                    {fileTree.length ? (
+                      fileTree.map((node) => (
+                        <FileTreeNode
+                          key={node.name}
+                          node={node}
+                          depth={1}
+                          selectedPath={selectedFilePath}
+                          onSelect={handleSelectFile}
+                          onDownload={handleFileDownload}
+                          currentPath={[]}
+                        />
+                      ))
+                    ) : (
+                      <div className="px-4 py-6 text-[12px] text-[#858585]">Project files will appear here.</div>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="flex h-full flex-col bg-[#252526] text-[#cccccc]">
+                  <div className="flex h-9 items-center justify-between px-3 pt-2">
+                    <span className="text-[11px] font-semibold tracking-[0.14em] text-[#cccccc]">
+                      {sidebarTitleMap[activityView as Exclude<ActivityView, 'agent' | 'explorer'>]}
+                    </span>
+                  </div>
+                  <div className="alpha-scroll-thin flex-1 overflow-y-auto px-3 pb-3 text-[12.5px] text-[#858585]">
+                    <div className="rounded-md border border-[#3c3c3c] bg-[#1e1e1e] p-3">
+                      This panel is ready for Builder logic expansion. Current project and provider state remain active while you work in the main editor.
+                    </div>
+                  </div>
+                </div>
+              )}
+            </aside>
+
+            <main className="flex min-w-0 flex-1 flex-col bg-[#1e1e1e]">
+              <div className="flex h-9 items-stretch border-b border-black/40 bg-[#252526]">
+                <div className="flex items-center gap-0.5 pl-1 pr-1">
+                  <button className="rounded p-1 text-[#858585] hover:bg-white/[0.06] hover:text-[#cccccc]">
+                    <ChevronLeft size={14} />
+                  </button>
+                  <button className="rounded p-1 text-[#858585] hover:bg-white/[0.06] hover:text-[#cccccc]">
+                    <ChevronRight size={14} />
+                  </button>
+                </div>
+
+                <div className="alpha-scroll-thin flex flex-1 items-stretch overflow-x-auto">
+                  {activeTabs.length ? (
+                    activeTabs.map((tab) => {
+                      const isActive = tab.path === selectedFileKey
+                      return (
+                        <button
+                          key={tab.path}
+                          onClick={() => setSelectedFilePath(stringPathToArray(tab.path))}
+                          className={`group relative flex min-w-0 items-center gap-2 border-r border-black/30 px-3 text-[12.5px] transition-colors ${
+                            isActive ? 'bg-[#1e1e1e] text-white' : 'bg-[#2d2d2d] text-[#969696] hover:text-[#cccccc]'
+                          }`}
+                        >
+                          {isActive && <span className="absolute left-0 top-0 h-[1.5px] w-full bg-[#007acc]" />}
+                          <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-sm bg-[#519aba]/20 text-[7.5px] font-bold text-[#519aba]">
+                            {tab.name.split('.').pop()?.toUpperCase().slice(0, 3) || 'TXT'}
+                          </span>
+                          <span className="truncate">{tab.name}</span>
+                          {tab.dirty ? <span className="ml-1 h-1.5 w-1.5 shrink-0 rounded-full bg-[#e2c08d]" /> : null}
+                          <span
+                            role="button"
+                            tabIndex={0}
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              handleCloseTab(tab.path)
+                            }}
+                            className="ml-1 flex h-4 w-4 shrink-0 items-center justify-center rounded-sm opacity-0 hover:bg-white/[0.12] group-hover:opacity-100"
+                          >
+                            <X size={12} className="text-[#969696] hover:text-white" />
+                          </span>
+                        </button>
+                      )
+                    })
+                  ) : (
+                    <div className="flex items-center px-3 text-[12px] text-[#6a6a6a]">No open tabs</div>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-1 border-l border-black/30 bg-[#252526] px-2">
+                  {[
+                    { id: 'code', label: 'Code', icon: Code2 },
+                    { id: 'preview', label: 'Preview', icon: Eye },
+                    { id: 'split', label: 'Split', icon: Files }
+                  ].map((mode) => {
+                    const ModeIcon = mode.icon
+                    const active = panel === mode.id
+                    return (
+                      <button
+                        key={mode.id}
+                        onClick={() => setPanel(mode.id as RightPanel)}
+                        className={`flex h-7 items-center gap-1.5 rounded-md px-2 text-[11.5px] font-medium transition-colors ${
+                          active
+                            ? 'bg-[#007acc]/20 text-[#4daafc] ring-1 ring-[#007acc]/40'
+                            : 'text-[#969696] hover:bg-white/[0.06] hover:text-[#cccccc]'
+                        }`}
+                      >
+                        <ModeIcon size={14} strokeWidth={1.8} />
+                        {mode.label}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+
+              <div className="flex h-8 items-center gap-0.5 border-b border-black/40 bg-[#1e1e1e] px-4 text-[12px] text-[#858585]">
+                {breadcrumbPath.split(' / ').map((part, index, array) => (
+                  <div key={`${part}-${index}`} className="flex items-center gap-0.5">
+                    {index > 0 && <ChevronRight size={12} className="text-[#6a6a6a]" />}
+                    <span className={index === array.length - 1 ? 'font-medium text-[#cccccc]' : 'hover:text-[#cccccc]'}>
+                      {part}
+                    </span>
+                  </div>
+                ))}
+                <div className="ml-auto flex items-center gap-3 text-[11px] text-[#6a6a6a]">
+                  <span className="flex items-center gap-1">
+                    <Check size={11} className="text-[#10b981]" />
+                    Builder ready
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <span className="h-1.5 w-1.5 rounded-full bg-[#10b981]" />
+                    {activeProviderLabel}
+                  </span>
+                </div>
+              </div>
+
+              <div className="relative min-h-0 flex-1">
+                {!showWorkspace ? (
+                  <div className="alpha-scroll h-full w-full overflow-auto bg-[#1e1e1e]">
+                    <div className="mx-auto max-w-[1000px] px-10 py-10">
+                      <div className="mb-8 flex items-center gap-3">
+                        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#10b981]/15 ring-1 ring-[#10b981]/30">
+                          <Sparkles size={20} className="text-[#10b981]" />
+                        </div>
+                        <div>
+                          <h1 className="text-[22px] font-light text-[#ffffff]">
+                            <span className="font-semibold">ALPHA</span> Builder Workspace
+                          </h1>
+                          <p className="text-[12px] text-[#858585]">Describe what you want to build.</p>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-1 gap-8 md:grid-cols-2">
+                        <div className="space-y-6">
+                          <section>
+                            <h2 className="mb-2 text-[14px] font-semibold text-[#ffffff]">Start</h2>
+                            <div className="space-y-0.5">
+                              {['New chat', 'Open Folder...', 'Open Project...', 'Explain current project'].map((label) => (
+                                <button
+                                  key={label}
+                                  onClick={() => {
+                                    if (label === 'New chat') handleNewChat()
+                                    if (label === 'Open Folder...') void handleOpenProjectFolder()
+                                    if (label === 'Open Project...' && recentSessions[0]) void loadSessionById(recentSessions[0].id)
+                                    if (label === 'Explain current project') setInput('Explain this project')
+                                  }}
+                                  className="flex w-full items-center gap-2.5 rounded-md px-2 py-1 text-left text-[13px] text-[#cccccc] hover:bg-white/[0.05]"
+                                >
+                                  <Sparkles size={15} className="text-[#4daafc]" />
+                                  {label}
+                                </button>
+                              ))}
+                            </div>
+                          </section>
+                        </div>
+                        <div>
+                          <h2 className="mb-2 text-[14px] font-semibold text-[#ffffff]">Recent chats</h2>
+                          <div className="space-y-2">
+                            {(recentSessions.length ? recentSessions : []).slice(0, 5).map((session) => (
+                              <button
+                                key={session.id}
+                                onClick={() => void loadSessionById(session.id)}
+                                className="flex w-full items-start gap-3 rounded-md border border-[#3c3c3c] bg-[#252526] p-3 text-left hover:border-[#4daafc]/40 hover:bg-[#2a2d2e]"
+                              >
+                                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-[#1e1e1e] ring-1 ring-[#3c3c3c]">
+                                  <Bot size={16} className="text-[#4daafc]" />
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <div className="truncate text-[13px] font-medium text-[#ffffff]">{session.title}</div>
+                                  <div className="mt-0.5 text-[12px] leading-snug text-[#858585]">
+                                    {new Date(session.updatedAt).toLocaleString()}
+                                  </div>
+                                </div>
+                              </button>
+                            ))}
+                            {!recentSessions.length && (
+                              <div className="rounded-md border border-[#3c3c3c] bg-[#252526] p-3 text-[12px] text-[#858585]">
+                                No Builder sessions yet. Start from the Coding Agent panel.
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ) : panel === 'preview' ? (
+                  <PreviewPanel previewMarkup={activePreviewHtml} loading={previewLoading} />
+                ) : panel === 'code' ? (
+                  <CodePanel
+                    tree={fileTree}
+                    selectedFilePath={selectedFilePath}
+                    onSelectFile={handleSelectFile}
+                    content={selectedContent}
+                    onContentChange={handleEditorChange}
+                    onDownloadFile={handleFileDownload}
+                    showExplorer={activityView !== 'explorer'}
+                  />
+                ) : (
+                  <div className="flex h-full">
+                    <div className="min-w-0 flex-1 border-r border-[#2b2b2b]">
+                      <CodePanel
+                        tree={fileTree}
+                        selectedFilePath={selectedFilePath}
+                        onSelectFile={handleSelectFile}
+                        content={selectedContent}
+                        onContentChange={handleEditorChange}
+                        onDownloadFile={handleFileDownload}
+                        showExplorer={activityView !== 'explorer'}
+                      />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <PreviewPanel previewMarkup={activePreviewHtml} loading={previewLoading} />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex h-6 items-stretch justify-between bg-[#007acc] text-[11px] text-white">
+                <div className="flex items-stretch">
+                  <button className="flex h-full items-center gap-1 px-2 transition-colors hover:bg-white/15">
+                    <GitBranch size={12} strokeWidth={1.8} />
+                    <span>{projectState?.metadata.name || 'alpha-builder'}</span>
+                  </button>
+                  <button className="flex h-full items-center gap-1 px-2 transition-colors hover:bg-white/15">
+                    <Sparkles size={12} strokeWidth={1.8} />
+                    <span>{activeProviderLabel}</span>
+                  </button>
+                </div>
+                <div className="flex items-stretch">
+                  <button className="flex h-full items-center gap-1 px-2 transition-colors hover:bg-white/15">
+                    <span>Ln 1, Col 1</span>
+                  </button>
+                  <button className="flex h-full items-center gap-1 px-2 transition-colors hover:bg-white/15">
+                    <span>UTF-8</span>
+                  </button>
+                  <button className="flex h-full items-center gap-1 px-2 transition-colors hover:bg-white/15">
+                    <Check size={12} strokeWidth={1.8} />
+                    <span>{statusText}</span>
+                  </button>
+                </div>
+              </div>
+            </main>
+          </div>
+        </div>
+      </>
+    )
+  }
 
   return (
     <>
