@@ -39,6 +39,7 @@ import registerAdbHandlers from './logic/adb-manager'
 import registerRealityHacker from './logic/reality-hacker'
 import registerAlphaCoder from './services/alpha-coder'
 import registerBuilderWindow from './services/builder-window'
+import registerBuilderWorkspace from './services/builder-workspace'
 import registerProjectBuilder from './services/project-builder'
 import registerPlaywrightBrowser from './services/playwright-browser'
 import registerKiloBridge from './kilo/kilo-bridge'
@@ -1028,6 +1029,7 @@ app.whenReady().then(() => {
   registerAlphaCoder({ ipcMain, app })
   registerKiloBridge({ ipcMain })
   registerProjectBuilder({ ipcMain })
+  registerBuilderWorkspace(ipcMain)
   registerBuilderWindow({
     ipcMain,
     rendererUrl: process.env['ELECTRON_RENDERER_URL'],
