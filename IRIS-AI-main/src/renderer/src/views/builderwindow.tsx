@@ -29,6 +29,7 @@ import {
 import {
   BuilderAttachmentDescriptor,
   BuilderModelStatuses,
+  BuilderProviderSelection,
   BuilderProjectFile,
   BuilderProjectState,
   createBuilderProject,
@@ -46,7 +47,15 @@ import {
 
 type RightPanel = 'preview' | 'code'
 type PermissionMode = 'ask' | 'approve' | 'full'
-type KnownProvider = 'glm' | 'zai' | 'gemini' | 'openrouter' | 'kimi' | 'groq'
+type KnownProvider =
+  | 'glm'
+  | 'zai'
+  | 'gemini'
+  | 'openrouter'
+  | 'kimi'
+  | 'groq'
+  | 'kiloGateway'
+  | 'routeway'
 
 type WindowPayload = {
   state?: BuilderProjectState
@@ -73,19 +82,29 @@ type FileTreeNodeData = {
 
 type ProviderOption = {
   id: string
-  provider: string
+  provider: KnownProvider
   label: string
   badge: string | null
   configured: boolean
+  slot?: number
+  modelId?: string
+  baseUrl?: string
+  providerMode?: string
+  apiKey?: string
+  groupLabel?: string
   isCustom?: boolean
 }
+
+type BuilderProviderSelectionPayload = Extract<BuilderProviderSelection, { provider: string }>
 
 type CustomModel = {
   id: string
   label: string
-  provider: string
+  provider: KnownProvider
   modelName: string
   baseUrl: string
+  apiKey: string
+  providerMode?: string
 }
 
 type BuilderToast = {
@@ -120,6 +139,8 @@ const BUILDER_TOAST_EVENT = 'alpha-builder-toast'
 const CHAT_SESSIONS_STORAGE_KEY = 'alpha_builder_chat_sessions_v1'
 
 const PROVIDER_LABELS: Record<KnownProvider, string> = {
+  kiloGateway: 'Kilo Gateway',
+  routeway: 'Routeway',
   glm: 'GLM 5.2',
   zai: 'Z.AI',
   gemini: 'Gemini',
@@ -129,6 +150,11 @@ const PROVIDER_LABELS: Record<KnownProvider, string> = {
 }
 
 const PROVIDER_GROUP_ALIASES: Record<string, KnownProvider> = {
+  kiloGateway: 'kiloGateway',
+  'kilo gateway': 'kiloGateway',
+  kilo: 'kiloGateway',
+  routeway: 'routeway',
+  'routeway.ai': 'routeway',
   glm: 'glm',
   'glm 5.2': 'glm',
   zenmux: 'glm',
@@ -189,9 +215,9 @@ const BUILDER_THEME_CSS = `
   --danger: #ef4444;
   color: var(--foreground);
   background:
-    radial-gradient(circle at 0% 0%, rgba(124,108,247,0.10), transparent 18%),
-    radial-gradient(circle at 100% 100%, rgba(47,129,247,0.08), transparent 18%),
-    linear-gradient(180deg, #1c1c1c 0%, #161616 18%, #121212 100%);
+    radial-gradient(circle at 12% 0%, rgba(124,108,247,0.12), transparent 20%),
+    radial-gradient(circle at 100% 100%, rgba(47,129,247,0.09), transparent 18%),
+    linear-gradient(180deg, #1e1b1d 0%, #17171a 18%, #121214 100%);
   font-family: Geist, Inter, system-ui, sans-serif;
 }
 .builderwindow-root * {
@@ -219,12 +245,13 @@ const BUILDER_THEME_CSS = `
 }
 .builderwindow-root .glass-panel {
   background:
-    linear-gradient(180deg, rgba(31,31,31,0.96), rgba(21,21,21,0.98));
+    linear-gradient(180deg, rgba(31,31,34,0.97), rgba(20,20,23,0.985));
   border: 1px solid rgba(255,255,255,0.08);
   box-shadow:
-    0 18px 40px rgba(0,0,0,0.28),
-    inset 0 1px 0 rgba(255,255,255,0.035);
-  backdrop-filter: blur(14px);
+    0 20px 44px rgba(0,0,0,0.30),
+    inset 0 1px 0 rgba(255,255,255,0.04),
+    inset 0 0 0 1px rgba(124,108,247,0.02);
+  backdrop-filter: blur(16px);
 }
 .builderwindow-root .premium-button {
   background:
@@ -296,26 +323,31 @@ const BUILDER_THEME_CSS = `
   border-color: rgba(255,255,255,0.06);
 }
 .builderwindow-root .minimal-control {
-  background: transparent;
-  border: 1px solid rgba(255,255,255,0.06);
+  background: linear-gradient(180deg, rgba(255,255,255,0.015), rgba(255,255,255,0.008));
+  border: 1px solid rgba(255,255,255,0.055);
   box-shadow: none;
-  color: #a1a1aa;
-  backdrop-filter: blur(8px);
+  color: #b5b5be;
+  backdrop-filter: blur(10px);
   transition:
     background-color 140ms ease-out,
     border-color 140ms ease-out,
     color 140ms ease-out,
-    transform 140ms ease-out;
+    transform 140ms ease-out,
+    box-shadow 140ms ease-out;
 }
 .builderwindow-root .minimal-control:hover {
-  background: rgba(255,255,255,0.035);
-  border-color: rgba(255,255,255,0.1);
+  background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.02));
+  border-color: rgba(255,255,255,0.11);
   color: #f4f4f5;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.025);
 }
 .builderwindow-root .minimal-control-active {
-  background: rgba(59,130,246,0.1);
-  border-color: rgba(59,130,246,0.22);
+  background: linear-gradient(180deg, rgba(59,130,246,0.14), rgba(124,108,247,0.12));
+  border-color: rgba(96,165,250,0.24);
   color: #ffffff;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.03),
+    0 0 0 1px rgba(59,130,246,0.05);
 }
 .builderwindow-root .minimal-control-ghost {
   background: transparent;
@@ -332,13 +364,16 @@ const BUILDER_THEME_CSS = `
 }
 .builderwindow-root .preview-surface {
   background:
-    radial-gradient(circle at 50% 22%, rgba(59,130,246,0.08), transparent 24%),
+    radial-gradient(circle at 50% 18%, rgba(56,189,248,0.08), transparent 22%),
+    radial-gradient(circle at 82% 10%, rgba(124,108,247,0.06), transparent 20%),
     linear-gradient(180deg, #101114 0%, #0b0c10 100%);
 }
 .builderwindow-root .preview-chip {
-  background: rgba(12,14,18,0.82);
-  border: 1px solid rgba(255,255,255,0.08);
-  box-shadow: 0 8px 24px rgba(0,0,0,0.28);
+  background: rgba(12,14,18,0.78);
+  border: 1px solid rgba(255,255,255,0.075);
+  box-shadow:
+    0 8px 24px rgba(0,0,0,0.28),
+    inset 0 1px 0 rgba(255,255,255,0.03);
 }
 @keyframes builder-fade-scale {
   from {
@@ -367,7 +402,22 @@ const normalizeProvider = (value?: string | null): KnownProvider | null => {
 const providerDisplayName = (value?: string | null) => {
   const normalized = normalizeProvider(value)
   if (normalized) return PROVIDER_LABELS[normalized]
-  return value || 'GLM 5.2'
+  return value || 'Kilo Gateway'
+}
+
+const toProviderSelection = (
+  option?: ProviderOption | null
+): BuilderProviderSelectionPayload | undefined => {
+  if (!option) return undefined
+  return {
+    provider: option.provider,
+    slot: option.slot,
+    modelId: option.modelId,
+    baseUrl: option.baseUrl,
+    providerMode: option.providerMode,
+    apiKey: option.apiKey,
+    label: option.label
+  }
 }
 
 const languageForFile = (filePath: string) => {
@@ -862,12 +912,20 @@ function ModelSelector({
       return
     }
 
+    const normalizedProvider = normalizeProvider(form.provider)
+    if (!normalizedProvider) {
+      setFormError('Known provider name required')
+      return
+    }
+
     const customModel: CustomModel = {
       id: `custom-${Date.now()}`,
       label: `${form.provider.trim()} / ${form.name.trim()}`,
-      provider: form.provider.trim(),
+      provider: normalizedProvider,
       modelName: form.name.trim(),
-      baseUrl: form.baseUrl.trim()
+      baseUrl: form.baseUrl.trim(),
+      apiKey: form.apiKey.trim(),
+      providerMode: 'openai-compatible'
     }
 
     onAddCustom(customModel)
@@ -916,30 +974,39 @@ function ModelSelector({
           {!showForm ? (
             <>
               <div className="max-h-[48vh] overflow-y-auto px-1.5">
-              {options.map((option) => (
-                <button
-                  key={option.id}
-                  onClick={() => {
-                    onChange(option.id)
-                    setOpen(false)
-                  }}
-                  className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-[11px] transition-colors ${
-                    option.id === value
-                      ? 'bg-gradient-to-r from-cyan-500/12 via-violet-500/10 to-pink-500/12 text-foreground'
-                      : 'text-muted-foreground hover:bg-white/5 hover:text-foreground'
-                  }`}
-                >
-                  <span className="truncate font-medium">{option.label}</span>
-                  <span className="flex shrink-0 items-center gap-1.5">
-                    {option.id === value && <Check size={11} className="text-primary" />}
-                    {option.badge && (
-                      <span className="rounded-md bg-primary/16 px-1.5 py-0.5 text-[9px] font-semibold text-primary">
-                        {option.badge}
+              {options.map((option, index) => {
+                const showGroupLabel = index === 0 || option.groupLabel !== options[index - 1]?.groupLabel
+                return (
+                  <div key={option.id}>
+                    {showGroupLabel && option.groupLabel ? (
+                      <div className="px-2.5 pb-1 pt-2 text-[9px] font-semibold uppercase tracking-[0.18em] text-muted-foreground/55">
+                        {option.groupLabel}
+                      </div>
+                    ) : null}
+                    <button
+                      onClick={() => {
+                        onChange(option.id)
+                        setOpen(false)
+                      }}
+                      className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-[11px] transition-colors ${
+                        option.id === value
+                          ? 'bg-gradient-to-r from-cyan-500/12 via-violet-500/10 to-pink-500/12 text-foreground'
+                          : 'text-muted-foreground hover:bg-white/5 hover:text-foreground'
+                      }`}
+                    >
+                      <span className="truncate font-medium">{option.label}</span>
+                      <span className="flex shrink-0 items-center gap-1.5">
+                        {option.id === value && <Check size={11} className="text-primary" />}
+                        {option.badge && (
+                          <span className="rounded-md bg-primary/16 px-1.5 py-0.5 text-[9px] font-semibold text-primary">
+                            {option.badge}
+                          </span>
+                        )}
                       </span>
-                    )}
-                  </span>
-                </button>
-              ))}
+                    </button>
+                  </div>
+                )
+              })}
               </div>
               <div className="mt-1 border-t border-border px-1.5 pt-1">
                 <button
@@ -1266,7 +1333,7 @@ export default function BuilderWindow() {
   const [panel, setPanel] = useState<RightPanel>('preview')
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
-  const [selectedModel, setSelectedModel] = useState<string>('glm')
+  const [selectedModel, setSelectedModel] = useState<string>('kiloGateway-default')
   const [sending, setSending] = useState(false)
   const [selectedFilePath, setSelectedFilePath] = useState<string[]>([])
   const [panelWidth, setPanelWidth] = useState(340)
@@ -1367,22 +1434,63 @@ export default function BuilderWindow() {
   }, [])
 
   const providerOptions = useMemo<ProviderOption[]>(() => {
-    const base: ProviderOption[] = (Object.keys(PROVIDER_LABELS) as KnownProvider[]).map((provider) => {
+    const providerOrder: KnownProvider[] = [
+      'kiloGateway',
+      'glm',
+      'zai',
+      'openrouter',
+      'routeway',
+      'gemini',
+      'kimi',
+      'groq'
+    ]
+
+    const base: ProviderOption[] = providerOrder.flatMap((provider) => {
       const groupKey = provider === 'gemini' ? 'geminiBrain' : provider
       const slots = modelStatuses[groupKey] || []
-      const activeSlot = slots.find((slot) => slot.enabled && slot.hasKey)
-      const firstSlot = slots[0]
-      const configured = Boolean(activeSlot || slots.some((slot) => slot.hasKey))
-      const descriptor = activeSlot || firstSlot
-      const modelId = descriptor?.modelId?.trim()
-      const label = modelId ? `${PROVIDER_LABELS[provider]} / ${modelId}` : PROVIDER_LABELS[provider]
-      return {
-        id: provider,
-        provider,
-        label,
-        badge: configured ? 'Ready' : 'Missing',
-        configured
+      const defaultsByProvider: Record<KnownProvider, { modelId: string; baseUrl?: string; providerMode?: string }> = {
+        kiloGateway: { modelId: 'laguna-m.1:free', baseUrl: 'https://api.kilo.ai/api/gateway', providerMode: 'openai-compatible' },
+        glm: { modelId: 'z-ai/glm-5.2-free', baseUrl: 'https://zenmux.ai/api/v1', providerMode: 'openai-compatible' },
+        zai: { modelId: 'glm-4.5v', baseUrl: 'https://api.z.ai/api/coding/paas/v4', providerMode: 'zai-coding' },
+        openrouter: { modelId: 'openai/gpt-4.1-mini', baseUrl: 'https://openrouter.ai/api/v1', providerMode: 'openai-compatible' },
+        routeway: { modelId: '', baseUrl: 'https://api.routeway.ai/v1', providerMode: 'openai-compatible' },
+        gemini: { modelId: 'gemini-2.5-flash' },
+        kimi: { modelId: 'moonshot-v1-8k' },
+        groq: { modelId: 'llama-3.1-8b-instant' }
       }
+      const defaults = defaultsByProvider[provider]
+      const configuredSlots = slots
+        .filter((slot) => slot.enabled && (slot.hasKey || provider === 'gemini'))
+        .map<ProviderOption>((slot) => ({
+          id: `${provider}-slot-${slot.slot}`,
+          provider,
+          label: `${PROVIDER_LABELS[provider]} / ${slot.modelId?.trim() || defaults.modelId || `Slot ${slot.slot}`}`,
+          badge: slot.hasKey || provider === 'gemini' ? 'Configured' : 'Not configured',
+          configured: Boolean(slot.hasKey || provider === 'gemini'),
+          slot: slot.slot,
+          modelId: slot.modelId?.trim() || defaults.modelId,
+          baseUrl: slot.baseUrl?.trim() || defaults.baseUrl,
+          providerMode: slot.providerMode?.trim() || defaults.providerMode,
+          groupLabel: PROVIDER_LABELS[provider]
+        }))
+
+      const defaultOption: ProviderOption = {
+        id: `${provider}-default`,
+        provider,
+        label: `${PROVIDER_LABELS[provider]} / ${defaults.modelId || 'Select model'}`,
+        badge: configuredSlots.length ? 'Configured' : 'Not configured',
+        configured: configuredSlots.length > 0 || provider === 'gemini',
+        modelId: defaults.modelId,
+        baseUrl: defaults.baseUrl,
+        providerMode: defaults.providerMode,
+        groupLabel: PROVIDER_LABELS[provider]
+      }
+
+      return provider === 'kiloGateway'
+        ? [defaultOption, ...configuredSlots]
+        : configuredSlots.length
+          ? configuredSlots
+          : [defaultOption]
     })
 
     const custom = customModels.map<ProviderOption>((model) => ({
@@ -1391,6 +1499,11 @@ export default function BuilderWindow() {
       label: model.label,
       badge: 'Custom',
       configured: true,
+      modelId: model.modelName,
+      baseUrl: model.baseUrl,
+      providerMode: model.providerMode || 'openai-compatible',
+      apiKey: model.apiKey,
+      groupLabel: 'Custom Compatible',
       isCustom: true
     }))
 
@@ -1481,12 +1594,13 @@ export default function BuilderWindow() {
           setDirtyFiles({})
           setPreviewHtml(response.previewHtml || inlinePreviewHtml(response.state.files))
           setSelectedFilePath(response.state.files[0] ? stringPathToArray(response.state.files[0].path) : [])
-          const provider = normalizeProvider(response.state.metadata.providerUsed) || normalizeProvider(response.state.metadata.modelUsed)
-          if (provider) setSelectedModel(provider)
         }
       }
 
       setActiveSessionId(session.id)
+      if (session.providerId) {
+        setSelectedModel(session.providerId)
+      }
       setMessages(hydrateMessages(session.messages))
       setStatusText(`Loaded chat: ${session.title}`)
       refreshRecentSessions(session.projectId)
@@ -1519,9 +1633,6 @@ export default function BuilderWindow() {
         return state.files[0] ? stringPathToArray(state.files[0].path) : []
       })
 
-      const provider = normalizeProvider(state.metadata.providerUsed) || normalizeProvider(state.metadata.modelUsed)
-      if (provider) setSelectedModel(provider)
-
       if (preserveCurrentChat) return
 
       const store = readChatStore()
@@ -1531,6 +1642,9 @@ export default function BuilderWindow() {
 
       if (latestProjectSession) {
         setActiveSessionId(latestProjectSession.id)
+        if (latestProjectSession.providerId) {
+          setSelectedModel(latestProjectSession.providerId)
+        }
         setMessages(hydrateMessages(latestProjectSession.messages))
         return
       }
@@ -1597,19 +1711,18 @@ export default function BuilderWindow() {
       setInput('')
       setStatusText(`Sending request to ${providerDisplayName(providerId || selectedModel)}...`)
 
-      const providerChoice =
-        normalizeProvider(providerId) ||
-        normalizeProvider(
-          providerOptions.find((option) => option.id === providerId)?.provider ||
-            providerOptions.find((option) => option.id === selectedModel)?.provider ||
-            selectedModel
-        ) ||
-        'glm'
+      const selectedOption =
+        providerOptions.find((option) => option.id === providerId) ||
+        providerOptions.find((option) => option.id === selectedModel) ||
+        providerOptions[0]
+      const providerChoice = toProviderSelection(selectedOption)
 
       const messageText = `${trimmed}${summarizeAttachments(attachments)}`
       if (import.meta.env.DEV) {
         console.info('[BUILDER_DEBUG] submit', {
-          provider: providerChoice,
+          provider: providerChoice?.provider,
+          modelId: providerChoice?.modelId || '',
+          slot: providerChoice?.slot || null,
           selectedModel,
           promptLength: trimmed.length,
           attachments: attachments.length,
@@ -1643,7 +1756,7 @@ export default function BuilderWindow() {
                 content: response.providerError
                   ? `Provider returned fallback shell.\n\n${response.providerError}`
                   : `Applied changes with **${providerDisplayName(
-                      response.state?.metadata.providerUsed || providerChoice
+                      response.state?.metadata.providerUsed || providerChoice?.label || providerChoice?.provider
                     )}**.`,
                 timestamp: new Date()
               }
@@ -1668,7 +1781,7 @@ export default function BuilderWindow() {
                       id: `assistant-${makeId()}`,
                       role: 'assistant',
                       content: `Applied changes with **${providerDisplayName(
-                        response.state.metadata.providerUsed || providerChoice
+                        response.state.metadata.providerUsed || providerChoice?.label || providerChoice?.provider
                       )}**.`,
                       timestamp: new Date()
                     }
@@ -1954,7 +2067,8 @@ export default function BuilderWindow() {
     setDirtyFiles((current) => ({ ...current, [selectedFileKey]: true }))
   }
 
-  const currentModelLabel = providerOptions.find((option) => option.id === selectedModel)?.label || 'GLM 5.2'
+  const currentModelLabel =
+    providerOptions.find((option) => option.id === selectedModel)?.label || 'Kilo Gateway / laguna-m.1:free'
 
   return (
     <>
@@ -2127,7 +2241,7 @@ export default function BuilderWindow() {
                 <div className="flex min-w-0 items-center gap-1">
                   <button
                     onClick={handlePickAttachment}
-                    className="minimal-control flex h-6.5 w-6.5 items-center justify-center rounded-md"
+                    className="minimal-control flex h-6 w-6 items-center justify-center rounded-md"
                     aria-label="Add attachment"
                     title={attachments.length ? `${attachments.length} attachment(s) selected` : 'Add attachment'}
                   >
@@ -2172,58 +2286,58 @@ export default function BuilderWindow() {
         </div>
 
         <div className="glass-panel flex min-w-0 flex-1 flex-col bg-background">
-          <div className="flex shrink-0 items-center justify-between border-b border-border bg-[rgba(22,22,24,0.96)] px-4 py-2">
-            <div className="flex items-center gap-2.5">
-              <div className="flex items-center gap-0.5 rounded-md border border-white/6 bg-transparent p-0.5">
+          <div className="flex shrink-0 items-center justify-between border-b border-border bg-[linear-gradient(180deg,rgba(26,26,29,0.98),rgba(21,21,24,0.98))] px-3.5 py-1.5">
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-0.5 rounded-md border border-white/6 bg-black/10 p-0.5">
               {(['preview', 'code'] as RightPanel[]).map((mode) => (
                 <button
                   key={mode}
                   onClick={() => setPanel(mode)}
-                  className={`flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] font-medium transition-all ${
+                  className={`flex items-center gap-1 rounded-md px-1.5 py-[4px] text-[10.5px] font-medium transition-all ${
                     panel === mode
                       ? 'minimal-control minimal-control-active'
                       : 'minimal-control minimal-control-ghost hover:bg-white/5 hover:text-foreground'
                   }`}
                 >
-                  {mode === 'preview' ? <Eye size={12} /> : <Code2 size={12} />}
+                  {mode === 'preview' ? <Eye size={11} /> : <Code2 size={11} />}
                   <span className="capitalize">{mode}</span>
                 </button>
               ))}
             </div>
               <div className="min-w-0">
-                <div className="truncate text-sm font-semibold text-white">
+                <div className="truncate text-[13px] font-semibold text-white">
                   {projectState?.metadata.name || 'Blank workspace'}
                 </div>
-                <div className="truncate text-[11px] text-zinc-500">
+                <div className="truncate text-[10px] text-zinc-500">
                   {providerDisplayName(projectState?.metadata.providerUsed || selectedModel)} · {projectState?.files.length || 0} files
                 </div>
               </div>
             </div>
 
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-1">
               <button
                 onClick={handleOpenInWindow}
                 title="Open in window"
-                className="minimal-control flex h-6.5 w-6.5 items-center justify-center rounded-md"
+                className="minimal-control flex h-6 w-6 items-center justify-center rounded-md"
               >
-                <ExternalLink size={11} />
+                <ExternalLink size={10} />
               </button>
 
               {panel === 'code' && (
                 <button
                   onClick={handleCopy}
-                  className="minimal-control flex h-6.5 items-center gap-1 rounded-md px-2 text-[11px] font-medium"
+                  className="minimal-control flex h-6 items-center gap-1 rounded-md px-1.5 text-[10.5px] font-medium"
                 >
-                  {copied ? <Check size={11} className="text-green-400" /> : <Copy size={11} />}
+                  {copied ? <Check size={10} className="text-green-400" /> : <Copy size={10} />}
                   <span>{copied ? 'Copied' : 'Copy'}</span>
                 </button>
               )}
 
               <button
                 onClick={handleZipDownload}
-                className="minimal-control flex h-6.5 items-center gap-1 rounded-md px-2 text-[11px] font-medium text-foreground"
+                className="minimal-control flex h-6 items-center gap-1 rounded-md px-1.5 text-[10.5px] font-medium text-foreground"
               >
-                <Download size={11} />
+                <Download size={10} />
                 <span>Download</span>
               </button>
             </div>

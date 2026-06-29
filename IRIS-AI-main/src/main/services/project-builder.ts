@@ -35,13 +35,31 @@ type KeySlot = {
   status: string
   baseUrl?: string
   modelId?: string
-  providerMode?: 'zenmux' | 'custom-compatible' | 'direct-zai' | 'zai-chat' | 'zai-coding' | 'zai-compatible'
+  providerMode?: string
   lastFailureReason?: string
   lastCheckedAt?: string
   lastUsedAt?: string
 }
 
-type ProviderName = 'glm' | 'zai' | 'gemini' | 'openrouter' | 'kimi' | 'groq'
+type ProviderName =
+  | 'glm'
+  | 'zai'
+  | 'gemini'
+  | 'openrouter'
+  | 'kimi'
+  | 'groq'
+  | 'kiloGateway'
+  | 'routeway'
+
+type ProviderSelection = {
+  provider: ProviderName
+  slot?: number
+  modelId?: string
+  baseUrl?: string
+  providerMode?: string
+  apiKey?: string
+  label?: string
+}
 
 type ProviderResult =
   | { success: true; payload: any; providerLabel: string }
@@ -55,6 +73,11 @@ const ZENMUX_DEFAULT_BASE_URL = 'https://zenmux.ai/api/v1'
 const ZENMUX_DEFAULT_MODEL_ID = 'z-ai/glm-5.2-free'
 const ZAI_DEFAULT_BASE_URL = 'https://api.z.ai/api/coding/paas/v4'
 const ZAI_DEFAULT_MODEL_ID = 'glm-4.5v'
+const OPENROUTER_DEFAULT_BASE_URL = 'https://openrouter.ai/api/v1'
+const OPENROUTER_DEFAULT_MODEL_ID = 'openai/gpt-4.1-mini'
+const KILO_GATEWAY_DEFAULT_BASE_URL = 'https://api.kilo.ai/api/gateway'
+const KILO_GATEWAY_DEFAULT_MODEL_ID = 'laguna-m.1:free'
+const ROUTEWAY_DEFAULT_BASE_URL = 'https://api.routeway.ai/v1'
 
 const projectTypeRules: Array<{ type: string; pattern: RegExp }> = [
   { type: 'website', pattern: /\b(discord|youtube|chrome|browser ui|video platform|community app|chat app)\b/i },
@@ -111,6 +134,8 @@ const debugBuilder = (stage: string, payload: Record<string, unknown>) => {
 const shouldUseKiloForPrompt = (prompt: string) => kiloExecutionPromptPattern.test(prompt || '')
 
 const resolveProviderName = (provider: string | undefined, providerUsed: string): ProviderName => {
+  if (provider === 'kiloGateway') return 'kiloGateway'
+  if (provider === 'routeway') return 'routeway'
   if (provider === 'zai') return 'zai'
   if (provider === 'gemini') return 'gemini'
   if (provider === 'openrouter') return 'openrouter'
@@ -119,6 +144,8 @@ const resolveProviderName = (provider: string | undefined, providerUsed: string)
   if (provider === 'glm') return 'glm'
 
   const normalized = (providerUsed || '').toLowerCase()
+  if (normalized.includes('kilo gateway')) return 'kiloGateway'
+  if (normalized.includes('routeway')) return 'routeway'
   if (normalized.includes('gemini')) return 'gemini'
   if (normalized.includes('z.ai')) return 'zai'
   if (normalized.includes('openrouter')) return 'openrouter'
@@ -462,6 +489,50 @@ const normalizeCompatibleBaseUrl = (baseUrl: string) => {
   return trimmed.endsWith('/chat/completions') ? trimmed : `${trimmed}/chat/completions`
 }
 
+const parseProviderSelection = (
+  provider: ProviderSelection | ProviderName | string | undefined,
+  providerUsed?: string
+): ProviderSelection => {
+  if (provider && typeof provider === 'object' && 'provider' in provider) {
+    return {
+      provider: provider.provider,
+      slot: provider.slot,
+      modelId: provider.modelId,
+      baseUrl: provider.baseUrl,
+      providerMode: provider.providerMode,
+      apiKey: provider.apiKey,
+      label: provider.label
+    }
+  }
+
+  return {
+    provider: resolveProviderName(typeof provider === 'string' ? provider : undefined, providerUsed || '')
+  }
+}
+
+const getProviderDefaults = (provider: ProviderName) => {
+  switch (provider) {
+    case 'glm':
+      return { baseUrl: ZENMUX_DEFAULT_BASE_URL, modelId: ZENMUX_DEFAULT_MODEL_ID, providerMode: 'openai-compatible' }
+    case 'zai':
+      return { baseUrl: ZAI_DEFAULT_BASE_URL, modelId: ZAI_DEFAULT_MODEL_ID, providerMode: 'zai-coding' }
+    case 'openrouter':
+      return { baseUrl: OPENROUTER_DEFAULT_BASE_URL, modelId: OPENROUTER_DEFAULT_MODEL_ID, providerMode: 'openai-compatible' }
+    case 'kiloGateway':
+      return { baseUrl: KILO_GATEWAY_DEFAULT_BASE_URL, modelId: KILO_GATEWAY_DEFAULT_MODEL_ID, providerMode: 'openai-compatible' }
+    case 'routeway':
+      return { baseUrl: ROUTEWAY_DEFAULT_BASE_URL, modelId: '', providerMode: 'openai-compatible' }
+    case 'groq':
+      return { baseUrl: 'https://api.groq.com/openai/v1', modelId: 'llama-3.1-8b-instant', providerMode: 'openai-compatible' }
+    case 'kimi':
+      return { baseUrl: 'https://api.moonshot.ai/v1', modelId: 'moonshot-v1-8k', providerMode: 'openai-compatible' }
+    case 'gemini':
+      return { baseUrl: '', modelId: 'gemini-2.5-flash', providerMode: 'gemini-native' }
+    default:
+      return { baseUrl: '', modelId: '', providerMode: '' }
+  }
+}
+
 const normalizeGeminiText = (data: any) =>
   (data?.candidates?.[0]?.content?.parts || [])
     .map((part: any) => part?.text || '')
@@ -676,6 +747,132 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
         : slot
     )
   }
+
+  const normalizeCompatibleSlots = (
+    secureData: Record<string, any>,
+    group: 'openrouter' | 'kiloGateway' | 'routeway'
+  ): KeySlot[] => {
+    const keySlots = secureData.keySlots || {}
+    const slots = Array.isArray(keySlots[group]) ? keySlots[group] : []
+    const defaults = getProviderDefaults(group)
+    const slotCount = group === 'openrouter' ? 6 : 3
+    keySlots[group] = Array.from({ length: slotCount }, (_, index) => index + 1).map((slot) => {
+      const existing = slots.find((item: KeySlot) => item?.slot === slot) || {}
+      return {
+        slot,
+        key: existing.key || '',
+        enabled: typeof existing.enabled === 'boolean' ? existing.enabled : true,
+        status: existing.status || (existing.key ? 'available' : 'empty'),
+        baseUrl:
+          typeof existing.baseUrl === 'string' && existing.baseUrl.trim()
+            ? existing.baseUrl.trim()
+            : defaults.baseUrl,
+        modelId:
+          typeof existing.modelId === 'string' && existing.modelId.trim()
+            ? existing.modelId.trim()
+            : defaults.modelId,
+        providerMode:
+          typeof existing.providerMode === 'string' && existing.providerMode.trim()
+            ? existing.providerMode.trim()
+            : defaults.providerMode,
+        lastFailureReason: existing.lastFailureReason || '',
+        lastCheckedAt: existing.lastCheckedAt || '',
+        lastUsedAt: existing.lastUsedAt || ''
+      }
+    })
+    secureData.keySlots = keySlots
+    return keySlots[group]
+  }
+
+  const getConfiguredCompatibleSlot = (
+    secureData: Record<string, any>,
+    group: 'openrouter' | 'kiloGateway' | 'routeway',
+    preferredSlot?: number
+  ) => {
+    const slots = normalizeCompatibleSlots(secureData, group)
+    const usable = slots.filter((slot) => slot.enabled && decryptVaultValue(slot.key))
+    if (!usable.length) return null
+    const selected =
+      usable.find((slot) => slot.slot === preferredSlot && slot.status !== 'failed' && slot.status !== 'rate-limited') ||
+      usable.find((slot) => slot.status === 'active') ||
+      usable.find((slot) => slot.status === 'available') ||
+      usable[0]
+    selected.lastUsedAt = new Date().toISOString()
+    return selected
+  }
+
+  const markActiveCompatibleSlot = (
+    secureData: Record<string, any>,
+    group: 'openrouter' | 'kiloGateway' | 'routeway',
+    slotNumber: number
+  ) => {
+    const slots = normalizeCompatibleSlots(secureData, group)
+    secureData.activeKeySlots = secureData.activeKeySlots || {}
+    secureData.activeKeySlots[group] = slotNumber
+    secureData.keySlots[group] = slots.map((slot) => ({
+      ...slot,
+      status:
+        slot.slot === slotNumber
+          ? 'active'
+          : slot.status === 'active'
+            ? decryptVaultValue(slot.key)
+              ? 'available'
+              : 'empty'
+            : slot.status
+    }))
+  }
+
+  const markCompatibleFailure = (
+    secureData: Record<string, any>,
+    group: 'openrouter' | 'kiloGateway' | 'routeway',
+    slotNumber: number,
+    status: string,
+    reason: string
+  ) => {
+    const slots = normalizeCompatibleSlots(secureData, group)
+    secureData.keySlots[group] = slots.map((slot) =>
+      slot.slot === slotNumber
+        ? {
+            ...slot,
+            status,
+            lastFailureReason: reason,
+            lastCheckedAt: new Date().toISOString()
+          }
+        : slot
+    )
+  }
+
+  const getBasicProviderSlot = (
+    secureData: Record<string, any>,
+    group: 'groq' | 'kimi',
+    preferredSlot?: number
+  ) => {
+    const slots = Array.isArray(secureData.keySlots?.[group]) ? secureData.keySlots[group] : []
+    const usable = slots.filter((slot: KeySlot) => slot?.enabled && decryptVaultValue(slot?.key))
+    if (!usable.length) return null
+    return usable.find((slot: KeySlot) => slot.slot === preferredSlot) || usable[0]
+  }
+
+  const buildSelectedProviderMissingMessage = (selection: ProviderSelection) => {
+    if (selection.provider === 'kiloGateway') {
+      return 'Kilo Gateway API key missing hai. Settings me Kilo Gateway key add karo ya doosra model select karo.'
+    }
+    if (selection.provider === 'gemini') {
+      return 'Gemini key missing hai. Settings me Gemini key add karo ya doosra model select karo.'
+    }
+    const providerLabels: Record<Exclude<ProviderName, 'kiloGateway' | 'gemini'>, string> = {
+      glm: 'GLM',
+      zai: 'Z.AI',
+      openrouter: 'OpenRouter',
+      kimi: 'Kimi',
+      groq: 'Groq',
+      routeway: 'Routeway'
+    }
+    const label =
+      selection.label ||
+      providerLabels[selection.provider]
+    return `${label} configured nahi hai. Model settings check karo ya doosra model select karo.`
+  }
   const buildProjectSystemPrompt = (
     providerLabel: string,
     prompt: string,
@@ -717,6 +914,30 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
     currentFiles?.length
       ? `Update this existing project for the request.\nDetected project type: ${projectType}\nRequest: ${prompt}\nCurrent file tree:\n${currentFiles.map((file) => file.path).join('\n')}\nCurrent files:\n${JSON.stringify(currentFiles.slice(0, 12))}`
       : `Create a project for this request.\nDetected project type: ${projectType}\nRequest: ${prompt}`
+
+  const extractCompatibleResponseText = (data: any) => {
+    const direct = data?.choices?.[0]?.message?.content
+    if (typeof direct === 'string' && direct.trim()) return direct.trim()
+    if (Array.isArray(direct)) {
+      const joined = direct
+        .map((item) => {
+          if (typeof item === 'string') return item
+          if (typeof item?.text === 'string') return item.text
+          return ''
+        })
+        .join('')
+        .trim()
+      if (joined) return joined
+    }
+
+    const outputText =
+      data?.output_text?.trim?.() ||
+      data?.response?.output_text?.trim?.() ||
+      data?.result?.output_text?.trim?.()
+    if (outputText) return outputText
+
+    return ''
+  }
 
   const parseProviderPayload = (content: string, providerLabel: string): ProviderResult => {
     debugBuilder('provider-response', {
@@ -795,10 +1016,16 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
     return parseProviderPayload(normalizeGeminiText(data), 'Gemini')
   }
 
-  const callCompatibleProvider = async (
+  const callOpenAICompatibleProvider = async (
     prompt: string,
     currentFiles: ProjectFile[] | undefined,
-    config: { endpoint: string; key: string; model: string; providerLabel: string; headers?: Record<string, string> }
+    config: {
+      endpoint: string
+      key: string
+      model: string
+      providerLabel: string
+      headers?: Record<string, string>
+    }
   ): Promise<ProviderResult> => {
     const projectType = detectProjectType(prompt)
     debugBuilder('provider-call', {
@@ -839,26 +1066,46 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
     }
 
     const data = await response.json()
-    return parseProviderPayload(data?.choices?.[0]?.message?.content?.trim() || '', config.providerLabel)
+    return parseProviderPayload(extractCompatibleResponseText(data), config.providerLabel)
   }
 
-  const callGlm = async (prompt: string, currentFiles?: ProjectFile[]): Promise<ProviderResult> => {
+  const callGlm = async (
+    prompt: string,
+    currentFiles?: ProjectFile[],
+    selection?: ProviderSelection
+  ): Promise<ProviderResult> => {
     const secureData = readSecureVault()
-    const activeSlot = getActiveGlmSlot(secureData)
-    if (!activeSlot) {
+    const normalizedSlots = normalizeGlmSlots(secureData)
+    const selectedSlot =
+      selection?.slot != null
+        ? normalizedSlots.find(
+            (slot) =>
+              slot.slot === selection.slot &&
+              slot.enabled &&
+              decryptVaultValue(slot.key)
+          ) || null
+        : getActiveGlmSlot(secureData)
+
+    const directKey = selection?.apiKey?.trim() || ''
+    if (!selectedSlot && !directKey) {
       writeSecureVault(secureData)
       return {
         success: false,
         code: 'MISSING_GLM_KEY',
-        message: 'GLM 5.2 key configured nahi hai. Gemini fallback use karu ya pehle GLM key add karni hai?',
-        providerLabel: 'GLM 5.2'
+        message: buildSelectedProviderMissingMessage(selection || { provider: 'glm' }),
+        providerLabel: selection?.label || 'GLM 5.2'
       }
     }
 
-    const key = decryptVaultValue(activeSlot.key).trim()
-    const providerMode = activeSlot.providerMode || 'zenmux'
-    const baseUrl = activeSlot.baseUrl || ZENMUX_DEFAULT_BASE_URL
-    const modelId = activeSlot.modelId || ZENMUX_DEFAULT_MODEL_ID
+    const key = directKey || decryptVaultValue(selectedSlot?.key).trim()
+    const providerMode = selection?.providerMode || selectedSlot?.providerMode || 'openai-compatible'
+    const baseUrl = selection?.baseUrl || selectedSlot?.baseUrl || ZENMUX_DEFAULT_BASE_URL
+    const modelId = selection?.modelId || selectedSlot?.modelId || ZENMUX_DEFAULT_MODEL_ID
+    const providerLabel =
+      selection?.label ||
+      (providerMode === 'zenmux' || providerMode === 'custom-compatible' || providerMode === 'openai-compatible'
+        ? 'ZenMux Compatible GLM'
+        : 'GLM 5.2')
     writeSecureVault(secureData)
 
     const projectType = detectProjectType(prompt)
@@ -891,7 +1138,7 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
           model: modelId,
           temperature: 0.35,
           messages: [
-            { role: 'system', content: buildProjectSystemPrompt('GLM 5.2', prompt, projectType, currentFiles) },
+            { role: 'system', content: buildProjectSystemPrompt(providerLabel, prompt, projectType, currentFiles) },
             { role: 'user', content: buildProjectUserPrompt(prompt, projectType, currentFiles) }
           ]
         })
@@ -900,64 +1147,84 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
       if (!response.ok) {
         const body = await response.text()
         const failureStatus = response.status === 429 ? 'rate-limited' : 'failed'
-        const secureDataOnFailure = readSecureVault()
         const errorMessage =
           response.status === 401 || response.status === 403
             ? 'ZenMux/GLM auth failed. API key ya model ID check karo.'
             : response.status === 404
               ? 'GLM model ID invalid lag raha hai. Settings me model ID check karo.'
               : `GLM provider error ${response.status}: ${body.slice(0, 180)}`
-        markGlmFailure(secureDataOnFailure, activeSlot.slot, failureStatus, errorMessage)
-        rotateGlmSlot(secureDataOnFailure)
-        writeSecureVault(secureDataOnFailure)
+        if (selectedSlot) {
+          const secureDataOnFailure = readSecureVault()
+          markGlmFailure(secureDataOnFailure, selectedSlot.slot, failureStatus, errorMessage)
+          writeSecureVault(secureDataOnFailure)
+        }
         return {
           success: false,
           code: response.status === 404 ? 'GLM_MODEL_INVALID' : response.status === 401 || response.status === 403 ? 'GLM_AUTH_FAILED' : 'GLM_REQUEST_FAILED',
           message: errorMessage,
-          providerLabel: providerMode === 'zenmux' ? 'ZenMux Compatible GLM' : 'GLM 5.2'
+          providerLabel
         }
       }
 
       const data = await response.json()
-      const content = data?.choices?.[0]?.message?.content?.trim() || ''
-      const parsed = parseProviderPayload(content, providerMode === 'zenmux' ? 'ZenMux Compatible GLM' : 'GLM 5.2')
+      const content = extractCompatibleResponseText(data)
+      const parsed = parseProviderPayload(content, providerLabel)
       if (!parsed.success) return parsed
 
-      const secureDataOnSuccess = readSecureVault()
-      markActiveGlmSlot(secureDataOnSuccess, activeSlot.slot)
-      writeSecureVault(secureDataOnSuccess)
+      if (selectedSlot) {
+        const secureDataOnSuccess = readSecureVault()
+        markActiveGlmSlot(secureDataOnSuccess, selectedSlot.slot)
+        writeSecureVault(secureDataOnSuccess)
+      }
       return parsed
     } catch (error: any) {
-      const secureDataOnFailure = readSecureVault()
-      markGlmFailure(secureDataOnFailure, activeSlot.slot, 'failed', error?.message || 'GLM request failed')
-      rotateGlmSlot(secureDataOnFailure)
-      writeSecureVault(secureDataOnFailure)
+      if (selectedSlot) {
+        const secureDataOnFailure = readSecureVault()
+        markGlmFailure(secureDataOnFailure, selectedSlot.slot, 'failed', error?.message || 'GLM request failed')
+        writeSecureVault(secureDataOnFailure)
+      }
       return {
         success: false,
         code: 'GLM_NETWORK_ERROR',
         message: error?.message || 'GLM network request failed.',
-        providerLabel: 'GLM 5.2'
+        providerLabel
       }
     }
   }
 
-  const callZai = async (prompt: string, currentFiles?: ProjectFile[]): Promise<ProviderResult> => {
+  const callZai = async (
+    prompt: string,
+    currentFiles?: ProjectFile[],
+    selection?: ProviderSelection
+  ): Promise<ProviderResult> => {
     const secureData = readSecureVault()
-    const activeSlot = getActiveZaiSlot(secureData)
-    if (!activeSlot) {
+    const normalizedSlots = normalizeZaiSlots(secureData)
+    const selectedSlot =
+      selection?.slot != null
+        ? normalizedSlots.find(
+            (slot) =>
+              slot.slot === selection.slot &&
+              slot.enabled &&
+              decryptVaultValue(slot.key)
+          ) || null
+        : getActiveZaiSlot(secureData)
+
+    const directKey = selection?.apiKey?.trim() || ''
+    if (!selectedSlot && !directKey) {
       writeSecureVault(secureData)
       return {
         success: false,
         code: 'MISSING_ZAI_KEY',
-        message: 'Z.AI configured nahi hai. Settings me Z.AI Coding Provider check karo.',
-        providerLabel: 'Z.AI'
+        message: buildSelectedProviderMissingMessage(selection || { provider: 'zai' }),
+        providerLabel: selection?.label || 'Z.AI'
       }
     }
 
-    const key = decryptVaultValue(activeSlot.key).trim()
-    const providerMode = activeSlot.providerMode || 'zai-coding'
-    const baseUrl = activeSlot.baseUrl || ZAI_DEFAULT_BASE_URL
-    const modelId = activeSlot.modelId || ZAI_DEFAULT_MODEL_ID
+    const key = directKey || decryptVaultValue(selectedSlot?.key).trim()
+    const providerMode = selection?.providerMode || selectedSlot?.providerMode || 'zai-coding'
+    const baseUrl = selection?.baseUrl || selectedSlot?.baseUrl || ZAI_DEFAULT_BASE_URL
+    const modelId = selection?.modelId || selectedSlot?.modelId || ZAI_DEFAULT_MODEL_ID
+    const providerLabel = selection?.label || 'Z.AI'
     writeSecureVault(secureData)
 
     const projectType = detectProjectType(prompt)
@@ -984,7 +1251,7 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
           model: modelId,
           temperature: 0.35,
           messages: [
-            { role: 'system', content: buildProjectSystemPrompt('Z.AI Coding Provider', prompt, projectType, currentFiles) },
+            { role: 'system', content: buildProjectSystemPrompt(providerLabel, prompt, projectType, currentFiles) },
             { role: 'user', content: buildProjectUserPrompt(prompt, projectType, currentFiles) }
           ]
         })
@@ -992,7 +1259,6 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
 
       if (!response.ok) {
         const body = await response.text()
-        const secureDataOnFailure = readSecureVault()
         const failureStatus = response.status === 429 ? 'rate-limited' : 'failed'
         const errorMessage =
           response.status === 401 || response.status === 403
@@ -1000,113 +1266,185 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
             : response.status === 404
               ? 'Z.AI model ID invalid lag raha hai. Settings me model ID check karo.'
               : `Z.AI provider error ${response.status}: ${body.slice(0, 180)}`
-        markZaiFailure(secureDataOnFailure, activeSlot.slot, failureStatus, errorMessage)
-        rotateZaiSlot(secureDataOnFailure)
-        writeSecureVault(secureDataOnFailure)
+        if (selectedSlot) {
+          const secureDataOnFailure = readSecureVault()
+          markZaiFailure(secureDataOnFailure, selectedSlot.slot, failureStatus, errorMessage)
+          writeSecureVault(secureDataOnFailure)
+        }
         return {
           success: false,
           code: response.status === 404 ? 'ZAI_MODEL_INVALID' : response.status === 401 || response.status === 403 ? 'ZAI_AUTH_FAILED' : 'ZAI_REQUEST_FAILED',
           message: errorMessage,
-          providerLabel: 'Z.AI'
+          providerLabel
         }
       }
 
       const data = await response.json()
-      const content =
-        data?.choices?.[0]?.message?.content?.trim() ||
-        data?.output_text?.trim?.() ||
-        ''
-      const parsed = parseProviderPayload(content, 'Z.AI')
-      const secureDataOnSuccess = readSecureVault()
-      markActiveZaiSlot(secureDataOnSuccess, activeSlot.slot)
-      writeSecureVault(secureDataOnSuccess)
+      const content = extractCompatibleResponseText(data)
+      const parsed = parseProviderPayload(content, providerLabel)
+      if (selectedSlot) {
+        const secureDataOnSuccess = readSecureVault()
+        markActiveZaiSlot(secureDataOnSuccess, selectedSlot.slot)
+        writeSecureVault(secureDataOnSuccess)
+      }
       return parsed
     } catch (error: any) {
-      const secureDataOnFailure = readSecureVault()
-      markZaiFailure(secureDataOnFailure, activeSlot.slot, 'failed', error?.message || 'Z.AI request failed')
-      rotateZaiSlot(secureDataOnFailure)
-      writeSecureVault(secureDataOnFailure)
+      if (selectedSlot) {
+        const secureDataOnFailure = readSecureVault()
+        markZaiFailure(secureDataOnFailure, selectedSlot.slot, 'failed', error?.message || 'Z.AI request failed')
+        writeSecureVault(secureDataOnFailure)
+      }
       return {
         success: false,
         code: 'ZAI_NETWORK_ERROR',
         message: error?.message || 'Z.AI network request failed.',
-        providerLabel: 'Z.AI'
+        providerLabel
+      }
+    }
+  }
+
+  const resolveSelectedCompatibleConfig = (
+    selection: ProviderSelection
+  ):
+    | {
+        providerLabel: string
+        endpoint: string
+        key: string
+        model: string
+        headers?: Record<string, string>
+        statusGroup?: 'openrouter' | 'kiloGateway' | 'routeway'
+        slot?: number
+      }
+    | { error: ProviderResult } => {
+    const secureData = readSecureVault()
+    const defaults = getProviderDefaults(selection.provider)
+    const directKey = selection.apiKey?.trim() || ''
+
+    if (selection.provider === 'openrouter' || selection.provider === 'kiloGateway' || selection.provider === 'routeway') {
+      const group = selection.provider
+      const chosenSlot =
+        !directKey && selection.slot != null
+          ? normalizeCompatibleSlots(secureData, group).find(
+              (slot) => slot.slot === selection.slot && slot.enabled && decryptVaultValue(slot.key)
+            ) || null
+          : null
+      const fallbackSlot = !directKey ? getConfiguredCompatibleSlot(secureData, group, selection.slot) : null
+      const activeSlot = chosenSlot || fallbackSlot
+      const key = directKey || decryptVaultValue(activeSlot?.key).trim()
+      const model = selection.modelId?.trim() || activeSlot?.modelId?.trim() || defaults.modelId
+      const baseUrl = selection.baseUrl?.trim() || activeSlot?.baseUrl?.trim() || defaults.baseUrl
+      if (!key) {
+        return {
+          error: {
+            success: false,
+            code: `${selection.provider.toUpperCase()}_MISSING_KEY`,
+            message: buildSelectedProviderMissingMessage(selection),
+            providerLabel: selection.label || selection.provider
+          }
+        }
+      }
+      if (!model) {
+        return {
+          error: {
+            success: false,
+            code: `${selection.provider.toUpperCase()}_MISSING_MODEL`,
+            message: 'Selected model configured nahi hai. Model settings check karo ya doosra model select karo.',
+            providerLabel: selection.label || selection.provider
+          }
+        }
+      }
+      return {
+        providerLabel: selection.label || `${selection.provider}`,
+        endpoint: normalizeCompatibleBaseUrl(baseUrl),
+        key,
+        model,
+        headers:
+          selection.provider === 'openrouter'
+            ? { 'HTTP-Referer': 'https://alpha.local', 'X-Title': 'alpha' }
+            : undefined,
+        statusGroup: group,
+        slot: activeSlot?.slot
+      }
+    }
+
+    if (selection.provider === 'groq' || selection.provider === 'kimi') {
+      const slot = !directKey ? getBasicProviderSlot(secureData, selection.provider, selection.slot) : null
+      const key = directKey || decryptVaultValue(slot?.key).trim()
+      const model = selection.modelId?.trim() || defaults.modelId
+      const baseUrl = selection.baseUrl?.trim() || defaults.baseUrl
+      if (!key) {
+        return {
+          error: {
+            success: false,
+            code: `${selection.provider.toUpperCase()}_MISSING_KEY`,
+            message: buildSelectedProviderMissingMessage(selection),
+            providerLabel: selection.label || selection.provider
+          }
+        }
+      }
+      return {
+        providerLabel: selection.label || (selection.provider === 'groq' ? 'Groq' : 'Kimi'),
+        endpoint: normalizeCompatibleBaseUrl(baseUrl),
+        key,
+        model,
+        slot: slot?.slot
+      }
+    }
+
+    return {
+      error: {
+        success: false,
+        code: 'UNSUPPORTED_PROVIDER',
+        message: `${selection.provider} provider currently unsupported.`,
+        providerLabel: selection.label || selection.provider
       }
     }
   }
 
   const callProvider = async (
-    provider: ProviderName,
+    providerInput: ProviderSelection | ProviderName | string | undefined,
     prompt: string,
     currentFiles?: ProjectFile[]
   ): Promise<ProviderResult> => {
-    if (provider === 'glm') {
-      const glmResult = await callGlm(prompt, currentFiles)
-      if (glmResult.success) return glmResult
-      const zaiResult = await callZai(prompt, currentFiles)
-      if (zaiResult.success) {
-        return {
-          ...zaiResult,
-          providerLabel: 'Z.AI'
-        }
+    const selection = parseProviderSelection(providerInput)
+
+    if (selection.provider === 'glm') return callGlm(prompt, currentFiles, selection)
+    if (selection.provider === 'zai') return callZai(prompt, currentFiles, selection)
+    if (selection.provider === 'gemini') return callGeminiProjectProvider(prompt, currentFiles)
+
+    const resolved = resolveSelectedCompatibleConfig(selection)
+    if ('error' in resolved) return resolved.error
+
+    const result = await callOpenAICompatibleProvider(prompt, currentFiles, {
+      endpoint: resolved.endpoint,
+      key: resolved.key,
+      model: resolved.model,
+      providerLabel: resolved.providerLabel,
+      headers: resolved.headers
+    })
+
+    if (result.success) {
+      if (resolved.statusGroup && resolved.slot) {
+        const secureDataOnSuccess = readSecureVault()
+        markActiveCompatibleSlot(secureDataOnSuccess, resolved.statusGroup, resolved.slot)
+        writeSecureVault(secureDataOnSuccess)
       }
-      return {
-        success: false,
-        code: 'GLM_ZAI_UNAVAILABLE',
-        message: `GLM aur Z.AI configured nahi hai. Kaunsa fallback use karna hai? Gemini / OpenRouter / Kimi / Groq / Cancel\n\nGLM: ${glmResult.message}\nZ.AI: ${zaiResult.message}`,
-        providerLabel: 'GLM -> Z.AI'
-      }
-    }
-    if (provider === 'zai') return callZai(prompt, currentFiles)
-    if (provider === 'gemini') return callGeminiProjectProvider(prompt, currentFiles)
-
-    const secureData = readSecureVault()
-    const slots = secureData.keySlots?.[provider] || []
-    const active = slots.find((slot: KeySlot) => slot?.enabled && decryptVaultValue(slot?.key))
-    const key = decryptVaultValue(active?.key)
-    if (!key) {
-      return {
-        success: false,
-        code: `${provider.toUpperCase()}_MISSING_KEY`,
-        message: `${provider} key missing hai. Settings me provider config check karo.`,
-        providerLabel: provider
-      }
+      return result
     }
 
-    if (provider === 'openrouter') {
-      return callCompatibleProvider(prompt, currentFiles, {
-        endpoint: 'https://openrouter.ai/api/v1/chat/completions',
-        key,
-        model: secureData.openrouterModel || 'glm-5.2',
-        providerLabel: 'OpenRouter',
-        headers: { 'HTTP-Referer': 'https://alpha.local', 'X-Title': 'alpha' }
-      })
+    if (resolved.statusGroup && resolved.slot) {
+      const secureDataOnFailure = readSecureVault()
+      markCompatibleFailure(
+        secureDataOnFailure,
+        resolved.statusGroup,
+        resolved.slot,
+        /429/.test(result.code) ? 'rate-limited' : 'failed',
+        result.message
+      )
+      writeSecureVault(secureDataOnFailure)
     }
 
-    if (provider === 'groq') {
-      return callCompatibleProvider(prompt, currentFiles, {
-        endpoint: 'https://api.groq.com/openai/v1/chat/completions',
-        key,
-        model: 'llama-3.1-8b-instant',
-        providerLabel: 'Groq'
-      })
-    }
-
-    if (provider === 'kimi') {
-      return callCompatibleProvider(prompt, currentFiles, {
-        endpoint: 'https://api.moonshot.ai/v1/chat/completions',
-        key,
-        model: 'moonshot-v1-8k',
-        providerLabel: 'Kimi'
-      })
-    }
-
-    return {
-      success: false,
-      code: 'UNSUPPORTED_PROVIDER',
-      message: `${provider} provider currently unsupported.`,
-      providerLabel: provider
-    }
+    return result
   }
 
   const writeProjectState = (
@@ -1114,7 +1452,8 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
     projectName: string,
     prompt: string,
     files: ProjectFile[],
-    providerUsed: string
+    providerUsed: string,
+    modelUsed: string = PROJECT_MODEL
   ) => {
     const projectPath = path.join(projectsRoot, projectId)
     ensureDir(projectPath)
@@ -1138,7 +1477,7 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
       type: detectProjectType(prompt),
       createdAt: existingMeta?.createdAt || now,
       updatedAt: now,
-      modelUsed: PROJECT_MODEL,
+      modelUsed,
       providerUsed,
       files: files.map((file) => file.path),
       lastPrompt: prompt,
@@ -1181,13 +1520,22 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
     })
   }
 
-  ipcMain.handle('project-builder-create', async (_, { prompt, provider = 'glm' }) => {
+  ipcMain.handle('project-builder-create', async (_, { prompt, provider = 'kiloGateway' }) => {
     const projectType = detectProjectType(prompt || '')
-    const generated = await callProvider(provider, prompt || '')
+    const providerSelection = parseProviderSelection(provider)
+    const generated = await callProvider(providerSelection, prompt || '')
+    const selectedModelId = providerSelection.modelId || getProviderDefaults(providerSelection.provider).modelId
     if (!generated.success) {
       const projectName = guessProjectName(prompt || 'website builder', projectType)
       const files = normalizeFiles({ files: [] }, prompt || '', projectType)
-      const state = writeProjectState(projectName, projectName, prompt || '', files, generated.providerLabel)
+      const state = writeProjectState(
+        projectName,
+        projectName,
+        prompt || '',
+        files,
+        generated.providerLabel,
+        selectedModelId || PROJECT_MODEL
+      )
       return {
         success: true,
         state,
@@ -1200,7 +1548,14 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
     const payload = generated.payload || {}
     const projectName = slugify(payload.projectName || guessProjectName(prompt || '', projectType))
     const files = normalizeFiles(payload, prompt || '', projectType)
-    const state = writeProjectState(projectName, projectName, prompt || '', files, generated.providerLabel)
+    const state = writeProjectState(
+      projectName,
+      projectName,
+      prompt || '',
+      files,
+      generated.providerLabel,
+      providerSelection.modelId || payload.modelId || payload.projectModel || selectedModelId || PROJECT_MODEL
+    )
 
     return {
       success: true,
@@ -1212,8 +1567,9 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
   ipcMain.handle('project-builder-update', async (_, { projectId, prompt, provider }) => {
     const existing = readProjectState(projectId)
     const kiloService = getKiloService()
-    const kiloRequested = provider === 'kilo' || shouldUseKiloForPrompt(prompt || '')
-    const fallbackProvider = resolveProviderName(provider, existing.metadata.providerUsed)
+    const providerSelection = parseProviderSelection(provider, existing.metadata.providerUsed)
+    const kiloRequested =
+      (typeof provider === 'string' && provider === 'kilo') || shouldUseKiloForPrompt(prompt || '')
 
     if (kiloRequested && kiloService?.getSettings().enabled) {
       const kiloResult = await kiloService.executeCodingTask({
@@ -1240,7 +1596,8 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
           existing.metadata.name,
           prompt || '',
           safeFiles.length ? safeFiles : existing.files,
-          'Kilo Code'
+          'Kilo Code',
+          existing.metadata.modelUsed || PROJECT_MODEL
         )
         return {
           success: true,
@@ -1262,7 +1619,7 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
       ? 'Kilo Code disabled hai. Existing coding provider se continue kar raha hoon.'
       : ''
 
-    const generated = await callProvider(fallbackProvider, prompt || '', existing.files)
+    const generated = await callProvider(providerSelection, prompt || '', existing.files)
     if (!generated.success) {
       const fallbackFiles = normalizeFiles({ files: existing.files }, prompt || '', existing.metadata.type)
       const state = writeProjectState(
@@ -1270,7 +1627,8 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
         existing.metadata.name,
         prompt || '',
         fallbackFiles.length ? fallbackFiles : existing.files,
-        existing.metadata.providerUsed || generated.providerLabel
+        existing.metadata.providerUsed || generated.providerLabel,
+        providerSelection.modelId || existing.metadata.modelUsed || PROJECT_MODEL
       )
       return {
         success: true,
@@ -1288,7 +1646,8 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
       existing.metadata.name,
       prompt || '',
       files,
-      generated.providerLabel
+      generated.providerLabel,
+      providerSelection.modelId || payload.modelId || payload.projectModel || existing.metadata.modelUsed || PROJECT_MODEL
     )
 
     return {
@@ -1310,7 +1669,8 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
         existing.metadata.name,
         existing.metadata.lastPrompt,
         files,
-        existing.metadata.providerUsed
+        existing.metadata.providerUsed,
+        existing.metadata.modelUsed || PROJECT_MODEL
       )
       return {
         success: true,

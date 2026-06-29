@@ -119,6 +119,8 @@ type ApiKeyGroup =
   | 'zai'
   | 'kimi'
   | 'openrouter'
+  | 'kiloGateway'
+  | 'routeway'
 type ApiKeyStatus = 'empty' | 'active' | 'available' | 'disabled' | 'failed' | 'rate-limited'
 type ApiKeySlot = {
   slot: number
@@ -127,7 +129,7 @@ type ApiKeySlot = {
   status: ApiKeyStatus
   baseUrl?: string
   modelId?: string
-  providerMode?: 'zenmux' | 'custom-compatible' | 'direct-zai' | 'zai-chat' | 'zai-coding' | 'zai-compatible'
+  providerMode?: string
   lastFailureReason?: string
   lastCheckedAt?: string
   lastUsedAt?: string
@@ -143,8 +145,25 @@ const apiKeyGroups: ApiKeyGroup[] = [
   'glm',
   'zai',
   'kimi',
-  'openrouter'
+  'openrouter',
+  'kiloGateway',
+  'routeway'
 ]
+
+const apiKeySlotCounts: Record<ApiKeyGroup, number> = {
+  geminiBrain: 3,
+  geminiAgent: 3,
+  tavily: 3,
+  exa: 3,
+  firecrawl: 3,
+  groq: 3,
+  glm: 3,
+  zai: 3,
+  kimi: 3,
+  openrouter: 6,
+  kiloGateway: 3,
+  routeway: 3
+}
 
 const maskApiKey = (key = '') => {
   if (!key) return ''
@@ -155,7 +174,7 @@ const maskApiKey = (key = '') => {
 const defaultGlmConfig = {
   baseUrl: 'https://zenmux.ai/api/v1',
   modelId: 'z-ai/glm-5.2-free',
-  providerMode: 'zenmux' as const
+  providerMode: 'openai-compatible'
 }
 
 const defaultZaiConfig = {
@@ -164,11 +183,46 @@ const defaultZaiConfig = {
   providerMode: 'zai-coding' as const
 }
 
+const defaultOpenRouterConfig = {
+  baseUrl: 'https://openrouter.ai/api/v1',
+  modelId: 'openai/gpt-4.1-mini',
+  providerMode: 'openai-compatible'
+}
+
+const defaultKiloGatewayConfig = {
+  baseUrl: 'https://api.kilo.ai/api/gateway',
+  modelId: 'laguna-m.1:free',
+  providerMode: 'openai-compatible'
+}
+
+const defaultRoutewayConfig = {
+  baseUrl: 'https://api.routeway.ai/v1',
+  modelId: '',
+  providerMode: 'openai-compatible'
+}
+
+const defaultProviderConfigs: Partial<
+  Record<ApiKeyGroup, { baseUrl: string; modelId: string; providerMode: string }>
+> = {
+  glm: defaultGlmConfig,
+  zai: defaultZaiConfig,
+  openrouter: defaultOpenRouterConfig,
+  kiloGateway: defaultKiloGatewayConfig,
+  routeway: defaultRoutewayConfig
+}
+
+const getDefaultProviderConfig = (group: ApiKeyGroup) =>
+  defaultProviderConfigs[group] || { baseUrl: '', modelId: '', providerMode: '' }
+
+const supportsProviderConfig = (group: ApiKeyGroup) => Boolean(defaultProviderConfigs[group])
+
 const normalizeKeySlots = (secureData: Record<string, any>) => {
   const keySlots = secureData.keySlots || {}
   for (const group of apiKeyGroups) {
     const slots = Array.isArray(keySlots[group]) ? keySlots[group] : []
-    keySlots[group] = [1, 2, 3].map((slot) => {
+    const slotCount = apiKeySlotCounts[group]
+    const defaults = getDefaultProviderConfig(group)
+    keySlots[group] = Array.from({ length: slotCount }, (_, index) => index + 1).map((slot) => {
       const existing = slots.find((item: ApiKeySlot) => item?.slot === slot) || {}
       return {
         slot,
@@ -176,35 +230,19 @@ const normalizeKeySlots = (secureData: Record<string, any>) => {
         enabled: typeof existing.enabled === 'boolean' ? existing.enabled : true,
         status: existing.status || (existing.key ? 'available' : 'empty'),
         baseUrl:
-          group === 'glm'
-            ? typeof existing.baseUrl === 'string' && existing.baseUrl.trim()
-              ? existing.baseUrl
-              : defaultGlmConfig.baseUrl
-            : group === 'zai'
-              ? typeof existing.baseUrl === 'string' && existing.baseUrl.trim()
-                ? existing.baseUrl
-                : defaultZaiConfig.baseUrl
-            : existing.baseUrl || '',
+          supportsProviderConfig(group) && typeof existing.baseUrl === 'string' && existing.baseUrl.trim()
+            ? existing.baseUrl.trim()
+            : defaults.baseUrl,
         modelId:
-          group === 'glm'
-            ? typeof existing.modelId === 'string' && existing.modelId.trim()
-              ? existing.modelId
-              : defaultGlmConfig.modelId
-            : group === 'zai'
-              ? typeof existing.modelId === 'string' && existing.modelId.trim()
-                ? existing.modelId
-                : defaultZaiConfig.modelId
-            : existing.modelId || '',
+          supportsProviderConfig(group) && typeof existing.modelId === 'string' && existing.modelId.trim()
+            ? existing.modelId.trim()
+            : group === 'openrouter' && secureData.openrouterModel
+              ? String(secureData.openrouterModel)
+              : defaults.modelId,
         providerMode:
-          group === 'glm'
-            ? existing.providerMode === 'custom-compatible' || existing.providerMode === 'direct-zai'
-              ? existing.providerMode
-              : defaultGlmConfig.providerMode
-            : group === 'zai'
-              ? existing.providerMode === 'zai-chat' || existing.providerMode === 'zai-compatible'
-                ? existing.providerMode
-                : defaultZaiConfig.providerMode
-            : existing.providerMode || '',
+          supportsProviderConfig(group) && typeof existing.providerMode === 'string' && existing.providerMode.trim()
+            ? existing.providerMode.trim()
+            : defaults.providerMode,
         lastFailureReason: existing.lastFailureReason || '',
         lastCheckedAt: existing.lastCheckedAt || '',
         lastUsedAt: existing.lastUsedAt || ''
@@ -230,24 +268,11 @@ const getKeyStatuses = (secureData: Record<string, any>) => {
           status: slot.enabled ? slot.status : 'disabled',
           maskedKey: maskApiKey(key),
           hasKey: Boolean(key),
-          baseUrl:
-            group === 'glm'
-              ? slot.baseUrl || defaultGlmConfig.baseUrl
-              : group === 'zai'
-                ? slot.baseUrl || defaultZaiConfig.baseUrl
-                : '',
-          modelId:
-            group === 'glm'
-              ? slot.modelId || defaultGlmConfig.modelId
-              : group === 'zai'
-                ? slot.modelId || defaultZaiConfig.modelId
-                : '',
-          providerMode:
-            group === 'glm'
-              ? slot.providerMode || defaultGlmConfig.providerMode
-              : group === 'zai'
-                ? slot.providerMode || defaultZaiConfig.providerMode
-                : '',
+          baseUrl: supportsProviderConfig(group) ? slot.baseUrl || getDefaultProviderConfig(group).baseUrl : '',
+          modelId: supportsProviderConfig(group) ? slot.modelId || getDefaultProviderConfig(group).modelId : '',
+          providerMode: supportsProviderConfig(group)
+            ? slot.providerMode || getDefaultProviderConfig(group).providerMode
+            : '',
           lastFailureReason: slot.lastFailureReason || '',
           lastCheckedAt: slot.lastCheckedAt || '',
           lastUsedAt: slot.lastUsedAt || ''
@@ -317,6 +342,55 @@ const normalizeCompatibleBaseUrl = (baseUrl?: string) => {
   const trimmed = (baseUrl || '').trim().replace(/\/+$/, '')
   if (!trimmed) return ''
   return trimmed.endsWith('/chat/completions') ? trimmed : `${trimmed}/chat/completions`
+}
+
+const normalizeProviderErrorMessage = (providerName: string, status: number, body: string, modelId: string) => {
+  if (status === 401 || status === 403) {
+    return `${providerName} auth failed. API key/settings check karo.`
+  }
+  if (status === 404) {
+    return `${providerName} model ID ya endpoint issue hai. Selected model: ${modelId || 'n/a'}`
+  }
+  if (status === 429) {
+    return `${providerName} rate limit/quota hit hua.`
+  }
+  return `${providerName} provider error ${status}: ${body.slice(0, 180)}`
+}
+
+const testOpenAiCompatibleSlot = async (config: {
+  providerName: string
+  key: string
+  baseUrl: string
+  modelId: string
+  headers?: Record<string, string>
+}) => {
+  const response = await fetch(normalizeCompatibleBaseUrl(config.baseUrl), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${config.key}`,
+      ...(config.headers || {})
+    },
+    body: JSON.stringify({
+      model: config.modelId,
+      messages: [{ role: 'user', content: 'Reply with OK.' }],
+      max_tokens: 24,
+      temperature: 0
+    })
+  })
+
+  const body = await response.text()
+  if (!response.ok) {
+    return {
+      success: false,
+      error: normalizeProviderErrorMessage(config.providerName, response.status, body, config.modelId)
+    }
+  }
+
+  return {
+    success: true,
+    body
+  }
 }
 const rotateKeySlot = (secureData: Record<string, any>, group: ApiKeyGroup) => {
   const keySlots = normalizeKeySlots(secureData)
@@ -628,7 +702,7 @@ app.whenReady().then(() => {
         zaiProviderMode: zaiSlot?.providerMode || defaultZaiConfig.providerMode,
         openrouterKey: decryptKeySlot(openRouterSlot || ({} as ApiKeySlot)) || decryptVaultValue(data.openrouter),
         openrouterSlot: openRouterSlot?.slot || null,
-        openrouterModel: data.openrouterModel || 'glm-5.2',
+        openrouterModel: data.openrouterModel || 'openai/gpt-4.1-mini',
         playwrightSettings: normalizePlaywrightSettings(data),
         keySlots: getKeyStatuses(data)
       }
@@ -642,14 +716,14 @@ app.whenReady().then(() => {
     return {
       success: true,
       statuses: getKeyStatuses(secureData),
-      openrouterModel: secureData.openrouterModel || 'glm-5.2',
+      openrouterModel: secureData.openrouterModel || 'openai/gpt-4.1-mini',
       playwrightSettings: normalizePlaywrightSettings(secureData)
     }
   })
 
   ipcMain.handle('key-manager-save-slot', async (_, { group, slot, key, baseUrl, modelId, providerMode }) => {
     try {
-      if (!apiKeyGroups.includes(group) || ![1, 2, 3].includes(Number(slot))) {
+      if (!apiKeyGroups.includes(group) || Number(slot) < 1 || Number(slot) > apiKeySlotCounts[group]) {
         return { success: false, error: 'Invalid key slot.' }
       }
       const secureData = readSecureVault()
@@ -662,22 +736,23 @@ app.whenReady().then(() => {
         target.lastFailureReason = ''
         target.lastCheckedAt = new Date().toISOString()
       }
-      if (group === 'glm' || group === 'zai') {
+      if (supportsProviderConfig(group)) {
+        const defaults = getDefaultProviderConfig(group)
         target.baseUrl =
           typeof baseUrl === 'string' && baseUrl.trim()
             ? baseUrl.trim()
-            : target.baseUrl || (group === 'glm' ? defaultGlmConfig.baseUrl : defaultZaiConfig.baseUrl)
+            : target.baseUrl || defaults.baseUrl
         target.modelId =
           typeof modelId === 'string' && modelId.trim()
             ? modelId.trim()
-            : target.modelId || (group === 'glm' ? defaultGlmConfig.modelId : defaultZaiConfig.modelId)
-        target.providerMode = group === 'glm'
-          ? providerMode === 'custom-compatible' || providerMode === 'direct-zai'
-            ? providerMode
-            : defaultGlmConfig.providerMode
-          : providerMode === 'zai-chat' || providerMode === 'zai-compatible'
-            ? providerMode
-            : defaultZaiConfig.providerMode
+            : target.modelId || defaults.modelId
+        target.providerMode =
+          typeof providerMode === 'string' && providerMode.trim()
+            ? providerMode.trim()
+            : target.providerMode || defaults.providerMode
+        if (group === 'openrouter' && target.modelId) {
+          secureData.openrouterModel = target.modelId
+        }
       }
       target.enabled = true
       if (!secureData.activeKeySlots?.[group]) markActiveKeySlot(secureData, group, Number(slot))
@@ -690,7 +765,7 @@ app.whenReady().then(() => {
 
   ipcMain.handle('key-manager-set-enabled', async (_, { group, slot, enabled }) => {
     try {
-      if (!apiKeyGroups.includes(group) || ![1, 2, 3].includes(Number(slot))) {
+      if (!apiKeyGroups.includes(group) || Number(slot) < 1 || Number(slot) > apiKeySlotCounts[group]) {
         return { success: false, error: 'Invalid key slot.' }
       }
       const secureData = readSecureVault()
@@ -722,24 +797,11 @@ app.whenReady().then(() => {
         success: true,
         key: decryptKeySlot(target),
         slot: target.slot,
-        baseUrl:
-          group === 'glm'
-            ? target.baseUrl || defaultGlmConfig.baseUrl
-            : group === 'zai'
-              ? target.baseUrl || defaultZaiConfig.baseUrl
-              : '',
-        modelId:
-          group === 'glm'
-            ? target.modelId || defaultGlmConfig.modelId
-            : group === 'zai'
-              ? target.modelId || defaultZaiConfig.modelId
-              : '',
-        providerMode:
-          group === 'glm'
-            ? target.providerMode || defaultGlmConfig.providerMode
-            : group === 'zai'
-              ? target.providerMode || defaultZaiConfig.providerMode
-              : ''
+        baseUrl: supportsProviderConfig(group) ? target.baseUrl || getDefaultProviderConfig(group).baseUrl : '',
+        modelId: supportsProviderConfig(group) ? target.modelId || getDefaultProviderConfig(group).modelId : '',
+        providerMode: supportsProviderConfig(group)
+          ? target.providerMode || getDefaultProviderConfig(group).providerMode
+          : ''
       }
     } catch (error: any) {
       return { success: false, error: error.message }
@@ -769,7 +831,7 @@ app.whenReady().then(() => {
 
   ipcMain.handle('key-manager-mark-failed', async (_, { group, slot, reason }) => {
     try {
-      if (!apiKeyGroups.includes(group) || ![1, 2, 3].includes(Number(slot))) {
+      if (!apiKeyGroups.includes(group) || Number(slot) < 1 || Number(slot) > apiKeySlotCounts[group]) {
         return { success: false, error: 'Invalid key slot.' }
       }
       const secureData = readSecureVault()
@@ -788,7 +850,7 @@ app.whenReady().then(() => {
 
   ipcMain.handle('key-manager-mark-rate-limited', async (_, { group, slot }) => {
     try {
-      if (!apiKeyGroups.includes(group) || ![1, 2, 3].includes(Number(slot))) {
+      if (!apiKeyGroups.includes(group) || Number(slot) < 1 || Number(slot) > apiKeySlotCounts[group]) {
         return { success: false, error: 'Invalid key slot.' }
       }
       const secureData = readSecureVault()
@@ -807,7 +869,7 @@ app.whenReady().then(() => {
 
   ipcMain.handle('key-manager-test-key', async (_, { group, slot }) => {
     try {
-      if (!apiKeyGroups.includes(group) || ![1, 2, 3].includes(Number(slot))) {
+      if (!apiKeyGroups.includes(group) || Number(slot) < 1 || Number(slot) > apiKeySlotCounts[group]) {
         return { success: false, error: 'Invalid key slot.' }
       }
       const secureData = readSecureVault()
@@ -816,55 +878,77 @@ app.whenReady().then(() => {
       const key = target ? decryptKeySlot(target) : ''
       if (!target || !key) return { success: false, error: 'No key saved in this slot.' }
 
-      if (group === 'glm' || group === 'zai') {
-        const providerMode =
-          group === 'glm'
-            ? target.providerMode || defaultGlmConfig.providerMode
-            : target.providerMode || defaultZaiConfig.providerMode
-        const modelId =
-          group === 'glm'
-            ? target.modelId || defaultGlmConfig.modelId
-            : target.modelId || defaultZaiConfig.modelId
-        const baseUrl =
-          group === 'glm'
-            ? target.baseUrl || defaultGlmConfig.baseUrl
-            : target.baseUrl || defaultZaiConfig.baseUrl
-        const endpoint =
-          providerMode === 'direct-zai'
-            ? `${baseUrl.replace(/\/+$/, '')}/chat/completions`
-            : normalizeCompatibleBaseUrl(baseUrl)
-
-        const response = await fetch(endpoint, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${key}`
-          },
-          body: JSON.stringify({
-            model: modelId,
-            messages: [{ role: 'user', content: 'Reply with OK only.' }],
-            max_tokens: 12,
-            temperature: 0
-          })
-        })
-
+      if (group === 'geminiBrain' || group === 'geminiAgent') {
+        const response = await fetch(
+          'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' +
+            encodeURIComponent(key),
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [{ role: 'user', parts: [{ text: 'Reply with OK.' }] }],
+              generationConfig: { temperature: 0, maxOutputTokens: 16 }
+            })
+          }
+        )
         target.lastCheckedAt = new Date().toISOString()
         if (!response.ok) {
           const body = await response.text()
           target.status = response.status === 429 ? 'rate-limited' : 'failed'
-          if (response.status === 401 || response.status === 403) {
-            target.lastFailureReason =
-              group === 'glm'
-                ? 'ZenMux/GLM auth failed. API key ya model ID check karo.'
-                : 'Z.AI auth failed. API key ya model ID check karo.'
-          } else if (response.status === 404) {
-            target.lastFailureReason =
-              group === 'glm'
-                ? 'GLM model ID invalid lag raha hai. Settings me model ID check karo.'
-                : 'Z.AI model ID invalid lag raha hai. Settings me model ID check karo.'
-          } else {
-            target.lastFailureReason = `${group === 'glm' ? 'GLM' : 'Z.AI'} provider error ${response.status}: ${body.slice(0, 180)}`
-          }
+          target.lastFailureReason = normalizeProviderErrorMessage('Gemini', response.status, body, 'gemini-2.5-flash')
+          fs.writeFileSync(secureConfigPath, JSON.stringify(secureData))
+          return { success: false, error: target.lastFailureReason, statuses: getKeyStatuses(secureData) }
+        }
+      } else if (supportsProviderConfig(group)) {
+        const defaults = getDefaultProviderConfig(group)
+        const providerName =
+          group === 'glm'
+            ? 'ZenMux'
+            : group === 'zai'
+              ? 'Z.AI'
+              : group === 'openrouter'
+                ? 'OpenRouter'
+                : group === 'kiloGateway'
+                  ? 'Kilo Gateway'
+                  : 'Routeway'
+        const providerMode = target.providerMode || defaults.providerMode
+        const baseUrl = target.baseUrl || defaults.baseUrl
+        const modelId = target.modelId || defaults.modelId
+        const endpointBase =
+          group === 'zai' && providerMode === 'zai-coding'
+            ? `${baseUrl.replace(/\/+$/, '')}/chat/completions`
+            : baseUrl
+
+        const response = await testOpenAiCompatibleSlot({
+          providerName,
+          key,
+          baseUrl: endpointBase,
+          modelId,
+          headers:
+            group === 'openrouter'
+              ? { 'HTTP-Referer': 'https://alpha.local', 'X-Title': 'alpha' }
+              : {}
+        })
+        target.lastCheckedAt = new Date().toISOString()
+        if (!response.success) {
+          target.status = /rate limit|quota/i.test(response.error || '') ? 'rate-limited' : 'failed'
+          target.lastFailureReason = response.error || `${providerName} test failed.`
+          fs.writeFileSync(secureConfigPath, JSON.stringify(secureData))
+          return { success: false, error: target.lastFailureReason, statuses: getKeyStatuses(secureData) }
+        }
+      } else if (group === 'groq' || group === 'kimi') {
+        const endpoint = group === 'groq' ? 'https://api.groq.com/openai/v1' : 'https://api.moonshot.ai/v1'
+        const modelId = group === 'groq' ? 'llama-3.1-8b-instant' : 'moonshot-v1-8k'
+        const response = await testOpenAiCompatibleSlot({
+          providerName: group === 'groq' ? 'Groq' : 'Kimi',
+          key,
+          baseUrl: endpoint,
+          modelId
+        })
+        target.lastCheckedAt = new Date().toISOString()
+        if (!response.success) {
+          target.status = /rate limit|quota/i.test(response.error || '') ? 'rate-limited' : 'failed'
+          target.lastFailureReason = response.error || `${group} test failed.`
           fs.writeFileSync(secureConfigPath, JSON.stringify(secureData))
           return { success: false, error: target.lastFailureReason, statuses: getKeyStatuses(secureData) }
         }

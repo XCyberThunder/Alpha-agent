@@ -80,9 +80,31 @@ export type BuilderModelStatusRow = {
 
 export type BuilderModelStatuses = Record<string, BuilderModelStatusRow[]>
 
+export type BuilderProviderName =
+  | 'glm'
+  | 'zai'
+  | 'gemini'
+  | 'openrouter'
+  | 'kimi'
+  | 'groq'
+  | 'kiloGateway'
+  | 'routeway'
+
+export type BuilderProviderSelection =
+  | BuilderProviderName
+  | {
+      provider: BuilderProviderName
+      slot?: number
+      modelId?: string
+      baseUrl?: string
+      providerMode?: string
+      apiKey?: string
+      label?: string
+    }
+
 export const createBuilderProject = async (
   prompt: string,
-  provider: 'glm' | 'zai' | 'gemini' | 'openrouter' | 'kimi' | 'groq' = 'glm'
+  provider: BuilderProviderSelection = 'kiloGateway'
 ): Promise<BuilderProjectResponse> => {
   return window.electron.ipcRenderer.invoke('project-builder-create', { prompt, provider })
 }
@@ -90,7 +112,7 @@ export const createBuilderProject = async (
 export const updateBuilderProject = async (
   projectId: string,
   prompt: string,
-  provider?: 'glm' | 'zai' | 'gemini' | 'openrouter' | 'kimi' | 'groq'
+  provider?: BuilderProviderSelection
 ): Promise<BuilderProjectResponse> => {
   return window.electron.ipcRenderer.invoke('project-builder-update', { projectId, prompt, provider })
 }
@@ -182,8 +204,8 @@ export const getBuilderModelStatuses = async (): Promise<{
 }
 
 export const saveBuilderModelSlot = async (payload: {
-  group: 'glm' | 'zai' | 'geminiBrain' | 'kimi' | 'openrouter' | 'groq'
-  slot: 1 | 2 | 3
+  group: 'glm' | 'zai' | 'geminiBrain' | 'kimi' | 'openrouter' | 'groq' | 'kiloGateway' | 'routeway'
+  slot: number
   key: string
   baseUrl: string
   modelId: string
@@ -193,16 +215,16 @@ export const saveBuilderModelSlot = async (payload: {
 }
 
 export const setBuilderModelEnabled = async (payload: {
-  group: 'glm' | 'zai' | 'geminiBrain' | 'kimi' | 'openrouter' | 'groq'
-  slot: 1 | 2 | 3
+  group: 'glm' | 'zai' | 'geminiBrain' | 'kimi' | 'openrouter' | 'groq' | 'kiloGateway' | 'routeway'
+  slot: number
   enabled: boolean
 }) => {
   return window.electron.ipcRenderer.invoke('key-manager-set-enabled', payload)
 }
 
 export const testBuilderModelSlot = async (payload: {
-  group: 'glm' | 'zai' | 'geminiBrain' | 'kimi' | 'openrouter' | 'groq'
-  slot: 1 | 2 | 3
+  group: 'glm' | 'zai' | 'geminiBrain' | 'kimi' | 'openrouter' | 'groq' | 'kiloGateway' | 'routeway'
+  slot: number
 }) => {
   return window.electron.ipcRenderer.invoke('key-manager-test-key', payload)
 }

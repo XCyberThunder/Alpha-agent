@@ -51,6 +51,8 @@ type KeyGroup =
   | 'zai'
   | 'kimi'
   | 'openrouter'
+  | 'kiloGateway'
+  | 'routeway'
 type PlaywrightBrowser = 'chromium' | 'chrome' | 'edge'
 type KiloExecutionMode = 'cli' | 'local-service' | 'adapter-stub'
 type KiloPermissionMode = 'ask' | 'approve' | 'full'
@@ -77,8 +79,9 @@ type KiloSettings = {
   lastHealthStatus?: string
   lastError?: string
 }
-type GlmProviderMode = 'zenmux' | 'custom-compatible' | 'direct-zai'
+type GlmProviderMode = 'zenmux' | 'openai-compatible' | 'custom-compatible' | 'direct-zai'
 type ZaiProviderMode = 'zai-chat' | 'zai-coding' | 'zai-compatible'
+type ConfigurableProviderGroup = 'glm' | 'zai' | 'openrouter' | 'kiloGateway' | 'routeway'
 type KeySlotStatus = {
   slot: number
   enabled: boolean
@@ -93,16 +96,10 @@ type KeySlotStatus = {
   lastUsedAt?: string
 }
 
-type GlmSlotConfig = {
+type ProviderSlotConfig = {
   baseUrl: string
   modelId: string
-  providerMode: GlmProviderMode
-}
-
-type ZaiSlotConfig = {
-  baseUrl: string
-  modelId: string
-  providerMode: ZaiProviderMode
+  providerMode: string
 }
 
 const keyGroupLabels: Record<KeyGroup, { title: string; description: string; accent: string }> = {
@@ -155,6 +152,16 @@ const keyGroupLabels: Record<KeyGroup, { title: string; description: string; acc
     title: 'OpenRouter API Keys',
     description: 'Complex task and fallback brain provider slots.',
     accent: 'text-orange-300 border-orange-500/20 bg-orange-500/5'
+  },
+  kiloGateway: {
+    title: 'Kilo Gateway Provider',
+    description: 'Model API provider slots for Kilo Gateway.',
+    accent: 'text-amber-300 border-amber-500/20 bg-amber-500/5'
+  },
+  routeway: {
+    title: 'Routeway Provider',
+    description: 'OpenAI-compatible Routeway.ai provider slots.',
+    accent: 'text-rose-300 border-rose-500/20 bg-rose-500/5'
   }
 }
 
@@ -168,8 +175,61 @@ const keyGroups: KeyGroup[] = [
   'glm',
   'zai',
   'kimi',
-  'openrouter'
+  'openrouter',
+  'kiloGateway',
+  'routeway'
 ]
+
+const keyGroupSlotCounts: Record<KeyGroup, number> = {
+  geminiBrain: 3,
+  geminiAgent: 3,
+  tavily: 3,
+  exa: 3,
+  firecrawl: 3,
+  groq: 3,
+  glm: 3,
+  zai: 3,
+  kimi: 3,
+  openrouter: 6,
+  kiloGateway: 3,
+  routeway: 3
+}
+
+const configurableProviderGroups: ConfigurableProviderGroup[] = [
+  'glm',
+  'zai',
+  'openrouter',
+  'kiloGateway',
+  'routeway'
+]
+
+const providerSlotDefaults: Record<ConfigurableProviderGroup, ProviderSlotConfig> = {
+  glm: {
+    baseUrl: 'https://zenmux.ai/api/v1',
+    modelId: 'z-ai/glm-5.2-free',
+    providerMode: 'openai-compatible'
+  },
+  zai: {
+    baseUrl: 'https://api.z.ai/api/coding/paas/v4',
+    modelId: 'glm-4.5v',
+    providerMode: 'zai-coding'
+  },
+  openrouter: {
+    baseUrl: 'https://openrouter.ai/api/v1',
+    modelId: 'openai/gpt-4.1-mini',
+    providerMode: 'openai-compatible'
+  },
+  kiloGateway: {
+    baseUrl: 'https://api.kilo.ai/api/gateway',
+    modelId: 'laguna-m.1:free',
+    providerMode: 'openai-compatible'
+  },
+  routeway: {
+    baseUrl: 'https://api.routeway.ai/v1',
+    modelId: '',
+    providerMode: 'openai-compatible'
+  }
+}
 
 const defaultPlaywrightSettings: PlaywrightSettings = {
   enabled: false,
@@ -205,7 +265,9 @@ const emptySlotInputs = (): Record<KeyGroup, string[]> => ({
   glm: ['', '', ''],
   zai: ['', '', ''],
   kimi: ['', '', ''],
-  openrouter: ['', '', '']
+  openrouter: ['', '', '', '', '', ''],
+  kiloGateway: ['', '', ''],
+  routeway: ['', '', '']
 })
 
 const emptySlotStatuses = (): Record<KeyGroup, KeySlotStatus[]> => ({
@@ -218,20 +280,36 @@ const emptySlotStatuses = (): Record<KeyGroup, KeySlotStatus[]> => ({
   glm: [],
   zai: [],
   kimi: [],
-  openrouter: []
+  openrouter: [],
+  kiloGateway: [],
+  routeway: []
 })
 
-const defaultGlmSlotConfigs = (): GlmSlotConfig[] => [
-  { baseUrl: 'https://zenmux.ai/api/v1', modelId: 'z-ai/glm-5.2-free', providerMode: 'zenmux' },
-  { baseUrl: 'https://zenmux.ai/api/v1', modelId: 'z-ai/glm-5.2-free', providerMode: 'zenmux' },
-  { baseUrl: 'https://zenmux.ai/api/v1', modelId: 'z-ai/glm-5.2-free', providerMode: 'zenmux' }
-]
+const defaultProviderSlotConfigs = (): Record<ConfigurableProviderGroup, ProviderSlotConfig[]> => ({
+  glm: Array.from({ length: keyGroupSlotCounts.glm }, () => ({ ...providerSlotDefaults.glm })),
+  zai: Array.from({ length: keyGroupSlotCounts.zai }, () => ({ ...providerSlotDefaults.zai })),
+  openrouter: Array.from({ length: keyGroupSlotCounts.openrouter }, () => ({ ...providerSlotDefaults.openrouter })),
+  kiloGateway: Array.from({ length: keyGroupSlotCounts.kiloGateway }, () => ({ ...providerSlotDefaults.kiloGateway })),
+  routeway: Array.from({ length: keyGroupSlotCounts.routeway }, () => ({ ...providerSlotDefaults.routeway }))
+})
 
-const defaultZaiSlotConfigs = (): ZaiSlotConfig[] => [
-  { baseUrl: 'https://api.z.ai/api/coding/paas/v4', modelId: 'glm-4.5v', providerMode: 'zai-coding' },
-  { baseUrl: 'https://api.z.ai/api/coding/paas/v4', modelId: 'glm-4.5v', providerMode: 'zai-coding' },
-  { baseUrl: 'https://api.z.ai/api/coding/paas/v4', modelId: 'glm-4.5v', providerMode: 'zai-coding' }
-]
+const isConfigurableProviderGroup = (group: KeyGroup): group is ConfigurableProviderGroup =>
+  configurableProviderGroups.includes(group as ConfigurableProviderGroup)
+
+const buildProviderConfigsFromStatuses = (
+  group: ConfigurableProviderGroup,
+  rows: KeySlotStatus[] = []
+): ProviderSlotConfig[] =>
+  Array.from({ length: keyGroupSlotCounts[group] }, (_, index) => {
+    const slot = index + 1
+    const found = rows.find((item) => item.slot === slot)
+    const defaults = providerSlotDefaults[group]
+    return {
+      baseUrl: found?.baseUrl || defaults.baseUrl,
+      modelId: found?.modelId || defaults.modelId,
+      providerMode: found?.providerMode || defaults.providerMode
+    }
+  })
 
 const SettingsView = ({ isSystemActive }: SettingsProps) => {
   const [activeTab, setActiveTab] = useState<TabType>('updates')
@@ -250,13 +328,13 @@ const SettingsView = ({ isSystemActive }: SettingsProps) => {
   const [hfKey, setHfKey] = useState(localStorage.getItem('alpha_hf_api_key') || '')
   const [tailvyKey, setTailvyKey] = useState(localStorage.getItem('alpha_tailvy_api_key') || '')
   const [openrouterModel, setOpenRouterModel] = useState(
-    localStorage.getItem('alpha_openrouter_model') || 'glm-5.2'
+    localStorage.getItem('alpha_openrouter_model') || 'openai/gpt-4.1-mini'
   )
   const [keySlotInputs, setKeySlotInputs] = useState<Record<KeyGroup, string[]>>(emptySlotInputs)
   const [keySlotStatuses, setKeySlotStatuses] =
     useState<Record<KeyGroup, KeySlotStatus[]>>(emptySlotStatuses)
-  const [glmSlotConfigs, setGlmSlotConfigs] = useState<GlmSlotConfig[]>(defaultGlmSlotConfigs)
-  const [zaiSlotConfigs, setZaiSlotConfigs] = useState<ZaiSlotConfig[]>(defaultZaiSlotConfigs)
+  const [providerSlotConfigs, setProviderSlotConfigs] =
+    useState<Record<ConfigurableProviderGroup, ProviderSlotConfig[]>>(defaultProviderSlotConfigs)
   const [visibleKeySlots, setVisibleKeySlots] = useState<Record<string, boolean>>({})
   const [keySlotMessage, setKeySlotMessage] = useState('')
   const [launchOnStartup, setLaunchOnStartup] = useState(false)
@@ -303,30 +381,13 @@ const SettingsView = ({ isSystemActive }: SettingsProps) => {
       })
       window.electron.ipcRenderer.invoke('key-manager-list-statuses').then((res) => {
         if (res?.statuses) setKeySlotStatuses(res.statuses)
-        if (res?.statuses?.glm?.length) {
-          setGlmSlotConfigs(
-            [1, 2, 3].map((slot) => {
-              const found = res.statuses.glm.find((item: KeySlotStatus) => item.slot === slot)
-              return {
-                baseUrl: found?.baseUrl || 'https://zenmux.ai/api/v1',
-                modelId: found?.modelId || 'z-ai/glm-5.2-free',
-                providerMode: (found?.providerMode as GlmProviderMode) || 'zenmux'
-              }
-            })
-          )
-        }
-        if (res?.statuses?.zai?.length) {
-          setZaiSlotConfigs(
-            [1, 2, 3].map((slot) => {
-              const found = res.statuses.zai.find((item: KeySlotStatus) => item.slot === slot)
-              return {
-                baseUrl: found?.baseUrl || 'https://api.z.ai/api/coding/paas/v4',
-                modelId: found?.modelId || 'glm-4.5v',
-                providerMode: (found?.providerMode as ZaiProviderMode) || 'zai-coding'
-              }
-            })
-          )
-        }
+        setProviderSlotConfigs((current) => {
+          const next = { ...current }
+          for (const group of configurableProviderGroups) {
+            next[group] = buildProviderConfigsFromStatuses(group, res?.statuses?.[group] || [])
+          }
+          return next
+        })
         if (res?.openrouterModel) setOpenRouterModel(res.openrouterModel)
         if (res?.playwrightSettings) setPlaywrightSettings({ ...defaultPlaywrightSettings, ...res.playwrightSettings })
       })
@@ -439,30 +500,13 @@ const SettingsView = ({ isSystemActive }: SettingsProps) => {
     if (!window.electron?.ipcRenderer) return
     const res = await window.electron.ipcRenderer.invoke('key-manager-list-statuses')
     if (res?.statuses) setKeySlotStatuses(res.statuses)
-    if (res?.statuses?.glm?.length) {
-      setGlmSlotConfigs(
-        [1, 2, 3].map((slot) => {
-          const found = res.statuses.glm.find((item: KeySlotStatus) => item.slot === slot)
-          return {
-            baseUrl: found?.baseUrl || 'https://zenmux.ai/api/v1',
-            modelId: found?.modelId || 'z-ai/glm-5.2-free',
-            providerMode: (found?.providerMode as GlmProviderMode) || 'zenmux'
-          }
-        })
-      )
-    }
-    if (res?.statuses?.zai?.length) {
-      setZaiSlotConfigs(
-        [1, 2, 3].map((slot) => {
-          const found = res.statuses.zai.find((item: KeySlotStatus) => item.slot === slot)
-          return {
-            baseUrl: found?.baseUrl || 'https://api.z.ai/api/coding/paas/v4',
-            modelId: found?.modelId || 'glm-4.5v',
-            providerMode: (found?.providerMode as ZaiProviderMode) || 'zai-coding'
-          }
-        })
-      )
-    }
+    setProviderSlotConfigs((current) => {
+      const next = { ...current }
+      for (const group of configurableProviderGroups) {
+        next[group] = buildProviderConfigsFromStatuses(group, res?.statuses?.[group] || [])
+      }
+      return next
+    })
     if (res?.openrouterModel) setOpenRouterModel(res.openrouterModel)
     if (res?.playwrightSettings) setPlaywrightSettings({ ...defaultPlaywrightSettings, ...res.playwrightSettings })
   }
@@ -478,32 +522,31 @@ const SettingsView = ({ isSystemActive }: SettingsProps) => {
   const saveKeySlot = async (group: KeyGroup, slot: number) => {
     const key = keySlotInputs[group][slot - 1]?.trim()
     if (!window.electron?.ipcRenderer) return
-    const glmConfig = group === 'glm' ? glmSlotConfigs[slot - 1] : null
-    const zaiConfig = group === 'zai' ? zaiSlotConfigs[slot - 1] : null
-    if (!key && group !== 'glm' && group !== 'zai') return
+    const providerConfig = isConfigurableProviderGroup(group) ? providerSlotConfigs[group][slot - 1] : null
+    if (!key && !providerConfig) return
     const res = await window.electron.ipcRenderer.invoke('key-manager-save-slot', {
       group,
       slot,
       key,
-      baseUrl: glmConfig?.baseUrl || zaiConfig?.baseUrl,
-      modelId: glmConfig?.modelId || zaiConfig?.modelId,
-      providerMode: glmConfig?.providerMode || zaiConfig?.providerMode
+      baseUrl: providerConfig?.baseUrl,
+      modelId: providerConfig?.modelId,
+      providerMode: providerConfig?.providerMode
     })
     if (res?.statuses) setKeySlotStatuses(res.statuses)
     updateKeySlotInput(group, slot, '')
     setKeySlotMessage(`${keyGroupLabels[group].title} slot ${slot} saved securely.`)
   }
 
-  const updateGlmSlotConfig = <K extends keyof GlmSlotConfig>(slot: number, field: K, value: GlmSlotConfig[K]) => {
-    setGlmSlotConfigs((prev) =>
-      prev.map((item, index) => (index === slot - 1 ? { ...item, [field]: value } : item))
-    )
-  }
-
-  const updateZaiSlotConfig = <K extends keyof ZaiSlotConfig>(slot: number, field: K, value: ZaiSlotConfig[K]) => {
-    setZaiSlotConfigs((prev) =>
-      prev.map((item, index) => (index === slot - 1 ? { ...item, [field]: value } : item))
-    )
+  const updateProviderSlotConfig = <K extends keyof ProviderSlotConfig>(
+    group: ConfigurableProviderGroup,
+    slot: number,
+    field: K,
+    value: ProviderSlotConfig[K]
+  ) => {
+    setProviderSlotConfigs((prev) => ({
+      ...prev,
+      [group]: prev[group].map((item, index) => (index === slot - 1 ? { ...item, [field]: value } : item))
+    }))
   }
 
   const testKeySlot = async (group: KeyGroup, slot: number) => {
@@ -693,6 +736,7 @@ const SettingsView = ({ isSystemActive }: SettingsProps) => {
   const renderKeySlotGroup = (group: KeyGroup) => {
     const meta = keyGroupLabels[group]
     const statuses = keySlotStatuses[group] || []
+    const slotCount = keyGroupSlotCounts[group]
     return (
       <div className={`flex flex-col gap-4 md:col-span-2 border rounded-xl p-5 ${meta.accent}`}>
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-2">
@@ -702,11 +746,13 @@ const SettingsView = ({ isSystemActive }: SettingsProps) => {
           <span className="text-[10px] text-zinc-400 font-mono">{meta.description}</span>
         </div>
         <div className="grid grid-cols-1 gap-3">
-          {[1, 2, 3].map((slot) => {
+          {Array.from({ length: slotCount }, (_, index) => index + 1).map((slot) => {
             const slotStatus = statuses.find((item) => item.slot === slot)
             const visibleKey = `${group}-${slot}`
-            const glmConfig = glmSlotConfigs[slot - 1]
-            const zaiConfig = zaiSlotConfigs[slot - 1]
+            const configurableGroup = isConfigurableProviderGroup(group) ? group : null
+            const providerConfig = configurableGroup
+              ? providerSlotConfigs[configurableGroup][slot - 1]
+              : null
             return (
               <div
                 key={visibleKey}
@@ -769,53 +815,59 @@ const SettingsView = ({ isSystemActive }: SettingsProps) => {
                   </button>
                 </div>
 
-                {(group === 'glm' || group === 'zai') && (
+                {providerConfig && (
                   <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
                     <div className={inputContainerClass}>
-                      <input
-                        value={group === 'glm' ? glmConfig?.baseUrl || '' : zaiConfig?.baseUrl || ''}
-                        onChange={(e) =>
-                          group === 'glm'
-                            ? updateGlmSlotConfig(slot, 'baseUrl', e.target.value)
-                            : updateZaiSlotConfig(slot, 'baseUrl', e.target.value)
-                        }
-                        placeholder={group === 'glm' ? 'https://zenmux.ai/api/v1' : 'https://api.z.ai/api/coding/paas/v4'}
-                        className="bg-transparent border-none outline-none text-sm font-mono text-zinc-100 w-full placeholder:text-zinc-700"
-                      />
+                        <input
+                          value={providerConfig.baseUrl || ''}
+                          onChange={(e) =>
+                            configurableGroup && updateProviderSlotConfig(configurableGroup, slot, 'baseUrl', e.target.value)
+                          }
+                          placeholder={
+                            (configurableGroup && providerSlotDefaults[configurableGroup].baseUrl) ||
+                            'https://api.example.com/v1'
+                          }
+                          className="bg-transparent border-none outline-none text-sm font-mono text-zinc-100 w-full placeholder:text-zinc-700"
+                        />
                     </div>
                     <div className={inputContainerClass}>
-                      <input
-                        value={group === 'glm' ? glmConfig?.modelId || '' : zaiConfig?.modelId || ''}
-                        onChange={(e) =>
-                          group === 'glm'
-                            ? updateGlmSlotConfig(slot, 'modelId', e.target.value)
-                            : updateZaiSlotConfig(slot, 'modelId', e.target.value)
-                        }
-                        placeholder={group === 'glm' ? 'z-ai/glm-5.2-free' : 'glm-4.5v'}
-                        className="bg-transparent border-none outline-none text-sm font-mono text-zinc-100 w-full placeholder:text-zinc-700"
-                      />
+                        <input
+                          value={providerConfig.modelId || ''}
+                          onChange={(e) =>
+                            configurableGroup && updateProviderSlotConfig(configurableGroup, slot, 'modelId', e.target.value)
+                          }
+                          placeholder={(configurableGroup && providerSlotDefaults[configurableGroup].modelId) || 'model-id'}
+                          className="bg-transparent border-none outline-none text-sm font-mono text-zinc-100 w-full placeholder:text-zinc-700"
+                        />
                     </div>
                     <div className="glass-input flex items-center rounded-lg px-4 py-3">
                       <select
-                        value={group === 'glm' ? glmConfig?.providerMode || 'zenmux' : zaiConfig?.providerMode || 'zai-coding'}
+                        value={
+                          providerConfig.providerMode ||
+                          (configurableGroup ? providerSlotDefaults[configurableGroup].providerMode : '')
+                        }
                         onChange={(e) =>
-                          group === 'glm'
-                            ? updateGlmSlotConfig(slot, 'providerMode', e.target.value as GlmProviderMode)
-                            : updateZaiSlotConfig(slot, 'providerMode', e.target.value as ZaiProviderMode)
+                          configurableGroup &&
+                          updateProviderSlotConfig(configurableGroup, slot, 'providerMode', e.target.value)
                         }
                         className="w-full bg-transparent text-sm font-mono text-zinc-100 outline-none"
                       >
                         {group === 'glm' ? (
                           <>
+                            <option value="openai-compatible">OpenAI Compatible</option>
                             <option value="zenmux">ZenMux Compatible</option>
                             <option value="custom-compatible">Custom Compatible API</option>
                             <option value="direct-zai">Direct ZAI</option>
                           </>
-                        ) : (
+                        ) : group === 'zai' ? (
                           <>
                             <option value="zai-chat">Z.AI Chat Completions</option>
                             <option value="zai-coding">Z.AI Coding Compatible</option>
                             <option value="zai-compatible">Custom Z.AI Compatible</option>
+                          </>
+                        ) : (
+                          <>
+                            <option value="openai-compatible">OpenAI Compatible</option>
                           </>
                         )}
                       </select>
@@ -1164,21 +1216,21 @@ const SettingsView = ({ isSystemActive }: SettingsProps) => {
 
                     <div className="flex flex-col gap-3 md:col-span-2 bg-cyan-500/5 border border-cyan-500/20 rounded-xl p-5">
                       <label className="text-[10px] text-cyan-300 font-mono tracking-widest uppercase flex items-center gap-2">
-                        <RiCpuLine size={14} /> GLM 5.2 Model
+                        <RiCpuLine size={14} /> OpenRouter Default Model
                       </label>
                       <div className="grid grid-cols-1 md:grid-cols-[1fr_170px] gap-4">
                         <input
                           type="text"
                           value={openrouterModel}
                           onChange={(e) => setOpenRouterModel(e.target.value)}
-                          placeholder="glm-5.2"
+                          placeholder="openai/gpt-4.1-mini"
                           className="bg-[#050505] border border-white/10 rounded-lg px-4 py-3 text-sm font-mono text-zinc-100 outline-none focus:border-white/30 placeholder:text-zinc-700"
                         />
                         <button
                           onClick={saveOpenRouterSettings}
                           className="py-3 rounded-lg bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/30 text-cyan-300 font-bold tracking-widest text-[11px] flex items-center justify-center gap-2 transition-all cursor-pointer"
                         >
-                          <RiSave3Line size={16} /> SAVE GLM
+                          <RiSave3Line size={16} /> SAVE DEFAULT
                         </button>
                       </div>
                       {keySlotMessage && (
