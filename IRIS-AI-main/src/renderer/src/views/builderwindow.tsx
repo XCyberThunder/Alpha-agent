@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom'
 import {
   ArrowUp,
   AtSign,
+  AlertCircle,
+  Bell,
   Blocks,
   Bot,
   Bug,
@@ -28,6 +30,8 @@ import {
   MoreHorizontal,
   Paperclip,
   Plus,
+  Radio,
+  Search,
   Send,
   Settings,
   ShieldAlert,
@@ -39,7 +43,8 @@ import {
   User,
   Wrench,
   X,
-  Minus
+  Minus,
+  Info
 } from 'lucide-react'
 
 import {
@@ -547,6 +552,363 @@ const buildFileTree = (files: BuilderProjectFile[]): FileTreeNodeData[] => {
 
   sortNodes(root)
   return root
+}
+
+function ALPHAIcon({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 32 32" fill="none" aria-hidden>
+      <defs>
+        <linearGradient id="alpha-ref-grad" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#34d399" />
+          <stop offset="100%" stopColor="#10b981" />
+        </linearGradient>
+      </defs>
+      <rect
+        x="2"
+        y="2"
+        width="28"
+        height="28"
+        rx="8"
+        stroke="url(#alpha-ref-grad)"
+        strokeWidth="1.6"
+        fill="rgba(16,185,129,0.06)"
+      />
+      <path
+        d="M10 22.5 L16 9.5 L22 22.5"
+        stroke="url(#alpha-ref-grad)"
+        strokeWidth="2.1"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
+      />
+      <path d="M12.5 18 L19.5 18" stroke="url(#alpha-ref-grad)" strokeWidth="2.1" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+function WindowBtn({
+  title,
+  children,
+  danger
+}: {
+  title: string
+  children: React.ReactNode
+  danger?: boolean
+}) {
+  return (
+    <button
+      title={title}
+      onClick={(event) => event.preventDefault()}
+      className={`flex h-9 w-11 items-center justify-center transition-colors ${
+        danger ? 'text-[#cccccc] hover:bg-[#e81123] hover:text-white' : 'text-[#cccccc] hover:bg-white/10'
+      }`}
+    >
+      {children}
+    </button>
+  )
+}
+
+function BuilderTitleBar({ workspaceLabel }: { workspaceLabel: string }) {
+  return (
+    <div className="relative flex h-9 items-center justify-between border-b border-black/40 bg-[#3c3c3c] px-2 text-[12px] text-[#cccccc] select-none">
+      <div className="flex items-center gap-3">
+        {['File', 'Edit', 'Selection', 'View', 'Go', 'Run', 'Terminal', 'Help'].map((item) => (
+          <button key={item} className="text-[12px] text-[#cccccc] transition-colors hover:text-white">
+            {item}
+          </button>
+        ))}
+      </div>
+      <div className="absolute left-1/2 top-1/2 flex w-[min(440px,40vw)] -translate-x-1/2 -translate-y-1/2 items-center">
+        <div className="flex h-6 w-full items-center gap-2 rounded-md border border-[#4a4a4a] bg-[#252526] px-2 text-[12px] text-[#969696] hover:border-[#5a5a5a] hover:bg-[#2a2a2a]">
+          <Search size={13} className="shrink-0 text-[#969696]" />
+          <span className="truncate">{workspaceLabel}</span>
+          <ChevronDown size={12} className="ml-auto shrink-0 text-[#6a6a6a]" />
+        </div>
+      </div>
+      <div className="flex items-center">
+        <WindowBtn title="Minimize">
+          <Minus size={14} strokeWidth={1.5} />
+        </WindowBtn>
+        <WindowBtn title="Maximize">
+          <Square size={11} strokeWidth={1.5} />
+        </WindowBtn>
+        <WindowBtn title="Close" danger>
+          <X size={14} strokeWidth={1.5} />
+        </WindowBtn>
+      </div>
+    </div>
+  )
+}
+
+type ActivityItem = {
+  id: ActivityView
+  icon: React.ComponentType<{ size?: number; strokeWidth?: number; className?: string }> | 'alpha'
+  label: string
+  badge?: number
+}
+
+const REFERENCE_ACTIVITY_ITEMS: ActivityItem[] = [
+  { id: 'explorer', icon: 'alpha', label: 'ALPHA' },
+  { id: 'explorer', icon: Files, label: 'Explorer' },
+  { id: 'search', icon: Search, label: 'Search' },
+  { id: 'agent', icon: Sparkles, label: 'Coding Agent' },
+  { id: 'scm', icon: GitBranch, label: 'Source Control', badge: 3 },
+  { id: 'debug', icon: Bug, label: 'Run and Debug' },
+  { id: 'extensions', icon: Blocks, label: 'Extensions' }
+]
+
+function ActivityButton({
+  item,
+  active,
+  onSelect
+}: {
+  item: ActivityItem
+  active: boolean
+  onSelect: (value: ActivityView) => void
+}) {
+  if (item.icon === 'alpha') {
+    return (
+      <button
+        title={item.label}
+        onClick={() => onSelect(item.id)}
+        className="group relative flex h-10 w-10 items-center justify-center"
+      >
+        {active && <span className="activity-indicator" />}
+        <ALPHAIcon size={20} />
+      </button>
+    )
+  }
+
+  const Icon = item.icon
+  const isAgent = item.id === 'agent'
+  return (
+    <button
+      title={item.label}
+      onClick={() => onSelect(item.id)}
+      className={`group relative flex h-10 w-10 items-center justify-center rounded-md transition-colors ${
+        active ? (isAgent ? 'text-[#10b981]' : 'text-[#ffffff]') : 'text-[#858585] hover:text-[#cccccc]'
+      }`}
+    >
+      {active && <span className="activity-indicator" />}
+      <Icon size={18} strokeWidth={1.6} />
+      {isAgent && !active ? (
+        <span className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-[#10b981] shadow-[0_0_6px_rgba(16,185,129,0.7)]" />
+      ) : null}
+      {item.badge ? (
+        <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-[#007acc] px-1 text-[9px] font-bold text-white">
+          {item.badge}
+        </span>
+      ) : null}
+    </button>
+  )
+}
+
+function BuilderActivityBar({
+  active,
+  onSelect
+}: {
+  active: ActivityView
+  onSelect: (value: ActivityView) => void
+}) {
+  return (
+    <div className="relative z-20 flex h-full w-12 shrink-0 flex-col items-center justify-between border-r border-black/40 bg-[#333333] py-1">
+      <div className="flex flex-col items-center gap-0.5">
+        {REFERENCE_ACTIVITY_ITEMS.map((item, index) => (
+          <ActivityButton key={`${item.id}-${index}`} item={item} active={active === item.id} onSelect={onSelect} />
+        ))}
+      </div>
+      <div className="flex flex-col items-center gap-0.5">
+        <ActivityButton item={{ id: 'account', icon: User, label: 'Account' }} active={active === 'account'} onSelect={onSelect} />
+        <button
+          title="Manage"
+          className="flex h-10 w-10 items-center justify-center rounded-md text-[#858585] transition-colors hover:text-[#cccccc]"
+        >
+          <Settings size={18} strokeWidth={1.6} />
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function ModeToggle({
+  active,
+  onClick,
+  icon: Icon,
+  label
+}: {
+  active: boolean
+  onClick: () => void
+  icon: typeof Code2
+  label: string
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={label}
+      className={`flex h-7 items-center gap-1.5 rounded-md px-2 text-[11.5px] font-medium transition-colors ${
+        active ? 'bg-[#007acc]/20 text-[#4daafc] ring-1 ring-[#007acc]/40' : 'text-[#969696] hover:bg-white/[0.06] hover:text-[#cccccc]'
+      }`}
+    >
+      <Icon size={14} strokeWidth={1.8} />
+      {label}
+    </button>
+  )
+}
+
+function BuilderTabBar({
+  tabs,
+  activeTab,
+  mode,
+  onSelect,
+  onClose,
+  onModeChange
+}: {
+  tabs: Array<{ path: string; name: string; dirty?: boolean }>
+  activeTab: string
+  mode: RightPanel
+  onSelect: (path: string) => void
+  onClose: (path: string) => void
+  onModeChange: (value: RightPanel) => void
+}) {
+  return (
+    <div className="flex h-9 items-stretch border-b border-black/40 bg-[#252526]">
+      <div className="flex items-center gap-0.5 pl-1 pr-1">
+        <button className="rounded p-1 text-[#858585] hover:bg-white/[0.06] hover:text-[#cccccc]">
+          <ChevronLeft size={14} />
+        </button>
+        <button className="rounded p-1 text-[#858585] hover:bg-white/[0.06] hover:text-[#cccccc]">
+          <ChevronRight size={14} />
+        </button>
+      </div>
+      <div className="alpha-scroll-thin flex flex-1 items-stretch overflow-x-auto">
+        {tabs.length ? (
+          tabs.map((tab) => {
+            const isActive = tab.path === activeTab
+            const ext = tab.name.split('.').pop()?.toLowerCase() || ''
+            const langIcon = ext === 'tsx' ? 'TSX' : ext === 'ts' ? 'TS' : ext === 'json' ? '{}' : ext === 'md' ? 'MD' : ext.toUpperCase().slice(0, 3)
+            return (
+              <button
+                key={tab.path}
+                onClick={() => onSelect(tab.path)}
+                className={`group relative flex min-w-0 items-center gap-2 border-r border-black/30 px-3 text-[12.5px] transition-colors ${
+                  isActive ? 'bg-[#1e1e1e] text-white' : 'bg-[#2d2d2d] text-[#969696] hover:text-[#cccccc]'
+                }`}
+              >
+                {isActive ? <span className="absolute left-0 top-0 h-[1.5px] w-full bg-[#007acc]" /> : null}
+                <span
+                  className={`flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-sm text-[7.5px] font-bold ${
+                    langIcon === 'TSX' || langIcon === 'TS'
+                      ? 'bg-[#519aba]/20 text-[#519aba]'
+                      : langIcon === '{}'
+                        ? 'bg-[#cbcb41]/20 text-[#cbcb41]'
+                        : 'bg-white/10 text-[#858585]'
+                  }`}
+                >
+                  {langIcon}
+                </span>
+                <span className="truncate">{tab.name}</span>
+                {tab.dirty ? <span className="ml-1 h-1.5 w-1.5 shrink-0 rounded-full bg-[#e2c08d]" /> : null}
+                <span
+                  role="button"
+                  tabIndex={0}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    onClose(tab.path)
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault()
+                      event.stopPropagation()
+                      onClose(tab.path)
+                    }
+                  }}
+                  className={`ml-1 flex h-4 w-4 shrink-0 items-center justify-center rounded-sm hover:bg-white/[0.12] ${
+                    isActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                  }`}
+                >
+                  <X size={12} className="text-[#969696] hover:text-white" />
+                </span>
+              </button>
+            )
+          })
+        ) : (
+          <div className="flex items-center px-3 text-[12px] text-[#6a6a6a]">No open files</div>
+        )}
+      </div>
+      <div className="flex items-center gap-1 border-l border-black/30 bg-[#252526] px-2">
+        <ModeToggle active={mode === 'code'} onClick={() => onModeChange('code')} icon={Code2} label="Code" />
+        <ModeToggle active={mode === 'preview'} onClick={() => onModeChange('preview')} icon={Eye} label="Preview" />
+        <ModeToggle active={mode === 'split'} onClick={() => onModeChange('split')} icon={Blocks} label="Split" />
+        <div className="mx-1 h-4 w-px bg-black/30" />
+        <button title="More actions" className="rounded p-1.5 text-[#858585] hover:bg-white/[0.06] hover:text-[#cccccc]">
+          <MoreHorizontal size={15} />
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function BuilderBreadcrumbs({ path }: { path: string }) {
+  const parts = path.split(' / ')
+  return (
+    <div className="flex h-8 items-center gap-0.5 border-b border-black/40 bg-[#1e1e1e] px-4 text-[12px] text-[#858585]">
+      {parts.map((part, index) => {
+        const isLast = index === parts.length - 1
+        return (
+          <div key={`${part}-${index}`} className="flex items-center gap-0.5">
+            {index > 0 ? <ChevronRight size={12} className="text-[#6a6a6a]" /> : null}
+            <span className={isLast ? 'font-medium text-[#cccccc]' : 'hover:text-[#cccccc]'}>{part}</span>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function BuilderStatusItem({
+  icon: Icon,
+  label,
+  value
+}: {
+  icon?: React.ComponentType<{ size?: number; strokeWidth?: number; className?: string }>
+  label?: string
+  value?: string
+}) {
+  return (
+    <button className="flex h-full items-center gap-1 px-2 transition-colors hover:bg-white/15">
+      {Icon ? <Icon size={12} strokeWidth={1.8} /> : null}
+      {label ? <span>{label}</span> : null}
+      {value ? <span className="opacity-80">{value}</span> : null}
+    </button>
+  )
+}
+
+function BuilderStatusBar({
+  projectName,
+  provider,
+  status
+}: {
+  projectName: string
+  provider: string
+  status: string
+}) {
+  return (
+    <div className="flex h-6 items-stretch justify-between bg-[#007acc] text-[11px] text-white">
+      <div className="flex items-stretch">
+        <BuilderStatusItem icon={GitBranch} label={projectName} />
+        <BuilderStatusItem icon={Sparkles} label={provider} />
+        <BuilderStatusItem icon={Radio} label="0 ↑ 1 ↓" />
+        <BuilderStatusItem icon={AlertCircle} label="0" />
+        <BuilderStatusItem icon={Info} label="0" />
+      </div>
+      <div className="flex items-stretch">
+        <BuilderStatusItem label="Ln " value="1, Col 1" />
+        <BuilderStatusItem label="UTF-8" />
+        <BuilderStatusItem icon={Check} label={status} />
+        <BuilderStatusItem icon={Bell} />
+      </div>
+    </div>
+  )
 }
 
 const inlinePreviewHtml = (files: BuilderProjectFile[]) => {
@@ -2326,81 +2688,10 @@ export default function BuilderWindow() {
         </div>
 
         <div className="builderwindow-root flex h-screen w-full flex-col overflow-hidden bg-[#1e1e1e] text-[#cccccc]">
-          <div className="flex h-9 shrink-0 items-center justify-between border-b border-black/40 bg-[#3c3c3c] px-2 text-[12px] text-[#cccccc]">
-            <div className="flex items-center gap-3">
-              <span className="text-[12px] font-medium text-white">ALPHA</span>
-              <div className="hidden items-center gap-3 md:flex">
-                {['File', 'Edit', 'Selection', 'View', 'Go', 'Run', 'Terminal', 'Help'].map((item) => (
-                  <button key={item} className="text-[12px] text-[#cccccc] transition-colors hover:text-white">
-                    {item}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div className="absolute left-1/2 top-1/2 hidden w-[min(440px,40vw)] -translate-x-1/2 -translate-y-1/2 md:flex">
-              <div className="flex h-6 w-full items-center gap-2 rounded-md border border-[#4a4a4a] bg-[#252526] px-2 text-[12px] text-[#969696]">
-                <Sparkles size={12} className="text-[#10b981]" />
-                <span className="truncate">ALPHA Builder Workspace</span>
-                <ChevronDown size={12} className="ml-auto text-[#6a6a6a]" />
-              </div>
-            </div>
-            <div className="flex items-center">
-              <button className="flex h-9 w-11 items-center justify-center text-[#cccccc] transition-colors hover:bg-white/10">
-                <Minus size={14} strokeWidth={1.5} />
-              </button>
-              <button className="flex h-9 w-11 items-center justify-center text-[#cccccc] transition-colors hover:bg-white/10">
-                <Square size={11} strokeWidth={1.5} />
-              </button>
-              <button className="flex h-9 w-11 items-center justify-center text-[#cccccc] transition-colors hover:bg-[#e81123] hover:text-white">
-                <X size={14} strokeWidth={1.5} />
-              </button>
-            </div>
-          </div>
+          <BuilderTitleBar workspaceLabel={projectState?.metadata.name || 'ALPHA-MAIN'} />
 
           <div className="flex min-h-0 flex-1">
-            <div className="relative z-20 flex h-full w-12 shrink-0 flex-col items-center justify-between border-r border-black/40 bg-[#333333] py-1">
-              <div className="flex flex-col items-center gap-0.5">
-                {[
-                  { id: 'explorer', icon: Files, label: 'Explorer' },
-                  { id: 'search', icon: EyeOff, label: 'Search' },
-                  { id: 'agent', icon: Sparkles, label: 'Coding Agent' },
-                  { id: 'scm', icon: GitBranch, label: 'Source Control' },
-                  { id: 'debug', icon: Bug, label: 'Run and Debug' },
-                  { id: 'extensions', icon: Blocks, label: 'Extensions' }
-                ].map((item) => {
-                  const Icon = item.icon
-                  const active = activityView === (item.id as ActivityView)
-                  return (
-                    <button
-                      key={item.id}
-                      title={item.label}
-                      onClick={() => setActivityView(item.id as ActivityView)}
-                      className={`group relative flex h-10 w-10 items-center justify-center rounded-md transition-colors ${
-                        active ? 'text-white' : 'text-[#858585] hover:text-[#cccccc]'
-                      }`}
-                    >
-                      {active && <span className="activity-indicator" />}
-                      <Icon size={18} strokeWidth={1.6} className={item.id === 'agent' ? 'text-[#10b981]' : ''} />
-                    </button>
-                  )
-                })}
-              </div>
-              <div className="flex flex-col items-center gap-0.5">
-                <button
-                  title="Account"
-                  onClick={() => setActivityView('account')}
-                  className={`group relative flex h-10 w-10 items-center justify-center rounded-md transition-colors ${
-                    activityView === 'account' ? 'text-white' : 'text-[#858585] hover:text-[#cccccc]'
-                  }`}
-                >
-                  {activityView === 'account' && <span className="activity-indicator" />}
-                  <User size={18} strokeWidth={1.6} />
-                </button>
-                <button title="Settings" className="group relative flex h-10 w-10 items-center justify-center rounded-md text-[#858585] transition-colors hover:text-[#cccccc]">
-                  <Settings size={18} strokeWidth={1.6} />
-                </button>
-              </div>
-            </div>
+            <BuilderActivityBar active={activityView} onSelect={setActivityView} />
 
             <aside className={`shrink-0 border-r border-[#2b2b2b] bg-[#252526] ${activityView === 'agent' ? 'w-[320px]' : 'w-[280px]'}`}>
               {activityView === 'agent' ? (
@@ -2674,99 +2965,16 @@ export default function BuilderWindow() {
             </aside>
 
             <main className="flex min-w-0 flex-1 flex-col bg-[#1e1e1e]">
-              <div className="flex h-9 items-stretch border-b border-black/40 bg-[#252526]">
-                <div className="flex items-center gap-0.5 pl-1 pr-1">
-                  <button className="rounded p-1 text-[#858585] hover:bg-white/[0.06] hover:text-[#cccccc]">
-                    <ChevronLeft size={14} />
-                  </button>
-                  <button className="rounded p-1 text-[#858585] hover:bg-white/[0.06] hover:text-[#cccccc]">
-                    <ChevronRight size={14} />
-                  </button>
-                </div>
+              <BuilderTabBar
+                tabs={activeTabs}
+                activeTab={selectedFileKey}
+                mode={panel}
+                onSelect={(path) => setSelectedFilePath(stringPathToArray(path))}
+                onClose={handleCloseTab}
+                onModeChange={setPanel}
+              />
 
-                <div className="alpha-scroll-thin flex flex-1 items-stretch overflow-x-auto">
-                  {activeTabs.length ? (
-                    activeTabs.map((tab) => {
-                      const isActive = tab.path === selectedFileKey
-                      return (
-                        <button
-                          key={tab.path}
-                          onClick={() => setSelectedFilePath(stringPathToArray(tab.path))}
-                          className={`group relative flex min-w-0 items-center gap-2 border-r border-black/30 px-3 text-[12.5px] transition-colors ${
-                            isActive ? 'bg-[#1e1e1e] text-white' : 'bg-[#2d2d2d] text-[#969696] hover:text-[#cccccc]'
-                          }`}
-                        >
-                          {isActive && <span className="absolute left-0 top-0 h-[1.5px] w-full bg-[#007acc]" />}
-                          <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-sm bg-[#519aba]/20 text-[7.5px] font-bold text-[#519aba]">
-                            {tab.name.split('.').pop()?.toUpperCase().slice(0, 3) || 'TXT'}
-                          </span>
-                          <span className="truncate">{tab.name}</span>
-                          {tab.dirty ? <span className="ml-1 h-1.5 w-1.5 shrink-0 rounded-full bg-[#e2c08d]" /> : null}
-                          <span
-                            role="button"
-                            tabIndex={0}
-                            onClick={(event) => {
-                              event.stopPropagation()
-                              handleCloseTab(tab.path)
-                            }}
-                            className="ml-1 flex h-4 w-4 shrink-0 items-center justify-center rounded-sm opacity-0 hover:bg-white/[0.12] group-hover:opacity-100"
-                          >
-                            <X size={12} className="text-[#969696] hover:text-white" />
-                          </span>
-                        </button>
-                      )
-                    })
-                  ) : (
-                    <div className="flex items-center px-3 text-[12px] text-[#6a6a6a]">No open tabs</div>
-                  )}
-                </div>
-
-                <div className="flex items-center gap-1 border-l border-black/30 bg-[#252526] px-2">
-                  {[
-                    { id: 'code', label: 'Code', icon: Code2 },
-                    { id: 'preview', label: 'Preview', icon: Eye },
-                    { id: 'split', label: 'Split', icon: Files }
-                  ].map((mode) => {
-                    const ModeIcon = mode.icon
-                    const active = panel === mode.id
-                    return (
-                      <button
-                        key={mode.id}
-                        onClick={() => setPanel(mode.id as RightPanel)}
-                        className={`flex h-7 items-center gap-1.5 rounded-md px-2 text-[11.5px] font-medium transition-colors ${
-                          active
-                            ? 'bg-[#007acc]/20 text-[#4daafc] ring-1 ring-[#007acc]/40'
-                            : 'text-[#969696] hover:bg-white/[0.06] hover:text-[#cccccc]'
-                        }`}
-                      >
-                        <ModeIcon size={14} strokeWidth={1.8} />
-                        {mode.label}
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
-
-              <div className="flex h-8 items-center gap-0.5 border-b border-black/40 bg-[#1e1e1e] px-4 text-[12px] text-[#858585]">
-                {breadcrumbPath.split(' / ').map((part, index, array) => (
-                  <div key={`${part}-${index}`} className="flex items-center gap-0.5">
-                    {index > 0 && <ChevronRight size={12} className="text-[#6a6a6a]" />}
-                    <span className={index === array.length - 1 ? 'font-medium text-[#cccccc]' : 'hover:text-[#cccccc]'}>
-                      {part}
-                    </span>
-                  </div>
-                ))}
-                <div className="ml-auto flex items-center gap-3 text-[11px] text-[#6a6a6a]">
-                  <span className="flex items-center gap-1">
-                    <Check size={11} className="text-[#10b981]" />
-                    Builder ready
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <span className="h-1.5 w-1.5 rounded-full bg-[#10b981]" />
-                    {activeProviderLabel}
-                  </span>
-                </div>
-              </div>
+              <BuilderBreadcrumbs path={breadcrumbPath} />
 
               <div className="relative min-h-0 flex-1">
                 {!showWorkspace ? (
@@ -2868,30 +3076,11 @@ export default function BuilderWindow() {
                 )}
               </div>
 
-              <div className="flex h-6 items-stretch justify-between bg-[#007acc] text-[11px] text-white">
-                <div className="flex items-stretch">
-                  <button className="flex h-full items-center gap-1 px-2 transition-colors hover:bg-white/15">
-                    <GitBranch size={12} strokeWidth={1.8} />
-                    <span>{projectState?.metadata.name || 'alpha-builder'}</span>
-                  </button>
-                  <button className="flex h-full items-center gap-1 px-2 transition-colors hover:bg-white/15">
-                    <Sparkles size={12} strokeWidth={1.8} />
-                    <span>{activeProviderLabel}</span>
-                  </button>
-                </div>
-                <div className="flex items-stretch">
-                  <button className="flex h-full items-center gap-1 px-2 transition-colors hover:bg-white/15">
-                    <span>Ln 1, Col 1</span>
-                  </button>
-                  <button className="flex h-full items-center gap-1 px-2 transition-colors hover:bg-white/15">
-                    <span>UTF-8</span>
-                  </button>
-                  <button className="flex h-full items-center gap-1 px-2 transition-colors hover:bg-white/15">
-                    <Check size={12} strokeWidth={1.8} />
-                    <span>{statusText}</span>
-                  </button>
-                </div>
-              </div>
+              <BuilderStatusBar
+                projectName={projectState?.metadata.name || 'alpha-builder'}
+                provider={activeProviderLabel}
+                status={statusText}
+              />
             </main>
           </div>
         </div>
