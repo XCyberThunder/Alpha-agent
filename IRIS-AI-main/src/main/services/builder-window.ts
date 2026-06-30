@@ -189,6 +189,7 @@ export const openBuilderWindow = async ({
       minWidth: 1200,
       minHeight: 760,
       title: 'ALPHA Website Builder',
+      frame: false,
       show: false,
       backgroundColor: '#020617',
       autoHideMenuBar: true,
@@ -248,6 +249,18 @@ export default function registerBuilderWindow({
   ipcMain.handle('builder-window-close', async () => {
     builderWindow?.close()
     return { success: true }
+  })
+
+  ipcMain.handle('builder-window-minimize', async () => {
+    builderWindow?.minimize()
+    return { success: true }
+  })
+
+  ipcMain.handle('builder-window-maximize-toggle', async () => {
+    if (!builderWindow) return { success: false }
+    if (builderWindow.isMaximized()) builderWindow.unmaximize()
+    else builderWindow.maximize()
+    return { success: true, maximized: builderWindow.isMaximized() }
   })
 
   ipcMain.handle('builder-window-pick-attachments', async (_, { kind }: { kind: AttachmentKind }) => {

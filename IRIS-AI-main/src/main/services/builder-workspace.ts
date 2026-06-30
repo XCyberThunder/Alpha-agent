@@ -27,6 +27,13 @@ type WorkspaceSnapshot = {
   branch: string | null
 }
 
+type WorkspaceSearchResult = {
+  filePath: string
+  fileName: string
+  line: number
+  preview: string
+}
+
 type BuilderWorkspaceStore = {
   lastWorkspacePath: string | null
   recentWorkspaces: WorkspaceSummary[]
@@ -42,6 +49,7 @@ const execFileAsync = promisify(execFile)
 const STORE_FILE = path.join(app.getPath('userData'), 'builder-workspace.json')
 const MAX_RECENT = 12
 const terminalSessions = new Map<string, TerminalSession>()
+const SEARCH_IGNORES = new Set(['node_modules', '.git', 'dist', 'build'])
 
 const makeId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
@@ -154,6 +162,58 @@ const readWorkspaceTree = async (rootPath: string): Promise<WorkspaceNode[]> => 
   }
 
   return readDirRecursive(rootPath)
+}
+
+const isProbablyBinary = (buffer: Buffer) => {
+  const sample = buffer.subarray(0, Math.min(buffer.length, 8000))
+  for (const byte of sample) {
+    if (byte === 0) return true
+  }
+  return false
+}
+
+const searchWorkspace = async (workspacePath: string, query: string): Promise<WorkspaceSearchResult[]> => {
+  const normalizedQuery = query.trim().toLowerCase()
+  if (!normalizedQuery) return []
+
+  const results: WorkspaceSearchResult[] = []
+
+  const walk = async (dirPath: string): Promise<void> => {
+    const entries = await fsp.readdir(dirPath, { withFileTypes: true })
+    for (const entry of entries) {
+      const fullPath = path.join(dirPath, entry.name)
+      if (entry.isSymbolicLink()) continue
+      if (entry.isDirectory()) {
+        if (SEARCH_IGNORES.has(entry.name)) continue
+        await walk(fullPath)
+        continue
+      }
+      if (!entry.isFile()) continue
+
+      try {
+        const stats = await fsp.stat(fullPath)
+        if (stats.size > 1024 * 1024) continue
+        const raw = await fsp.readFile(fullPath)
+        if (isProbablyBinary(raw)) continue
+        const text = raw.toString('utf8')
+        const lines = text.split(/\r?\n/)
+        lines.forEach((lineText, index) => {
+          if (!lineText.toLowerCase().includes(normalizedQuery)) return
+          results.push({
+            filePath: fullPath,
+            fileName: path.basename(fullPath),
+            line: index + 1,
+            preview: lineText.trim().slice(0, 240)
+          })
+        })
+      } catch {
+        // ignore unreadable files
+      }
+    }
+  }
+
+  await walk(workspacePath)
+  return results.slice(0, 500)
 }
 
 const getGitBranch = async (workspacePath: string): Promise<string | null> => {
@@ -269,6 +329,13 @@ export default function registerBuilderWorkspace(ipcMain: IpcMain) {
       lastWorkspacePath: store.lastWorkspacePath,
       recentWorkspaces: store.recentWorkspaces
     }
+  })
+
+  ipcMain.handle('builder-workspace:clear-recents', async () => {
+    const store = ensureStore()
+    store.recentWorkspaces = []
+    writeStore(store)
+    return { success: true, recentWorkspaces: [] as WorkspaceSummary[] }
   })
 
   ipcMain.handle('builder-workspace:open-file-dialog', async (_, { workspacePath }: { workspacePath?: string }) => {
@@ -419,6 +486,24 @@ export default function registerBuilderWorkspace(ipcMain: IpcMain) {
       }
     }
   })
+
+  ipcMain.handle(
+    'builder-workspace:search',
+    async (_, { workspacePath, query }: { workspacePath?: string; query: string }) => {
+      try {
+        if (!workspacePath || !(await isDirectory(workspacePath))) {
+          return { success: false, error: 'Open a folder to search.' }
+        }
+        const results = await searchWorkspace(workspacePath, query)
+        return { success: true, results }
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : 'Search failed.'
+        }
+      }
+    }
+  )
 
   ipcMain.handle('builder-workspace:reveal-path', async (_, { targetPath }: { targetPath: string }) => {
     try {

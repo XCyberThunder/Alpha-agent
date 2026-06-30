@@ -983,17 +983,24 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
     currentFiles?: ProjectFile[]
   ) =>
     [
-      `You are ALPHA coding engine using ${providerLabel}.`,
+      `You are ALPHA Builder coding agent using ${providerLabel}.`,
+      'You are already inside an open Builder workspace.',
+      'Do not ask which builder, editor, or framework UI to open.',
+      'Assume the current workspace and current files are the working context.',
+      'If the workspace already contains HTML, CSS, or JavaScript files, treat the task as an in-place HTML/CSS/JS edit unless the user explicitly asks to migrate stacks.',
+      'Do not ask follow-up questions like "which builder interface" or "which framework" when the current workspace already implies the stack.',
       `The detected project type is ${projectType}.`,
       'Return strict JSON only.',
       'Schema:',
       '{"projectName":"string","projectType":"string","summary":"string","files":[{"path":"relative/path","content":"file contents"}]}',
       'Never wrap output in markdown.',
       'Never return explanation-only answers.',
+      'Return concrete file edits or a full file map only.',
       'Do not create generated-1.txt, output.txt, response.txt, or random text dump files unless explicitly asked.',
       currentFiles?.length
         ? 'You are editing an existing project. Respect current files and return only needed updated files or a complete corrected file map.'
         : 'You are creating a fresh project from the user request.',
+      'For edit requests, directly modify the current project files and return the updated files.',
       'For websites include at least index.html, style.css, script.js, README.md.',
       'For React/webapp prompts prefer package.json, index.html, src/main.tsx, src/App.tsx, src/styles.css, README.md.',
       'For calculator prompts return a real working calculator UI and JS interactions.',
@@ -1018,8 +1025,8 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
 
   const buildProjectUserPrompt = (prompt: string, projectType: string, currentFiles?: ProjectFile[]) =>
     currentFiles?.length
-      ? `Update this existing project for the request.\nDetected project type: ${projectType}\nRequest: ${prompt}\nCurrent file tree:\n${currentFiles.map((file) => file.path).join('\n')}\nCurrent files:\n${JSON.stringify(currentFiles.slice(0, 12))}`
-      : `Create a project for this request.\nDetected project type: ${projectType}\nRequest: ${prompt}`
+      ? `Update this existing project for the request.\nDetected project type: ${projectType}\nRequest: ${prompt}\nCurrent file tree:\n${currentFiles.map((file) => file.path).join('\n')}\nCurrent files:\n${JSON.stringify(currentFiles.slice(0, 12))}\nApply concrete file edits and return them in strict JSON.`
+      : `Create a project for this request.\nDetected project type: ${projectType}\nRequest: ${prompt}\nReturn strict JSON file outputs only.`
 
   const buildChatSystemPrompt = (
     providerLabel: string,
@@ -1898,7 +1905,7 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
   }
 
   const buildStructuredRetryPrompt = (prompt: string) =>
-    `Original request: ${prompt}\n\nYour previous response was not in usable file format. Return strict JSON only using this schema: {"projectName":"string","projectType":"string","summary":"string","files":[{"path":"relative/path","content":"file contents"}]}. Do not include markdown or explanation.`
+    `Original request: ${prompt}\n\nYou are inside ALPHA Builder with an active workspace. Your previous response was not in usable file format. Return strict JSON only using this schema: {"projectName":"string","projectType":"string","summary":"string","files":[{"path":"relative/path","content":"file contents"}]}. Do not include markdown or explanation.`
 
   const runAbortableBuilderRequest = async <T>(
     requestId: string | undefined,

@@ -58,6 +58,13 @@ export type BuilderWorkspaceTerminalEvent = {
   exitCode?: number | null
 }
 
+export type BuilderWorkspaceSearchResult = {
+  filePath: string
+  fileName: string
+  line: number
+  preview: string
+}
+
 export const getBuilderWorkspaceState = async (): Promise<BuilderWorkspaceStateResponse> =>
   window.electron.ipcRenderer.invoke('builder-workspace:get-state')
 
@@ -69,10 +76,19 @@ export const openBuilderWorkspace = async (
 ): Promise<BuilderWorkspaceStateResponse> =>
   window.electron.ipcRenderer.invoke('builder-workspace:open-workspace', { workspacePath })
 
+export const clearBuilderRecentWorkspaces = async (): Promise<BuilderWorkspaceStateResponse> =>
+  window.electron.ipcRenderer.invoke('builder-workspace:clear-recents')
+
 export const refreshBuilderWorkspace = async (
   workspacePath: string
 ): Promise<BuilderWorkspaceStateResponse> =>
   window.electron.ipcRenderer.invoke('builder-workspace:refresh', { workspacePath })
+
+export const searchBuilderWorkspace = async (payload: {
+  workspacePath?: string
+  query: string
+}): Promise<{ success: boolean; results?: BuilderWorkspaceSearchResult[]; error?: string }> =>
+  window.electron.ipcRenderer.invoke('builder-workspace:search', payload)
 
 export const openBuilderLooseFileDialog = async (
   workspacePath?: string

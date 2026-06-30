@@ -36,8 +36,10 @@ import {
 } from "@renderer/components/ui";
 import {
   type BuilderWorkspaceNode,
+  type BuilderWorkspaceSearchResult,
   type BuilderWorkspaceSnapshot,
   type BuilderWorkspaceSummary,
+  clearBuilderRecentWorkspaces,
   createBuilderWorkspaceFile,
   createBuilderWorkspaceFolder,
   disposeBuilderTerminal,
@@ -48,6 +50,7 @@ import {
   openBuilderWorkspaceFolderDialog,
   readBuilderWorkspaceFile,
   refreshBuilderWorkspace,
+  searchBuilderWorkspace,
   sendBuilderTerminalInput,
   type BuilderWorkspaceTerminalEvent,
   writeBuilderWorkspaceFile,
@@ -59,9 +62,11 @@ import {
   getBuilderModelStatuses,
   getBuilderWindowState,
   type BuilderModelStatuses,
+  setBuilderModelEnabled,
   type BuilderProjectState,
   type BuilderProviderSelection,
   saveBuilderProjectFile,
+  testBuilderModelSlot,
   updateBuilderProject,
 } from "@renderer/services/project-builder";
 
@@ -70,11 +75,15 @@ function TerminalPanel({
   onMinimize,
   height,
   workspacePath,
+  queuedCommand,
+  onQueuedCommandHandled,
 }: {
   onClose: () => void
   onMinimize: () => void
   height: number
   workspacePath?: string | null
+  queuedCommand?: string | null
+  onQueuedCommandHandled?: () => void
 }) {
   const [activeTab, setActiveTab] = useState<PanelTab>("terminal");
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -143,6 +152,14 @@ function TerminalPanel({
     setExitCode(null);
     await sendBuilderTerminalInput(sessionIdRef.current, `${command}\n`);
   }, [cwd, input]);
+
+  useEffect(() => {
+    if (!queuedCommand || !sessionIdRef.current) return;
+    setOutput((prev) => [...prev, `${cwd || "~"} > ${queuedCommand}`]);
+    setExitCode(null);
+    void sendBuilderTerminalInput(sessionIdRef.current, `${queuedCommand}\n`);
+    onQueuedCommandHandled?.();
+  }, [cwd, onQueuedCommandHandled, queuedCommand, sessionId]);
 
   return (
     <div className="flex shrink-0 flex-col border-t border-[#2b2b2b] bg-[#1e1e1e]" style={{ height }}>
@@ -257,7 +274,7 @@ type OpenTab = {
 }
 
 type MenuItem =
-  | { type: "item"; label: string; shortcut?: string; checked?: boolean; submenu?: MenuItem[] }
+  | { type: "item"; label: string; shortcut?: string; checked?: boolean; submenu?: MenuItem[]; actionId?: string }
   | { type: "separator" };
 
 type MenuDef = { id: string; label: string; items: MenuItem[] };
@@ -292,6 +309,9 @@ type AgentMessage = {
   createdAt: string
   providerLabel?: string
   error?: boolean
+  loading?: boolean
+  transient?: boolean
+  tone?: "default" | "success" | "cancelled"
 }
 
 type BuilderModelOption = {
@@ -309,6 +329,74 @@ type BuilderWindowPayload = {
   providerError?: string
   autoStart?: boolean
   selectedProvider?: string
+}
+
+type SearchGroup = {
+  filePath: string
+  fileName: string
+  matches: BuilderWorkspaceSearchResult[]
+}
+
+type PendingCreateTarget = {
+  kind: "file" | "folder"
+  value: string
+}
+
+type BuilderPreferences = {
+  autoSave: boolean
+  wordWrap: boolean
+  tabSize: number
+  fontSize: number
+  fontFamily: string
+  defaultShell: string
+}
+
+type CodingContextState = {
+  originalPrompt: string
+  intent: Extract<BuilderAgentIntent, "CODING_GENERATE" | "CODING_EDIT">
+  createdAt: string
+}
+
+type BuilderRequestLifecycleState = "idle" | "running" | "completed" | "failed" | "cancelled"
+
+const BUILDER_PREFERENCES_KEY = "alpha-builder-preferences-v1";
+
+const defaultBuilderPreferences: BuilderPreferences = {
+  autoSave: false,
+  wordWrap: false,
+  tabSize: 2,
+  fontSize: 12.5,
+  fontFamily: "JetBrains Mono",
+  defaultShell: "PowerShell",
+};
+
+function loadBuilderPreferences(): BuilderPreferences {
+  if (typeof window === "undefined") return defaultBuilderPreferences;
+  try {
+    const raw = window.localStorage.getItem(BUILDER_PREFERENCES_KEY);
+    if (!raw) return defaultBuilderPreferences;
+    const parsed = JSON.parse(raw) as Partial<BuilderPreferences>;
+    return {
+      autoSave: typeof parsed.autoSave === "boolean" ? parsed.autoSave : defaultBuilderPreferences.autoSave,
+      wordWrap: typeof parsed.wordWrap === "boolean" ? parsed.wordWrap : defaultBuilderPreferences.wordWrap,
+      tabSize:
+        typeof parsed.tabSize === "number" && Number.isFinite(parsed.tabSize) ? parsed.tabSize : defaultBuilderPreferences.tabSize,
+      fontSize:
+        typeof parsed.fontSize === "number" && Number.isFinite(parsed.fontSize)
+          ? parsed.fontSize
+          : defaultBuilderPreferences.fontSize,
+      fontFamily:
+        typeof parsed.fontFamily === "string" && parsed.fontFamily.trim()
+          ? parsed.fontFamily.trim()
+          : defaultBuilderPreferences.fontFamily,
+      defaultShell:
+        typeof parsed.defaultShell === "string" && parsed.defaultShell.trim()
+          ? parsed.defaultShell.trim()
+          : defaultBuilderPreferences.defaultShell,
+    };
+  } catch {
+    return defaultBuilderPreferences;
+  }
 }
 
 function LivePreview({
@@ -595,7 +683,7 @@ function loadStoredChat(workspacePath: string | null): AgentMessage[] {
     const raw = window.localStorage.getItem(chatStorageKey(workspacePath));
     if (!raw) return [];
     const parsed = JSON.parse(raw) as AgentMessage[];
-    return Array.isArray(parsed) ? parsed : [];
+    return Array.isArray(parsed) ? parsed.filter((message) => !message?.transient) : [];
   } catch {
     return [];
   }
@@ -603,10 +691,28 @@ function loadStoredChat(workspacePath: string | null): AgentMessage[] {
 
 function saveStoredChat(workspacePath: string | null, messages: AgentMessage[]) {
   try {
-    window.localStorage.setItem(chatStorageKey(workspacePath), JSON.stringify(messages.slice(-80)));
+    window.localStorage.setItem(
+      chatStorageKey(workspacePath),
+      JSON.stringify(messages.filter((message) => !message.transient).slice(-80))
+    );
   } catch {
     // ignore persistence errors
   }
+}
+
+function collectWorkspaceFilePaths(nodes: BuilderWorkspaceNode[], limit = 24, prefix = ""): string[] {
+  const filePaths: string[] = [];
+  for (const node of nodes) {
+    const nextPath = prefix ? `${prefix}/${node.name}` : node.name;
+    if (node.type === "file") {
+      filePaths.push(nextPath);
+      if (filePaths.length >= limit) break;
+      continue;
+    }
+    filePaths.push(...collectWorkspaceFilePaths(node.children ?? [], limit - filePaths.length, nextPath));
+    if (filePaths.length >= limit) break;
+  }
+  return filePaths;
 }
 
 function providerDisplayName(provider: string) {
@@ -793,7 +899,16 @@ function findPreferredFilePath(snapshot: BuilderWorkspaceSnapshot | null, prefer
 /* ============================================================
    Menu definitions
    ============================================================ */
-const menus: MenuDef[] = [
+function buildMenus(recentWorkspaces: BuilderWorkspaceSummary[]): MenuDef[] {
+  const recentItems: MenuItem[] = recentWorkspaces.length
+    ? recentWorkspaces.map((workspace) => ({
+        type: "item",
+        label: workspace.name,
+        actionId: `open-recent:${workspace.path}`,
+      }))
+    : [{ type: "item", label: "No Recent Folders", actionId: "noop:no-recents" }];
+
+  return [
   {
     id: "file", label: "File",
     items: [
@@ -806,11 +921,10 @@ const menus: MenuDef[] = [
       {
         type: "item", label: "Open Recent",
         submenu: [
-          { type: "item", label: "ALPHA-MAIN", checked: true },
-          { type: "item", label: "iris-ai-main" },
+          ...recentItems,
           { type: "separator" },
           { type: "item", label: "More..." },
-          { type: "item", label: "Clear Recently Opened" },
+          { type: "item", label: "Clear Recently Opened", actionId: "clear-recent" },
         ],
       },
       { type: "separator" },
@@ -830,7 +944,7 @@ const menus: MenuDef[] = [
       {
         type: "item", label: "Preferences",
         submenu: [
-          { type: "item", label: "Settings", shortcut: "Ctrl+," },
+          { type: "item", label: "Settings", shortcut: "Ctrl+,", actionId: "open-settings" },
           { type: "item", label: "Keyboard Shortcuts", shortcut: "Ctrl+K Ctrl+S" },
           { type: "item", label: "Color Theme", shortcut: "Ctrl+K Ctrl+T" },
         ],
@@ -854,7 +968,7 @@ const menus: MenuDef[] = [
       { type: "separator" },
       { type: "item", label: "Find", shortcut: "Ctrl+F" },
       { type: "item", label: "Replace", shortcut: "Ctrl+H" },
-      { type: "item", label: "Find in Files", shortcut: "Ctrl+Shift+F" },
+      { type: "item", label: "Find in Files", shortcut: "Ctrl+Shift+F", actionId: "open-search" },
     ],
   },
   {
@@ -889,7 +1003,7 @@ const menus: MenuDef[] = [
       },
       { type: "separator" },
       { type: "item", label: "Explorer", shortcut: "Ctrl+Shift+E" },
-      { type: "item", label: "Search", shortcut: "Ctrl+Shift+F" },
+      { type: "item", label: "Search", shortcut: "Ctrl+Shift+F", actionId: "open-search" },
       { type: "item", label: "Source Control", shortcut: "Ctrl+Shift+G" },
       { type: "item", label: "Run", shortcut: "Ctrl+Shift+D" },
       { type: "item", label: "Extensions", shortcut: "Ctrl+Shift+X" },
@@ -918,7 +1032,7 @@ const menus: MenuDef[] = [
     id: "run", label: "Run",
     items: [
       { type: "item", label: "Start Debugging", shortcut: "F5" },
-      { type: "item", label: "Run Without Debugging", shortcut: "Ctrl+F5" },
+      { type: "item", label: "Run Without Debugging", shortcut: "Ctrl+F5", actionId: "run-active-file" },
       { type: "item", label: "Stop Debugging", shortcut: "Shift+F5" },
       { type: "separator" },
       { type: "item", label: "Toggle Breakpoint", shortcut: "F9" },
@@ -934,7 +1048,7 @@ const menus: MenuDef[] = [
       { type: "separator" },
       { type: "item", label: "Run Task..." },
       { type: "item", label: "Run Build Task", shortcut: "Ctrl+Shift+B" },
-      { type: "item", label: "Run Active File" },
+      { type: "item", label: "Run Active File", actionId: "run-active-file" },
     ],
   },
   {
@@ -989,7 +1103,7 @@ const menus: MenuDef[] = [
         ],
       },
       { type: "separator" },
-      { type: "item", label: "Settings", shortcut: "Ctrl+," },
+      { type: "item", label: "Settings", shortcut: "Ctrl+,", actionId: "open-settings" },
       { type: "item", label: "Keyboard Shortcuts", shortcut: "Ctrl+K Ctrl+S" },
       { type: "item", label: "Color Theme", shortcut: "Ctrl+K Ctrl+T" },
       { type: "separator" },
@@ -1001,6 +1115,7 @@ const menus: MenuDef[] = [
     ],
   },
 ];
+}
 
 /* ============================================================
    MenuBar (dropdown menus)
@@ -1010,10 +1125,9 @@ function MenuBar({
   onAnyAction,
 }: {
   menus: MenuDef[];
-  onAnyAction?: (menuId: string, label: string) => void;
+  onAnyAction?: (menuId: string, item: Extract<MenuItem, { type: "item" }>) => void;
 }) {
   const [openId, setOpenId] = useState<string | null>(null);
-  const [hoverSubmenu, setHoverSubmenu] = useState<number | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -1021,11 +1135,10 @@ function MenuBar({
     function onDown(e: MouseEvent) {
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
         setOpenId(null);
-        setHoverSubmenu(null);
       }
     }
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") { setOpenId(null); setHoverSubmenu(null); }
+      if (e.key === "Escape") { setOpenId(null); }
     }
     document.addEventListener("mousedown", onDown);
     document.addEventListener("keydown", onKey);
@@ -1054,10 +1167,8 @@ function MenuBar({
             {isOpen && (
               <Dropdown
                 items={m.items}
-                hoverSubmenu={hoverSubmenu}
-                setHoverSubmenu={setHoverSubmenu}
-                onClose={() => { setOpenId(null); setHoverSubmenu(null); }}
-                onAction={(label) => onAnyAction?.(m.id, label)}
+                onClose={() => { setOpenId(null); }}
+                onAction={(item) => onAnyAction?.(m.id, item)}
               />
             )}
           </div>
@@ -1068,37 +1179,56 @@ function MenuBar({
 }
 
 function Dropdown({
-  items, hoverSubmenu, setHoverSubmenu, onClose, onAction, nested,
+  items, onClose, onAction, nested,
 }: {
   items: MenuItem[];
-  hoverSubmenu: number | null;
-  setHoverSubmenu: (n: number | null) => void;
   onClose: () => void;
-  onAction: (label: string) => void;
+  onAction: (item: Extract<MenuItem, { type: "item" }>) => void;
   nested?: boolean;
 }) {
+  const [submenuIndex, setSubmenuIndex] = useState<number | null>(null);
+  const closeTimerRef = useRef<number | null>(null);
+
+  const clearCloseTimer = useCallback(() => {
+    if (closeTimerRef.current) {
+      window.clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleClose = useCallback(() => {
+    clearCloseTimer();
+    closeTimerRef.current = window.setTimeout(() => {
+      setSubmenuIndex(null);
+    }, 140);
+  }, [clearCloseTimer]);
+
   return (
     <div className={cn(
-      "absolute z-50 min-w-[260px] animate-fade-in rounded-md border border-[#454545] bg-[#252526] py-1 shadow-2xl",
+      "absolute z-[160] min-w-[260px] animate-fade-in rounded-md border border-[#454545] bg-[#252526] py-1 shadow-2xl",
       nested ? "left-full top-0 ml-0.5" : "left-0 top-full mt-0.5",
-    )}>
+    )}
+      onMouseEnter={clearCloseTimer}
+      onMouseLeave={scheduleClose}
+    >
       {items.map((item, i) => {
         if (item.type === "separator") {
           return <div key={i} className="my-1 h-px bg-[#454545]" />;
         }
         const hasSubmenu = !!item.submenu?.length;
-        const isSubmenuOpen = hoverSubmenu === i;
+        const isSubmenuOpen = submenuIndex === i;
         return (
           <div key={i} className="relative">
             <button
               onClick={() => {
                 if (hasSubmenu) return;
-                onAction(item.label);
+                onAction(item);
                 onClose();
               }}
               onMouseEnter={() => {
-                if (hasSubmenu) setHoverSubmenu(i);
-                else setHoverSubmenu(null);
+                clearCloseTimer();
+                if (hasSubmenu) setSubmenuIndex(i);
+                else setSubmenuIndex(null);
               }}
               className="flex w-full items-center gap-2 px-3 py-[3px] text-left text-[12px] text-[#cccccc] hover:bg-[#04395e] hover:text-white"
             >
@@ -1114,8 +1244,6 @@ function Dropdown({
             {hasSubmenu && isSubmenuOpen && (
               <Dropdown
                 items={item.submenu!}
-                hoverSubmenu={hoverSubmenu}
-                setHoverSubmenu={setHoverSubmenu}
                 onClose={onClose}
                 onAction={onAction}
                 nested
@@ -1133,41 +1261,51 @@ function Dropdown({
    ============================================================ */
 function TitleBar({
   workspaceLabel,
+  menus,
   onMenuAction,
+  onWindowAction,
 }: {
   workspaceLabel: string
-  onMenuAction?: (menuId: string, label: string) => void
+  menus: MenuDef[]
+  onMenuAction?: (menuId: string, label: string, actionId?: string) => void
+  onWindowAction?: (action: "minimize" | "maximize" | "close") => void
 }) {
   return (
-    <div className="relative flex h-9 items-center justify-between border-b border-black/40 bg-[#3c3c3c] px-2 text-[12px] text-[#cccccc] select-none">
-      <div className="flex items-center">
-        <MenuBar menus={menus} onAnyAction={onMenuAction} />
+    <div
+      className="relative z-[120] flex h-9 items-center justify-between overflow-visible border-b border-black/40 bg-[#3c3c3c] px-2 text-[12px] text-[#cccccc] select-none"
+      style={{ ["WebkitAppRegion" as any]: "drag" }}
+    >
+      <div className="flex items-center" style={{ ["WebkitAppRegion" as any]: "no-drag" }}>
+        <MenuBar menus={menus} onAnyAction={(menuId, item) => onMenuAction?.(menuId, item.label, item.actionId)} />
       </div>
-      <div className="absolute left-1/2 top-1/2 flex w-[min(440px,40vw)] -translate-x-1/2 -translate-y-1/2 items-center">
+      <div className="absolute left-1/2 top-1/2 flex w-[min(440px,40vw)] -translate-x-1/2 -translate-y-1/2 items-center" style={{ ["WebkitAppRegion" as any]: "no-drag" }}>
         <div className="flex h-6 w-full items-center gap-2 rounded-md border border-[#4a4a4a] bg-[#252526] px-2 text-[12px] text-[#969696] hover:border-[#5a5a5a] hover:bg-[#2a2a2a]">
           <Search size={13} className="shrink-0 text-[#969696]" />
           <span className="truncate">{workspaceLabel}</span>
           <ChevronDown size={12} className="shrink-0 text-[#6a6a6a]" />
         </div>
       </div>
-      <div className="flex items-center">
-        <WindowBtn title="Minimize"><Minus size={14} strokeWidth={1.5} /></WindowBtn>
-        <WindowBtn title="Maximize"><Square size={11} strokeWidth={1.5} /></WindowBtn>
-        <WindowBtn title="Close" danger><X size={14} strokeWidth={1.5} /></WindowBtn>
+      <div className="flex items-center" style={{ ["WebkitAppRegion" as any]: "no-drag" }}>
+        <WindowBtn title="Minimize" onClick={() => onWindowAction?.("minimize")}><Minus size={14} strokeWidth={1.5} /></WindowBtn>
+        <WindowBtn title="Maximize" onClick={() => onWindowAction?.("maximize")}><Square size={11} strokeWidth={1.5} /></WindowBtn>
+        <WindowBtn title="Close" danger onClick={() => onWindowAction?.("close")}><X size={14} strokeWidth={1.5} /></WindowBtn>
       </div>
     </div>
   );
 }
 
 function WindowBtn({
-  title, children, danger,
+  title, children, danger, onClick,
 }: {
-  title: string; children: React.ReactNode; danger?: boolean;
+  title: string; children: React.ReactNode; danger?: boolean; onClick?: () => void;
 }) {
   return (
     <button
       title={title}
-      onClick={(e) => e.preventDefault()}
+      onClick={(e) => {
+        e.preventDefault();
+        onClick?.();
+      }}
       className={cn(
         "flex h-9 w-11 items-center justify-center transition-colors",
         danger ? "text-[#cccccc] hover:bg-[#e81123] hover:text-white" : "text-[#cccccc] hover:bg-white/10",
@@ -1995,18 +2133,31 @@ function CodingAgent({
               <div key={message.id} className={cn("flex", message.role === "user" ? "justify-end" : "justify-start")}>
                 <div
                   className={cn(
-                    "max-w-[88%] rounded-xl border px-3 py-2 text-[12.5px] leading-relaxed",
+                    "max-w-[88%] text-[12.5px] leading-relaxed",
                     message.role === "user"
-                      ? "border-[#31508a] bg-[#1f335f] text-white"
+                      ? "rounded-2xl border border-[#31508a] bg-[#1f335f] px-3 py-2 text-white shadow-[0_10px_30px_rgba(12,24,54,0.28)]"
                       : message.error
-                        ? "border-[#5c2b2b] bg-[#2a1616] text-[#fca5a5]"
+                        ? "rounded-xl border border-[#5c2b2b] bg-[#2a1616] px-3 py-2 text-[#fca5a5]"
                         : message.role === "status"
-                          ? "border-[#3c3c3c] bg-[#1e1e1e] text-[#a1a1aa]"
-                          : "border-[#3c3c3c] bg-[#1e1e1e] text-[#cccccc]",
+                          ? cn(
+                              "rounded-xl px-0 py-1 text-[#a1a1aa]",
+                              message.tone === "success" && "text-[#c7d2fe]",
+                              message.tone === "cancelled" && "text-[#fca5a5]"
+                            )
+                          : "rounded-xl px-0 py-1 text-[#d4d4d4]",
                   )}
                 >
-                  <div className="whitespace-pre-wrap">{message.content}</div>
-                  <div className="mt-1 text-[10px] text-[#858585]">
+                  <div className={cn("whitespace-pre-wrap", message.role !== "user" && "pr-4")}>
+                    {message.loading ? (
+                      <span className="inline-flex items-center gap-2 text-[#a1a1aa]">
+                        <RefreshCw size={12} className="animate-spin" />
+                        <span>Thinking...</span>
+                      </span>
+                    ) : (
+                      message.content
+                    )}
+                  </div>
+                  <div className={cn("mt-1 text-[10px] text-[#858585]", message.role !== "user" && "pl-0.5")}>
                     {new Date(message.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                     {message.providerLabel ? ` · ${message.providerLabel}` : ""}
                   </div>
@@ -2642,21 +2793,43 @@ const SUGGESTIONS: Suggestion[] = [
   { label: "import react", detail: "snippet", insert: "import React, { useState } from 'react';", kind: "snip" },
 ];
 
+const buildHtmlStarter = (indent = "") =>
+  `${indent}<!DOCTYPE html>
+${indent}<html lang="en">
+${indent}<head>
+${indent}  <meta charset="UTF-8" />
+${indent}  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+${indent}  <title>Document</title>
+${indent}</head>
+${indent}<body>
+${indent}  
+${indent}</body>
+${indent}</html>`;
+
 function FunctionalCodeEditor({
   fileName,
   code,
   onChange,
   onCursorChange,
+  fontSize,
+  fontFamily,
+  wordWrap,
+  tabSize,
 }: {
   fileName: string
   code: string
   onChange: (next: string) => void
   onCursorChange: (cursor: CursorState) => void
+  fontSize: number
+  fontFamily: string
+  wordWrap: boolean
+  tabSize: number
 }) {
   const [cursorPos, setCursorPos] = useState(0);
   const [suggestIdx, setSuggestIdx] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const overlayRef = useRef<HTMLPreElement>(null);
+  const editorLineHeight = 19.4;
+  const isHtmlFile = /\.html?$/i.test(fileName);
 
   const currentWord = useMemo(() => {
     const upto = code.slice(0, cursorPos);
@@ -2674,13 +2847,6 @@ function FunctionalCodeEditor({
 
   const showSuggest = currentWord.length >= 2 && filtered.length > 0;
   const safeSuggestIdx = suggestIdx < filtered.length ? suggestIdx : 0;
-
-  const handleScroll = useCallback(() => {
-    if (overlayRef.current && textareaRef.current) {
-      overlayRef.current.scrollTop = textareaRef.current.scrollTop;
-      overlayRef.current.scrollLeft = textareaRef.current.scrollLeft;
-    }
-  }, []);
 
   const reportCursor = (position: number, nextCode: string) => {
     const upto = nextCode.slice(0, position);
@@ -2720,6 +2886,36 @@ function FunctionalCodeEditor({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Tab") {
+      const ta = e.currentTarget;
+      const start = ta.selectionStart;
+      const end = ta.selectionEnd;
+      const before = code.slice(0, start);
+      const after = code.slice(end);
+      const lineStart = before.lastIndexOf("\n") + 1;
+      const nextLineOffset = after.indexOf("\n");
+      const lineEnd = nextLineOffset === -1 ? code.length : end + nextLineOffset;
+      const lineText = code.slice(lineStart, lineEnd);
+
+      if (isHtmlFile && start === end && lineText.trim() === "!") {
+        e.preventDefault();
+        const indent = lineText.match(/^\s*/)?.[0] ?? "";
+        const snippet = buildHtmlStarter(indent);
+        const newCode = `${code.slice(0, lineStart)}${snippet}${code.slice(lineEnd)}`;
+        const bodyCursor = `${indent}<body>\n${indent}  `;
+        const cursorOffset = snippet.indexOf(bodyCursor);
+        const newCursor = lineStart + (cursorOffset >= 0 ? cursorOffset + bodyCursor.length : snippet.length);
+        onChange(newCode);
+        setCursorPos(newCursor);
+        reportCursor(newCursor, newCode);
+        requestAnimationFrame(() => {
+          ta.focus();
+          ta.setSelectionRange(newCursor, newCursor);
+        });
+        return;
+      }
+    }
+
     if (showSuggest && filtered.length > 0) {
       if (e.key === "ArrowDown") { e.preventDefault(); setSuggestIdx((i) => (i + 1) % filtered.length); return; }
       if (e.key === "ArrowUp") { e.preventDefault(); setSuggestIdx((i) => (i - 1 + filtered.length) % filtered.length); return; }
@@ -2731,11 +2927,12 @@ function FunctionalCodeEditor({
       const ta = e.currentTarget;
       const start = ta.selectionStart;
       const end = ta.selectionEnd;
-      const newCode = code.slice(0, start) + "  " + code.slice(end);
+      const indent = " ".repeat(Math.max(1, tabSize));
+      const newCode = code.slice(0, start) + indent + code.slice(end);
       onChange(newCode);
-      setCursorPos(start + 2);
-      reportCursor(start + 2, newCode);
-      requestAnimationFrame(() => { ta.selectionStart = ta.selectionEnd = start + 2; });
+      setCursorPos(start + indent.length);
+      reportCursor(start + indent.length, newCode);
+      requestAnimationFrame(() => { ta.selectionStart = ta.selectionEnd = start + indent.length; });
     }
   };
 
@@ -2745,50 +2942,53 @@ function FunctionalCodeEditor({
     const lineIdx = (upto.match(/\n/g)?.length) ?? 0;
     const lineStart = upto.lastIndexOf("\n") + 1;
     const colInLine = cursorPos - lineStart;
-    return { top: lineIdx * 19.4 + 20, left: colInLine * 7.2 + 16 };
-  }, [showSuggest, code, cursorPos]);
+    return { top: lineIdx * editorLineHeight + 16, left: colInLine * 7.2 + 16 };
+  }, [showSuggest, code, cursorPos, editorLineHeight]);
 
   const lines = code.split("\n");
+  const editorHeight = Math.max(lines.length, 1) * editorLineHeight + 24;
 
   return (
-    <div className="alpha-scroll relative flex h-full w-full overflow-auto bg-[#1e1e1e] font-mono text-[12.5px] leading-[1.55]">
+    <div
+      className="alpha-scroll relative flex h-full w-full overflow-auto bg-[#1e1e1e] leading-[1.55]"
+      style={{ fontFamily, fontSize: `${fontSize}px` }}
+    >
       <div className="flex min-w-full">
-        <div className="sticky left-0 z-10 select-none bg-[#1e1e1e] pr-3 pl-4 text-right text-[12px] text-[#858585]">
+        <div
+          className="sticky left-0 z-10 select-none bg-[#1e1e1e] pr-2 pl-3 text-right text-[#858585]"
+          style={{ fontFamily, fontSize: `${Math.max(11, fontSize - 0.5)}px` }}
+        >
           {lines.map((_, i) => (
-            <div key={i} className="h-[19.4px] leading-[19.4px]">{i + 1}</div>
+            <div key={i} className="leading-[19.4px]" style={{ height: `${editorLineHeight}px` }}>{i + 1}</div>
           ))}
         </div>
-        <div className="relative flex-1 pl-4 pr-8">
-          <pre
-            ref={overlayRef}
-            aria-hidden
-            className="pointer-events-none absolute left-0 top-0 m-0 whitespace-pre overflow-auto px-4 py-0 text-[12.5px] leading-[1.55] text-[#d4d4d4]"
-            style={{ width: "100%", height: "100%" }}
-          >
-            {lines.map((line, i) => (
-              <div key={i} className="code-line min-h-[19.4px]">
-                {tokenizeLine(line).map((t, j) => (
-                  <span key={j} className={t.cls}>{t.text}</span>
-                ))}
-                {line.length === 0 ? "\u00a0" : null}
-              </div>
-            ))}
-          </pre>
+        <div className="relative flex-1 pl-2 pr-6">
           <textarea
             ref={textareaRef}
             value={code}
             onChange={handleChange}
-            onScroll={handleScroll}
             onKeyDown={handleKeyDown}
             onSelect={handleSelect}
             onClick={handleSelect}
             spellCheck={false}
             autoCapitalize="off"
             autoCorrect="off"
-            className="absolute left-0 top-0 h-full w-full resize-none bg-transparent px-4 py-0 font-mono text-[12.5px] leading-[1.55] text-transparent caret-[#aeafad] focus:outline-none"
-            style={{ caretColor: "#aeafad" }}
+            wrap={wordWrap ? "soft" : "off"}
+            data-file-name={fileName}
+            aria-label={`Code editor for ${fileName}`}
+            className={cn(
+              "block w-full resize-none overflow-hidden bg-transparent px-2 py-0 text-[#d4d4d4] selection:bg-[#264f78] selection:text-[#ffffff] focus:outline-none",
+              wordWrap ? "whitespace-pre-wrap break-words" : "whitespace-pre"
+            )}
+            style={{
+              height: `${editorHeight}px`,
+              caretColor: "#d4d4d4",
+              fontFamily,
+              fontSize: `${fontSize}px`,
+              lineHeight: `${editorLineHeight}px`,
+              tabSize: tabSize as unknown as number,
+            }}
           />
-          <div className="h-40" />
           {showSuggest && filtered.length > 0 && caretCoords && (
             <div
               className="absolute z-50 w-72 animate-fade-in overflow-hidden rounded-md border border-[#454545] bg-[#252526] shadow-2xl"
@@ -3268,10 +3468,43 @@ const settingsByCategory: Record<string, SettingRow[]> = {
   ],
 };
 
-function SettingsPanel({ onClose }: { onClose: () => void }) {
+function SettingsPanel({
+  onClose,
+  preferences,
+  onPreferencesChange,
+  modelOptions,
+  selectedModelId,
+  onSelectedModelIdChange,
+  access,
+  onAccessChange,
+  modelStatuses,
+  onTestProvider,
+  onToggleProvider,
+}: {
+  onClose: () => void
+  preferences: BuilderPreferences
+  onPreferencesChange: (patch: Partial<BuilderPreferences>) => void
+  modelOptions: BuilderModelOption[]
+  selectedModelId: string
+  onSelectedModelIdChange: (modelId: string) => void
+  access: AccessLevel
+  onAccessChange: (level: AccessLevel) => void
+  modelStatuses: BuilderModelStatuses
+  onTestProvider: (group: keyof BuilderModelStatuses, slot: number) => void
+  onToggleProvider: (group: keyof BuilderModelStatuses, slot: number, enabled: boolean) => void
+}) {
   const [category, setCategory] = useState<string>("common");
   const [query, setQuery] = useState("");
-  const rows = settingsByCategory[category] ?? [];
+  const filteredModelOptions = useMemo(() => {
+    if (!query.trim()) return modelOptions;
+    const normalized = query.trim().toLowerCase();
+    return modelOptions.filter((option) => option.name.toLowerCase().includes(normalized));
+  }, [modelOptions, query]);
+  const providerGroups = useMemo(
+    () => (Object.entries(modelStatuses) as [keyof BuilderModelStatuses, BuilderModelStatuses[keyof BuilderModelStatuses]][])
+      .filter(([, rows]) => rows?.length),
+    [modelStatuses]
+  );
 
   return (
     <div className="flex h-full flex-col bg-[#1e1e1e] text-[#cccccc]">
@@ -3309,13 +3542,149 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
         </div>
         <div className="alpha-scroll-thin flex-1 overflow-y-auto p-4">
           <div className="mx-auto max-w-[680px]">
-            {rows.map((r, i) => {
-              if (r.type === "header") return <div key={i} className="mb-2 mt-2 text-[13px] font-semibold text-[#ffffff]">{r.label}</div>;
-              if (r.type === "toggle") return <ToggleRow key={i} label={r.label} desc={r.desc} defaultChecked={r.checked} />;
-              if (r.type === "select") return <SelectRow key={i} label={r.label} desc={r.desc} value={r.value} options={r.options} />;
-              if (r.type === "input") return <InputRow key={i} label={r.label} desc={r.desc} value={r.value} />;
-              return null;
-            })}
+            {category === "common" && (
+              <>
+                <div className="mb-2 mt-2 text-[13px] font-semibold text-[#ffffff]">Common settings</div>
+                <ToggleRow
+                  label="Auto save"
+                  desc="Controls auto save of dirty editors."
+                  checked={preferences.autoSave}
+                  onChange={(checked) => onPreferencesChange({ autoSave: checked })}
+                />
+                <SelectRow
+                  label="Window title bar style"
+                  desc="Builder uses the custom title bar for the VS Code-style layout."
+                  value="Custom"
+                  options={["Custom"]}
+                  onChange={() => undefined}
+                  disabled
+                />
+              </>
+            )}
+
+            {category === "ai" && (
+              <>
+                <div className="mb-2 mt-2 text-[13px] font-semibold text-[#ffffff]">Model providers</div>
+                <SelectRow
+                  label="Default model"
+                  desc="Model used for new Builder coding sessions."
+                  value={selectedModelId}
+                  options={filteredModelOptions.map((option) => option.id)}
+                  labels={Object.fromEntries(filteredModelOptions.map((option) => [option.id, option.name]))}
+                  onChange={onSelectedModelIdChange}
+                />
+                <SelectRow
+                  label="Default access level"
+                  desc="Permissions granted to the agent by default."
+                  value={access}
+                  options={["ask", "safe", "full"]}
+                  labels={{
+                    ask: "Ask for approval",
+                    safe: "Approve for me",
+                    full: "Full access",
+                  }}
+                  onChange={(value) => onAccessChange(value as AccessLevel)}
+                />
+                <div className="mt-4 space-y-3">
+                  {providerGroups.length === 0 ? (
+                    <div className="rounded-md border border-[#2b2b2b] bg-[#252526] px-3 py-2 text-[12px] text-[#858585]">
+                      No provider slots available.
+                    </div>
+                  ) : (
+                    providerGroups.map(([group, rows]) => (
+                      <div key={group} className="rounded-md border border-[#2b2b2b] bg-[#252526]">
+                        <div className="border-b border-[#2b2b2b] px-3 py-2 text-[12px] font-semibold text-[#ffffff]">
+                          {providerDisplayName(String(group))}
+                        </div>
+                        <div className="divide-y divide-[#2b2b2b]">
+                          {rows.map((row) => (
+                            <div key={`${group}-${row.slot}`} className="flex items-center gap-3 px-3 py-2 text-[12px]">
+                              <button
+                                onClick={() => onToggleProvider(group, row.slot, !row.enabled)}
+                                className={cn(
+                                  "relative h-5 w-9 shrink-0 rounded-full transition-colors",
+                                  row.enabled ? "bg-[#007acc]" : "bg-[#3c3c3c]"
+                                )}
+                              >
+                                <span
+                                  className={cn(
+                                    "absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform",
+                                    row.enabled ? "left-[18px]" : "left-0.5"
+                                  )}
+                                />
+                              </button>
+                              <div className="min-w-0 flex-1">
+                                <div className="truncate text-[#cccccc]">
+                                  Slot {row.slot} · {row.modelId || "No model set"}
+                                </div>
+                                <div className="truncate text-[11px] text-[#858585]">
+                                  {row.maskedKey || "No key"} · {row.status || "idle"}
+                                  {row.lastFailureReason ? ` · ${row.lastFailureReason}` : ""}
+                                </div>
+                              </div>
+                              <button
+                                onClick={() => onTestProvider(group, row.slot)}
+                                className="rounded border border-[#3c3c3c] bg-[#1e1e1e] px-2 py-1 text-[11px] text-[#cccccc] hover:bg-[#2a2d2e]"
+                              >
+                                Test
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </>
+            )}
+
+            {category === "editor" && (
+              <>
+                <div className="mb-2 mt-2 text-[13px] font-semibold text-[#ffffff]">Text Editor</div>
+                <ToggleRow
+                  label="Word wrap"
+                  checked={preferences.wordWrap}
+                  onChange={(checked) => onPreferencesChange({ wordWrap: checked })}
+                />
+                <SelectRow
+                  label="Tab size"
+                  value={String(preferences.tabSize)}
+                  options={["2", "4", "8"]}
+                  onChange={(value) => onPreferencesChange({ tabSize: Number(value) || 2 })}
+                />
+                <SelectRow
+                  label="Font family"
+                  value={preferences.fontFamily}
+                  options={["JetBrains Mono", "Consolas", "Menlo", "Monaco"]}
+                  onChange={(value) => onPreferencesChange({ fontFamily: value })}
+                />
+                <SelectRow
+                  label="Font size"
+                  value={String(preferences.fontSize)}
+                  options={["12", "12.5", "13", "14", "15"]}
+                  onChange={(value) => onPreferencesChange({ fontSize: Number(value) || 12.5 })}
+                />
+              </>
+            )}
+
+            {category === "appearance" && (
+              <>
+                <div className="mb-2 mt-2 text-[13px] font-semibold text-[#ffffff]">Appearance</div>
+                <InputRow
+                  label="Color theme"
+                  desc="Current Builder theme follows the integrated ALPHA dark editor palette."
+                  value="ALPHA Dark+"
+                  onChange={() => undefined}
+                  readOnly
+                />
+              </>
+            )}
+
+            {category !== "common" && category !== "ai" && category !== "editor" && category !== "appearance" && (
+              <div className="rounded-md border border-[#2b2b2b] bg-[#252526] px-3 py-2 text-[12px] text-[#858585]">
+                Settings for this section will land here next. Current Builder wiring is active.
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -3323,23 +3692,47 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
   );
 }
 
-function ToggleRow({ label, desc, defaultChecked }: { label: string; desc?: string; defaultChecked?: boolean }) {
-  const [on, setOn] = useState(!!defaultChecked);
+function ToggleRow({
+  label,
+  desc,
+  checked,
+  onChange,
+}: {
+  label: string
+  desc?: string
+  checked: boolean
+  onChange: (checked: boolean) => void
+}) {
   return (
     <div className="flex items-start justify-between gap-4 border-b border-[#2b2b2b] py-2.5">
       <div className="min-w-0">
         <div className="text-[13px] text-[#cccccc]">{label}</div>
         {desc && <div className="text-[11px] text-[#858585]">{desc}</div>}
       </div>
-      <button onClick={() => setOn((v) => !v)} className={cn("relative h-5 w-9 shrink-0 rounded-full transition-colors", on ? "bg-[#007acc]" : "bg-[#3c3c3c]")}>
-        <span className={cn("absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform", on ? "left-[18px]" : "left-0.5")} />
+      <button onClick={() => onChange(!checked)} className={cn("relative h-5 w-9 shrink-0 rounded-full transition-colors", checked ? "bg-[#007acc]" : "bg-[#3c3c3c]")}>
+        <span className={cn("absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform", checked ? "left-[18px]" : "left-0.5")} />
       </button>
     </div>
   );
 }
 
-function SelectRow({ label, desc, value, options }: { label: string; desc?: string; value: string; options: string[] }) {
-  const [v, setV] = useState(value);
+function SelectRow({
+  label,
+  desc,
+  value,
+  options,
+  onChange,
+  disabled,
+  labels,
+}: {
+  label: string
+  desc?: string
+  value: string
+  options: string[]
+  onChange: (value: string) => void
+  disabled?: boolean
+  labels?: Record<string, string>
+}) {
   return (
     <div className="flex items-start justify-between gap-4 border-b border-[#2b2b2b] py-2.5">
       <div className="min-w-0">
@@ -3347,18 +3740,30 @@ function SelectRow({ label, desc, value, options }: { label: string; desc?: stri
         {desc && <div className="text-[11px] text-[#858585]">{desc}</div>}
       </div>
       <select
-        value={v}
-        onChange={(e) => setV(e.target.value)}
-        className="shrink-0 rounded-md border border-[#3c3c3c] bg-[#252526] px-2 py-1 text-[12px] text-[#cccccc] focus:border-[#007acc] focus:outline-none"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+        className="shrink-0 rounded-md border border-[#3c3c3c] bg-[#252526] px-2 py-1 text-[12px] text-[#cccccc] focus:border-[#007acc] focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
       >
-        {options.map((o) => <option key={o} value={o}>{o}</option>)}
+        {options.map((o) => <option key={o} value={o}>{labels?.[o] ?? o}</option>)}
       </select>
     </div>
   );
 }
 
-function InputRow({ label, desc, value }: { label: string; desc?: string; value: string }) {
-  const [v, setV] = useState(value);
+function InputRow({
+  label,
+  desc,
+  value,
+  onChange,
+  readOnly,
+}: {
+  label: string
+  desc?: string
+  value: string
+  onChange: (value: string) => void
+  readOnly?: boolean
+}) {
   return (
     <div className="flex items-start justify-between gap-4 border-b border-[#2b2b2b] py-2.5">
       <div className="min-w-0">
@@ -3366,9 +3771,10 @@ function InputRow({ label, desc, value }: { label: string; desc?: string; value:
         {desc && <div className="text-[11px] text-[#858585]">{desc}</div>}
       </div>
       <input
-        value={v}
-        onChange={(e) => setV(e.target.value)}
-        className="w-64 shrink-0 rounded-md border border-[#3c3c3c] bg-[#252526] px-2 py-1 text-[12px] text-[#cccccc] focus:border-[#007acc] focus:outline-none"
+        value={value}
+        readOnly={readOnly}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-64 shrink-0 rounded-md border border-[#3c3c3c] bg-[#252526] px-2 py-1 text-[12px] text-[#cccccc] focus:border-[#007acc] focus:outline-none read-only:cursor-default read-only:opacity-80"
       />
     </div>
   );
@@ -3577,15 +3983,118 @@ function LegacyDebugPanel() {
   );
 }
 
-function SearchPanel() {
+function SearchPanel({
+  workspacePath,
+  onOpenResult,
+}: {
+  workspacePath?: string | null
+  onOpenResult: (filePath: string) => void
+}) {
+  const [query, setQuery] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [results, setResults] = useState<BuilderWorkspaceSearchResult[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!workspacePath) {
+      setResults([]);
+      setError(null);
+      return;
+    }
+    const trimmed = query.trim();
+    if (!trimmed) {
+      setResults([]);
+      setError(null);
+      return;
+    }
+
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      setLoading(true);
+      void searchBuilderWorkspace({ workspacePath, query: trimmed }).then((response) => {
+        if (cancelled) return;
+        if (!response.success) {
+          setError(response.error ?? "Search failed.");
+          setResults([]);
+        } else {
+          setError(null);
+          setResults(response.results ?? []);
+        }
+        setLoading(false);
+      });
+    }, 180);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [query, workspacePath]);
+
+  const grouped = useMemo<SearchGroup[]>(() => {
+    const map = new Map<string, SearchGroup>();
+    results.forEach((result) => {
+      const existing = map.get(result.filePath);
+      if (existing) {
+        existing.matches.push(result);
+      } else {
+        map.set(result.filePath, {
+          filePath: result.filePath,
+          fileName: result.fileName,
+          matches: [result],
+        });
+      }
+    });
+    return Array.from(map.values());
+  }, [results]);
+
   return (
     <PanelShell title="SEARCH">
       <div className="space-y-2">
-        <input placeholder="Search" className="w-full rounded-md border border-[#3c3c3c] bg-[#1e1e1e] px-2 py-1.5 text-[12.5px] text-[#cccccc] placeholder:text-[#6a6a6a] focus:border-[#007acc] focus:outline-none" />
-        <input placeholder="Replace" className="w-full rounded-md border border-[#3c3c3c] bg-[#1e1e1e] px-2 py-1.5 text-[12.5px] text-[#cccccc] placeholder:text-[#6a6a6a] focus:border-[#007acc] focus:outline-none" />
-        <div className="rounded-md border border-dashed border-[#3c3c3c] bg-[#1e1e1e] px-3 py-3 text-[11px] text-[#858585]">
-          Search results will appear here once project-wide search is wired.
-        </div>
+        <input
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Search workspace"
+          className="w-full rounded-md border border-[#3c3c3c] bg-[#1e1e1e] px-2 py-1.5 text-[12.5px] text-[#cccccc] placeholder:text-[#6a6a6a] focus:border-[#007acc] focus:outline-none"
+        />
+        {!workspacePath ? (
+          <div className="rounded-md border border-dashed border-[#3c3c3c] bg-[#1e1e1e] px-3 py-3 text-[11px] text-[#858585]">
+            Open a folder to search.
+          </div>
+        ) : loading ? (
+          <div className="rounded-md border border-[#3c3c3c] bg-[#1e1e1e] px-3 py-3 text-[11px] text-[#858585]">
+            Searching workspace...
+          </div>
+        ) : error ? (
+          <div className="rounded-md border border-[#5a1d1d] bg-[#2a1616] px-3 py-3 text-[11px] text-[#fca5a5]">
+            {error}
+          </div>
+        ) : query.trim() && grouped.length === 0 ? (
+          <div className="rounded-md border border-dashed border-[#3c3c3c] bg-[#1e1e1e] px-3 py-3 text-[11px] text-[#858585]">
+            No results found.
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {grouped.map((group) => (
+              <div key={group.filePath} className="rounded-md border border-[#2b2b2b] bg-[#1e1e1e]">
+                <div className="border-b border-[#2b2b2b] px-3 py-2 text-[11px] font-medium text-[#cccccc]">
+                  {group.fileName}
+                </div>
+                <div className="divide-y divide-[#2b2b2b]">
+                  {group.matches.map((match) => (
+                    <button
+                      key={`${match.filePath}-${match.line}-${match.preview}`}
+                      onClick={() => onOpenResult(match.filePath)}
+                      className="block w-full px-3 py-2 text-left hover:bg-white/[0.04]"
+                    >
+                      <div className="text-[11px] text-[#4daafc]">Line {match.line}</div>
+                      <div className="mt-1 text-[11px] text-[#a0a0a0]">{match.preview || "(blank line)"}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </PanelShell>
   );
@@ -3601,13 +4110,85 @@ function SourceControlPanel() {
   );
 }
 
-function DebugPanel() {
+function DebugPanel({
+  activeFilePath,
+  onRunActiveFile,
+}: {
+  activeFilePath?: string | null
+  onRunActiveFile: () => void
+}) {
   return (
     <PanelShell title="RUN AND DEBUG">
-      <div className="rounded-md border border-dashed border-[#3c3c3c] bg-[#1e1e1e] p-3 text-[12px] leading-relaxed text-[#858585]">
-        Run and debug integration is not available in this Builder pane yet.
+      <div className="space-y-3">
+        <button
+          onClick={onRunActiveFile}
+          className="w-full rounded-md bg-[#007acc] py-1.5 text-[12px] font-semibold text-white hover:bg-[#1a8ad4]"
+        >
+          Run Active File
+        </button>
+        <div className="rounded-md border border-[#2b2b2b] bg-[#1e1e1e] p-3 text-[12px] leading-relaxed text-[#858585]">
+          {activeFilePath
+            ? `Ready to run ${basename(activeFilePath)} in the integrated terminal.`
+            : "Open a file to run it in the integrated terminal."}
+        </div>
       </div>
     </PanelShell>
+  );
+}
+
+function CreateEntryDialog({
+  target,
+  onChange,
+  onCancel,
+  onConfirm,
+}: {
+  target: PendingCreateTarget
+  onChange: (value: string) => void
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  return (
+    <div className="absolute inset-0 z-[120] flex items-center justify-center bg-black/45 backdrop-blur-[2px]">
+      <div className="w-[360px] rounded-lg border border-[#3c3c3c] bg-[#252526] p-4 shadow-2xl">
+        <div className="text-[13px] font-semibold text-[#ffffff]">
+          {target.kind === "file" ? "New File" : "New Folder"}
+        </div>
+        <div className="mt-1 text-[11px] text-[#858585]">
+          {target.kind === "file" ? "Enter a file name to create it in the current workspace." : "Enter a folder name to create it in the current workspace."}
+        </div>
+        <input
+          autoFocus
+          value={target.value}
+          onChange={(event) => onChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              onConfirm();
+            }
+            if (event.key === "Escape") {
+              event.preventDefault();
+              onCancel();
+            }
+          }}
+          className="mt-3 w-full rounded-md border border-[#3c3c3c] bg-[#1e1e1e] px-3 py-2 text-[12px] text-[#cccccc] placeholder:text-[#6a6a6a] focus:border-[#007acc] focus:outline-none"
+          placeholder={target.kind === "file" ? "e.g. index.html" : "e.g. components"}
+        />
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            className="rounded-md border border-[#3c3c3c] bg-[#1e1e1e] px-3 py-1.5 text-[12px] text-[#cccccc] hover:bg-white/[0.04]"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            className="rounded-md bg-[#007acc] px-3 py-1.5 text-[12px] font-medium text-white hover:bg-[#1a8ad4]"
+          >
+            Create
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -3641,6 +4222,13 @@ export function BuilderWindow() {
   const [activeRequestId, setActiveRequestId] = useState<string | null>(null);
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
   const [pendingPayload, setPendingPayload] = useState<BuilderWindowPayload | null>(null);
+  const [queuedTerminalCommand, setQueuedTerminalCommand] = useState<string | null>(null);
+  const [pendingCreate, setPendingCreate] = useState<PendingCreateTarget | null>(null);
+  const [lastAgentIntent, setLastAgentIntent] = useState<BuilderAgentIntent>("NORMAL_CHAT");
+  const [preferences, setPreferences] = useState<BuilderPreferences>(() => loadBuilderPreferences());
+  const [lastCodingContext, setLastCodingContext] = useState<CodingContextState | null>(null);
+  const requestLifecycleRef = useRef<Record<string, BuilderRequestLifecycleState>>({});
+  const requestThinkingMessageRef = useRef<Record<string, string>>({});
 
   const appendAgentMessage = useCallback((message: Omit<AgentMessage, "id" | "createdAt">) => {
     setAgentMessages((prev) => [
@@ -3652,6 +4240,66 @@ export function BuilderWindow() {
       },
     ]);
   }, []);
+
+  const replaceAgentMessage = useCallback((messageId: string, patch: Partial<AgentMessage>) => {
+    setAgentMessages((prev) =>
+      prev.map((message) => (message.id === messageId ? { ...message, ...patch, id: message.id } : message))
+    );
+  }, []);
+
+  const beginAgentRequest = useCallback((requestId: string, providerLabel?: string) => {
+    const thinkingId = makeMessageId();
+    requestLifecycleRef.current[requestId] = "running";
+    requestThinkingMessageRef.current[requestId] = thinkingId;
+    setAgentMessages((prev) => [
+      ...prev,
+      {
+        id: thinkingId,
+        role: "status",
+        content: "Thinking...",
+        createdAt: new Date().toISOString(),
+        providerLabel,
+        loading: true,
+        transient: true,
+      },
+    ]);
+  }, []);
+
+  const finalizeAgentRequest = useCallback(
+    (
+      requestId: string,
+      status: Exclude<BuilderRequestLifecycleState, "idle" | "running">,
+      message: Omit<AgentMessage, "id" | "createdAt"> & { createdAt?: string }
+    ) => {
+      const currentStatus = requestLifecycleRef.current[requestId];
+      if (currentStatus && currentStatus !== "running" && currentStatus !== status) {
+        return;
+      }
+
+      requestLifecycleRef.current[requestId] = status;
+      const thinkingId = requestThinkingMessageRef.current[requestId];
+      const createdAt = message.createdAt || new Date().toISOString();
+
+      if (thinkingId) {
+        replaceAgentMessage(thinkingId, {
+          ...message,
+          createdAt,
+          loading: false,
+          transient: false,
+        });
+      } else {
+        appendAgentMessage({
+          ...message,
+          loading: false,
+          transient: false,
+        });
+      }
+
+      delete requestThinkingMessageRef.current[requestId];
+      setActiveRequestId((current) => (current === requestId ? null : current));
+    },
+    [appendAgentMessage, replaceAgentMessage]
+  );
 
   const syncWorkspaceState = useCallback(
     (snapshot?: BuilderWorkspaceSnapshot | null, recents?: BuilderWorkspaceSummary[]) => {
@@ -3760,25 +4408,32 @@ export function BuilderWindow() {
     });
   }, [loadWorkspaceProjectId, openPreferredWorkspaceFile, syncWorkspaceState]);
 
-  useEffect(() => {
-    void getBuilderModelStatuses().then((response) => {
-      if (!response.success) return;
-      const nextStatuses = response.statuses ?? {};
-      const nextOptions = buildModelOptions(nextStatuses);
-      const fallbackId = resolveModelIdForProviderHint(nextOptions, "kiloGateway") ?? "kiloGateway-default";
-      const storedModelId = window.localStorage.getItem("alpha-builder-selected-model");
-      const chosen = findModelOption(nextOptions, storedModelId || fallbackId, fallbackId);
+  const refreshModelStatuses = useCallback(async () => {
+    const response = await getBuilderModelStatuses();
+    if (!response.success) return;
+    const nextStatuses = response.statuses ?? {};
+    const nextOptions = buildModelOptions(nextStatuses);
+    const fallbackId = resolveModelIdForProviderHint(nextOptions, "kiloGateway") ?? "kiloGateway-default";
+    const storedModelId = window.localStorage.getItem("alpha-builder-selected-model");
+    const chosen = findModelOption(nextOptions, selectedModelId || storedModelId || fallbackId, fallbackId);
 
-      setModelStatuses(nextStatuses);
-      setModelOptions(nextOptions);
-      setSelectedModelId(chosen?.id ?? fallbackId);
-    });
-  }, []);
+    setModelStatuses(nextStatuses);
+    setModelOptions(nextOptions);
+    setSelectedModelId(chosen?.id ?? fallbackId);
+  }, [selectedModelId]);
+
+  useEffect(() => {
+    void refreshModelStatuses();
+  }, [refreshModelStatuses]);
 
   useEffect(() => {
     if (!selectedModelId) return;
     window.localStorage.setItem("alpha-builder-selected-model", selectedModelId);
   }, [selectedModelId]);
+
+  useEffect(() => {
+    window.localStorage.setItem(BUILDER_PREFERENCES_KEY, JSON.stringify(preferences));
+  }, [preferences]);
 
   useEffect(() => {
     if (!chatHydrated) return;
@@ -3808,7 +4463,9 @@ export function BuilderWindow() {
   const fileName = activeTabObj?.name ?? "";
   const breadcrumbPath = activeTabObj ? breadcrumbFromPath(activeTabObj.path, workspace) : workspace?.name ?? "Empty workspace";
   const previewPath = findPreviewTarget(workspace, activeTabObj);
+  const dynamicMenus = useMemo(() => buildMenus(recentWorkspaces), [recentWorkspaces]);
   const workspaceTree = useMemo(() => workspace?.tree.map(toFileNode) ?? [], [workspace]);
+  const workspaceFileHints = useMemo(() => collectWorkspaceFilePaths(workspace?.tree ?? [], 24), [workspace?.tree]);
   const showWelcome = !workspace && tabs.length === 0 && !folderOpen;
   const workspaceLabel = workspace?.name ?? "No Folder Opened";
   const selectedModelOption = useMemo(
@@ -3903,36 +4560,46 @@ export function BuilderWindow() {
       window.alert("Open a workspace folder first.");
       return;
     }
-    const name = window.prompt("Enter new file name", "untitled.txt")?.trim();
-    if (!name) return;
-    const response = await createBuilderWorkspaceFile({
-      workspacePath: workspace.path,
-      parentPath: selectedFolderPath,
-      name,
-    });
-    if (!response.success) {
-      if (response.error) window.alert(response.error);
-      return;
-    }
-    syncWorkspaceState(response.workspace ?? workspace);
-    if (response.file) {
-      if (currentProjectId) {
-        const relativePath = toWorkspaceRelativePath(response.file.path, workspace.path);
-        if (relativePath) {
-          await saveBuilderProjectFile(currentProjectId, relativePath, response.file.content);
-        }
-      }
-      openTabFromFile(response.file);
-    }
-  }, [currentProjectId, openTabFromFile, selectedFolderPath, syncWorkspaceState, workspace]);
+    setPendingCreate({ kind: "file", value: "untitled.txt" });
+  }, [selectedFolderPath, workspace?.path]);
 
   const handleCreateFolder = useCallback(async () => {
     if (!workspace?.path || !selectedFolderPath) {
       window.alert("Open a workspace folder first.");
       return;
     }
-    const name = window.prompt("Enter new folder name", "new-folder")?.trim();
+    setPendingCreate({ kind: "folder", value: "new-folder" });
+  }, [selectedFolderPath, workspace?.path]);
+
+  const handleConfirmCreate = useCallback(async () => {
+    if (!pendingCreate || !workspace?.path || !selectedFolderPath) return;
+    const name = pendingCreate.value.trim();
     if (!name) return;
+
+    if (pendingCreate.kind === "file") {
+      const response = await createBuilderWorkspaceFile({
+        workspacePath: workspace.path,
+        parentPath: selectedFolderPath,
+        name,
+      });
+      if (!response.success) {
+        if (response.error) window.alert(response.error);
+        return;
+      }
+      syncWorkspaceState(response.workspace ?? workspace);
+      if (response.file) {
+        if (currentProjectId) {
+          const relativePath = toWorkspaceRelativePath(response.file.path, workspace.path);
+          if (relativePath) {
+            await saveBuilderProjectFile(currentProjectId, relativePath, response.file.content);
+          }
+        }
+        openTabFromFile(response.file);
+      }
+      setPendingCreate(null);
+      return;
+    }
+
     const response = await createBuilderWorkspaceFolder({
       workspacePath: workspace.path,
       parentPath: selectedFolderPath,
@@ -3943,7 +4610,12 @@ export function BuilderWindow() {
       return;
     }
     syncWorkspaceState(response.workspace ?? workspace);
-  }, [selectedFolderPath, syncWorkspaceState, workspace]);
+    setPendingCreate(null);
+  }, [currentProjectId, openTabFromFile, pendingCreate, selectedFolderPath, syncWorkspaceState, workspace]);
+
+  const handleCancelCreate = useCallback(() => {
+    setPendingCreate(null);
+  }, []);
 
   const handleSaveCurrent = useCallback(async () => {
     if (!activeTabObj) return;
@@ -3964,15 +4636,12 @@ export function BuilderWindow() {
   }, [activeTabObj, currentProjectId, reloadWorkspace, workspace?.path]);
 
   useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
-        event.preventDefault();
-        void handleSaveCurrent();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [handleSaveCurrent]);
+    if (!preferences.autoSave || !activeTabObj?.dirty) return;
+    const timeout = window.setTimeout(() => {
+      void handleSaveCurrent();
+    }, 900);
+    return () => window.clearTimeout(timeout);
+  }, [activeTabObj?.dirty, activeTabObj?.path, handleSaveCurrent, preferences.autoSave]);
 
   useEffect(() => {
     if (!workspace?.path || !selectedExplorerPath) return;
@@ -3987,15 +4656,14 @@ export function BuilderWindow() {
   }, [handleOpenExplorerFile]);
 
   const handleEditorChange = useCallback((next: string) => {
-    if (!activeTabObj) return;
     setTabs((prev) =>
       prev.map((tab) =>
-        tab.path === activeTabObj.path
-          ? { ...tab, content: next, dirty: next !== activeTabObj.content ? true : tab.dirty }
+        tab.path === activeTab
+          ? { ...tab, content: next, dirty: next !== tab.content ? true : tab.dirty }
           : tab
       )
     );
-  }, []);
+  }, [activeTab]);
 
   const handleCloseTab = useCallback((path: string) => {
     setTabs((prev) => {
@@ -4030,8 +4698,146 @@ export function BuilderWindow() {
     setShowProfile(false);
   }, []);
 
-  const handleMenuAction = useCallback((menuId: string, label: string) => {
+  const handlePreferencePatch = useCallback((patch: Partial<BuilderPreferences>) => {
+    setPreferences((prev) => ({ ...prev, ...patch }));
+  }, []);
+
+  const handleTestProvider = useCallback(async (group: keyof BuilderModelStatuses, slot: number) => {
+    const response = await testBuilderModelSlot({ group: group as any, slot });
+    if (!response?.success && response?.error) {
+      window.alert(response.error);
+    }
+    await refreshModelStatuses();
+  }, [refreshModelStatuses]);
+
+  const handleToggleProvider = useCallback(async (group: keyof BuilderModelStatuses, slot: number, enabled: boolean) => {
+    const response = await setBuilderModelEnabled({ group: group as any, slot, enabled });
+    if (!response?.success && response?.error) {
+      window.alert(response.error);
+      return;
+    }
+    await refreshModelStatuses();
+  }, [refreshModelStatuses]);
+
+  const handleRunActiveFile = useCallback(() => {
+    if (!activeTabObj?.path) {
+      appendAgentMessage({
+        role: "status",
+        content: "Run karne ke liye pehle active file open karo.",
+      });
+      return;
+    }
+    const extension = extname(activeTabObj.path);
+    if (extension === "html") {
+      setMode("preview");
+      return;
+    }
+    if (extension === "ts") {
+      appendAgentMessage({
+        role: "assistant",
+        content: "TypeScript file ko run karne ke liye project script ya ts-node config chahiye.",
+      });
+      return;
+    }
+
+    const quotedPath = `"${activeTabObj.path}"`;
+    const command =
+      extension === "py"
+        ? `python ${quotedPath}; if ($LASTEXITCODE -ne 0) { py ${quotedPath} }`
+        : extension === "js"
+          ? `node ${quotedPath}`
+          : null;
+
+    if (!command) {
+      appendAgentMessage({
+        role: "assistant",
+        content: `${basename(activeTabObj.path)} ke liye direct run shortcut available nahi hai.`,
+      });
+      return;
+    }
+
+    setTerminalOpen(true);
+    setQueuedTerminalCommand(command);
+    setView("debug");
+  }, [activeTabObj?.path, appendAgentMessage]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const primary = event.ctrlKey || event.metaKey;
+      const key = event.key.toLowerCase();
+
+      if (primary && key === "s") {
+        event.preventDefault();
+        void handleSaveCurrent();
+        return;
+      }
+
+      if (primary && event.altKey && key === "n") {
+        event.preventDefault();
+        void handleCreateFile();
+        return;
+      }
+
+      if (primary && !event.shiftKey && key === "n") {
+        event.preventDefault();
+        void handleCreateFile();
+        return;
+      }
+
+      if (primary && event.shiftKey && key === "f") {
+        event.preventDefault();
+        setView("search");
+        setShowProfile(false);
+        setShowSettings(false);
+        return;
+      }
+
+      if (primary && key === ",") {
+        event.preventDefault();
+        setShowSettings(true);
+        setShowProfile(false);
+        return;
+      }
+
+      if ((primary && event.key === "F5") || (primary && key === "f5")) {
+        event.preventDefault();
+        handleRunActiveFile();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [handleCreateFile, handleRunActiveFile, handleSaveCurrent]);
+
+  const handleWindowAction = useCallback((action: "minimize" | "maximize" | "close") => {
+    void window.electron.ipcRenderer.invoke(`builder-window-${action === "maximize" ? "maximize-toggle" : action}`);
+  }, []);
+
+  const handleMenuAction = useCallback(async (menuId: string, label: string, actionId?: string) => {
     const l = label.toLowerCase();
+    if (actionId?.startsWith("open-recent:")) {
+      await handleOpenRecentWorkspace(actionId.slice("open-recent:".length));
+      return;
+    }
+    if (actionId === "clear-recent") {
+      const response = await clearBuilderRecentWorkspaces();
+      if (response.success) setRecentWorkspaces([]);
+      return;
+    }
+    if (actionId === "open-settings") {
+      setShowSettings(true);
+      setShowProfile(false);
+      return;
+    }
+    if (actionId === "open-search") {
+      setView("search");
+      setShowProfile(false);
+      setShowSettings(false);
+      return;
+    }
+    if (actionId === "run-active-file") {
+      handleRunActiveFile();
+      return;
+    }
     if (menuId === "terminal") { setTerminalOpen(true); return; }
     if (menuId === "more") {
       if (l.includes("settings")) { setShowSettings(true); setShowProfile(false); return; }
@@ -4068,23 +4874,29 @@ export function BuilderWindow() {
       if (l.includes("open folder")) { void handleOpenFolder(); return; }
       if (l.includes("open file")) { void handleOpenLooseFile(); return; }
       if (l === "save") { void handleSaveCurrent(); return; }
+      if (l.includes("new folder")) { void handleCreateFolder(); return; }
       if (l.includes("new text file") || l.includes("new file")) {
         void handleCreateFile();
         return;
       }
     }
-  }, [handleCreateFile, handleOpenFolder, handleOpenLooseFile, handleSaveCurrent]);
+    if (menuId === "run" || (menuId === "terminal" && l.includes("run active file"))) {
+      handleRunActiveFile();
+    }
+  }, [handleCreateFile, handleCreateFolder, handleOpenFolder, handleOpenLooseFile, handleOpenRecentWorkspace, handleRunActiveFile, handleSaveCurrent]);
 
   const handleAgentStop = useCallback(async () => {
     if (!activeRequestId) return;
+    if (requestLifecycleRef.current[activeRequestId] !== "running") return;
+    requestLifecycleRef.current[activeRequestId] = "cancelled";
     await cancelBuilderRequest(activeRequestId);
-    appendAgentMessage({
+    finalizeAgentRequest(activeRequestId, "cancelled", {
       role: "status",
       content: "Generation cancelled.",
       providerLabel: selectedModelOption?.name,
+      tone: "cancelled",
     });
-    setActiveRequestId(null);
-  }, [activeRequestId, appendAgentMessage, selectedModelOption?.name]);
+  }, [activeRequestId, finalizeAgentRequest, selectedModelOption?.name]);
 
   const runAgentPrompt = useCallback(async (rawPrompt?: string, overrideModelId?: string | null) => {
     const prompt = (rawPrompt ?? agentInput).trim();
@@ -4111,36 +4923,80 @@ export function BuilderWindow() {
 
     const requestId = `builder-${makeMessageId()}`;
     const providerSelection = requestedModel.selection;
-    const intent = classifyBuilderAgentPrompt(prompt, !!currentProjectId);
+    const normalizedPrompt = prompt.toLowerCase();
+    const isCodingFollowUp =
+      lastAgentIntent !== "NORMAL_CHAT" &&
+      /^(html\/css\/js|html css js|html|css|javascript|js|typescript|react|yes|haan|han|continue|go ahead|same|use )/.test(normalizedPrompt);
+    const inferredIntent =
+      isCodingFollowUp
+        ? currentProjectId || workspace?.path
+          ? "CODING_EDIT"
+          : "CODING_GENERATE"
+        : classifyBuilderAgentPrompt(prompt, !!currentProjectId);
+    const intent =
+      inferredIntent === "NORMAL_CHAT" &&
+      /\b(this html|this file|current file|make this|convert this|turn this)\b/.test(normalizedPrompt)
+        ? currentProjectId || workspace?.path
+          ? "CODING_EDIT"
+          : "CODING_GENERATE"
+        : inferredIntent;
+    const workspaceContext =
+      workspace?.path || activeTabObj?.path
+        ? [
+            workspace?.path ? `Current workspace: ${workspace.path}` : "",
+            workspaceFileHints.length ? `Workspace file tree:\n${workspaceFileHints.join("\n")}` : "",
+            activeTabObj?.path ? `Current open file: ${activeTabObj.path}` : "",
+            activeTabObj?.content
+              ? `Current open file content:\n\`\`\`\n${activeTabObj.content.slice(0, 12000)}\n\`\`\``
+              : "",
+            "The Builder UI is already open. Do not ask which builder interface or framework to use when the current files already imply the stack.",
+            "Return concrete file edits only."
+          ]
+              .filter(Boolean)
+              .join("\n\n")
+        : "";
+    const effectivePrompt =
+      isCodingFollowUp && lastCodingContext
+        ? `Continue the previous coding task.\nOriginal task: ${lastCodingContext.originalPrompt}\nFollow-up clarification/preference: ${prompt}\n\n${
+            currentProjectId || workspace?.path
+              ? "Use the current workspace files and apply concrete edits."
+              : "Generate concrete project files directly. Do not answer like general chat."
+          }\n\n${workspaceContext}`.trim()
+        : intent === "CODING_EDIT" && !currentProjectId && activeTabObj?.path
+          ? `${prompt}\n\n${workspaceContext}`.trim()
+          : intent === "CODING_EDIT" || intent === "CODING_GENERATE"
+            ? `${prompt}\n\n${workspaceContext}`.trim()
+            : prompt;
     setActiveRequestId(requestId);
+    setLastAgentIntent(intent);
+    if (intent === "CODING_GENERATE" || intent === "CODING_EDIT") {
+      setLastCodingContext({
+        originalPrompt: isCodingFollowUp && lastCodingContext ? lastCodingContext.originalPrompt : prompt,
+        intent,
+        createdAt: new Date().toISOString(),
+      });
+    }
+    beginAgentRequest(requestId, requestedModel.name);
 
     try {
       if (intent === "RUN_COMMAND") {
         setTerminalOpen(true);
-        appendAgentMessage({
+        setQueuedTerminalCommand(prompt);
+        finalizeAgentRequest(requestId, "completed", {
           role: "assistant",
-          content: "Ye prompt terminal command lag raha hai. Builder terminal open kar diya hai, yahin se command run karo.",
+          content: "Command terminal me queue kar diya hai.",
           providerLabel: requestedModel.name,
         });
         return;
       }
 
-      appendAgentMessage({
-        role: "status",
-        content:
-          intent === "NORMAL_CHAT" || intent === "EXPLAIN_CODE"
-            ? `Sending chat request to ${requestedModel.name}...`
-            : `Sending coding request to ${requestedModel.name}...`,
-        providerLabel: requestedModel.name,
-      });
-
       if (intent === "NORMAL_CHAT" || intent === "EXPLAIN_CODE") {
-        const response = await chatBuilderPrompt(prompt, providerSelection, currentProjectId ?? undefined, requestId);
+        const response = await chatBuilderPrompt(effectivePrompt, providerSelection, currentProjectId ?? undefined, requestId);
         if (!response.success) {
           if (response.cancelled) {
             return;
           }
-          appendAgentMessage({
+          finalizeAgentRequest(requestId, "failed", {
             role: "assistant",
             content: response.error || "Provider request failed.",
             error: true,
@@ -4148,7 +5004,10 @@ export function BuilderWindow() {
           });
           return;
         }
-        appendAgentMessage({
+        if (requestLifecycleRef.current[requestId] !== "running") {
+          return;
+        }
+        finalizeAgentRequest(requestId, "completed", {
           role: "assistant",
           content: response.message || "Done.",
           providerLabel: response.providerLabel || requestedModel.name,
@@ -4158,19 +5017,22 @@ export function BuilderWindow() {
 
       const response =
         intent === "CODING_EDIT" && currentProjectId
-          ? await updateBuilderProject(currentProjectId, prompt, providerSelection, requestId)
-          : await createBuilderProject(prompt, providerSelection, requestId);
+          ? await updateBuilderProject(currentProjectId, effectivePrompt, providerSelection, requestId)
+          : await createBuilderProject(effectivePrompt, providerSelection, requestId);
 
       if (!response.success || !response.state) {
         if (response.cancelled) {
           return;
         }
-        appendAgentMessage({
+        finalizeAgentRequest(requestId, "failed", {
           role: "assistant",
           content: response.error || response.providerError || "Builder request failed.",
           error: true,
           providerLabel: requestedModel.name,
         });
+        return;
+      }
+      if (requestLifecycleRef.current[requestId] !== "running") {
         return;
       }
 
@@ -4188,40 +5050,58 @@ export function BuilderWindow() {
         setSelectedExplorerPath(workspaceResponse.workspace?.path ?? null);
         setSelectedExplorerType("folder");
         syncTabsFromProjectState(response.state);
-        await openPreferredWorkspaceFile(workspaceResponse.workspace ?? null, response.state.files[0]?.path ?? null);
+        await openPreferredWorkspaceFile(
+          workspaceResponse.workspace ?? null,
+          response.state.files?.[0]?.path ?? null
+        );
       }
 
       setPreviewVersion((prev) => prev + 1);
-      appendAgentMessage({
+      finalizeAgentRequest(requestId, "completed", {
         role: "assistant",
         content:
           response.providerError ||
           response.message ||
-          `Applied changes with ${response.state.metadata.providerUsed}.`,
+          `Applied ${response.state.files.length} file update${response.state.files.length === 1 ? "" : "s"}.`,
         error: false,
         providerLabel: response.state.metadata.providerUsed,
+        tone: "success",
       });
     } catch (error: any) {
       const cancelled = error?.name === "AbortError";
-      appendAgentMessage({
+      const requestState = requestLifecycleRef.current[requestId];
+      if (requestState === "cancelled" || requestState === "completed") {
+        return;
+      }
+      finalizeAgentRequest(requestId, cancelled ? "cancelled" : "failed", {
         role: cancelled ? "status" : "assistant",
         content: cancelled ? "Generation cancelled." : error?.message || "Builder request failed.",
         error: !cancelled,
         providerLabel: requestedModel.name,
+        tone: cancelled ? "cancelled" : "default",
       });
     } finally {
-      setActiveRequestId(null);
+      setActiveRequestId((current) => (current === requestId ? null : current));
     }
   }, [
     activeRequestId,
     agentInput,
     appendAgentMessage,
+    beginAgentRequest,
     currentProjectId,
+    finalizeAgentRequest,
+    lastCodingContext,
+    lastAgentIntent,
     modelOptions,
     openPreferredWorkspaceFile,
     selectedModelId,
     syncTabsFromProjectState,
     syncWorkspaceState,
+    workspaceFileHints,
+    workspace?.path,
+    workspaceLabel,
+    activeTabObj?.content,
+    activeTabObj?.path,
   ]);
 
   useEffect(() => {
@@ -4251,7 +5131,10 @@ export function BuilderWindow() {
           setChatHydrated(true);
           setCurrentProjectId(pendingPayload.state.metadata.id);
           syncTabsFromProjectState(pendingPayload.state);
-          await openPreferredWorkspaceFile(workspaceResponse.workspace ?? null, pendingPayload.state.files[0]?.path ?? null);
+          await openPreferredWorkspaceFile(
+            workspaceResponse.workspace ?? null,
+            pendingPayload.state.files?.[0]?.path ?? null
+          );
         }
       }
 
@@ -4289,7 +5172,12 @@ export function BuilderWindow() {
 
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-[#1e1e1e] text-[#cccccc]">
-      <TitleBar workspaceLabel={workspaceLabel} onMenuAction={handleMenuAction} />
+      <TitleBar
+        workspaceLabel={workspaceLabel}
+        menus={dynamicMenus}
+        onMenuAction={handleMenuAction}
+        onWindowAction={handleWindowAction}
+      />
       <div className="flex min-h-0 flex-1">
         <ActivityBar
           active={showSettings ? "explorer" : showProfile ? "account" : view}
@@ -4299,7 +5187,19 @@ export function BuilderWindow() {
 
         {showSettings ? (
           <aside className="w-[420px] shrink-0 border-r border-[#2b2b2b]">
-            <SettingsPanel onClose={() => setShowSettings(false)} />
+            <SettingsPanel
+              onClose={() => setShowSettings(false)}
+              preferences={preferences}
+              onPreferencesChange={handlePreferencePatch}
+              modelOptions={modelOptions}
+              selectedModelId={selectedModelId}
+              onSelectedModelIdChange={setSelectedModelId}
+              access={access}
+              onAccessChange={setAccess}
+              modelStatuses={modelStatuses}
+              onTestProvider={handleTestProvider}
+              onToggleProvider={handleToggleProvider}
+            />
           </aside>
         ) : showProfile ? (
           <aside className="w-[320px] shrink-0 border-r border-[#2b2b2b]">
@@ -4324,13 +5224,17 @@ export function BuilderWindow() {
             />
           </aside>
         ) : view === "search" ? (
-          <aside className="w-[280px] shrink-0 border-r border-[#2b2b2b]"><SearchPanel /></aside>
+          <aside className="w-[280px] shrink-0 border-r border-[#2b2b2b]">
+            <SearchPanel workspacePath={workspace?.path} onOpenResult={(filePath) => void handleOpenExplorerFile("", filePath)} />
+          </aside>
         ) : view === "scm" ? (
           <aside className="w-[280px] shrink-0 border-r border-[#2b2b2b]"><SourceControlPanel /></aside>
         ) : view === "extensions" ? (
           <aside className="w-[300px] shrink-0 border-r border-[#2b2b2b]"><ExtensionsPanel /></aside>
         ) : view === "debug" ? (
-          <aside className="w-[280px] shrink-0 border-r border-[#2b2b2b]"><DebugPanel /></aside>
+          <aside className="w-[280px] shrink-0 border-r border-[#2b2b2b]">
+            <DebugPanel activeFilePath={activeTabObj?.path} onRunActiveFile={handleRunActiveFile} />
+          </aside>
         ) : folderOpen ? (
           <aside className="w-[280px] shrink-0 border-r border-[#2b2b2b]">
             <FileExplorer
@@ -4350,7 +5254,7 @@ export function BuilderWindow() {
           </aside>
         ) : null}
 
-        <main className="flex min-w-0 flex-1 flex-col">
+        <main className="relative flex min-w-0 flex-1 flex-col">
           {showWelcome ? (
             <WelcomePage
               recentWorkspaces={recentWorkspaces}
@@ -4375,6 +5279,10 @@ export function BuilderWindow() {
                         code={activeTabObj.content}
                         onChange={handleEditorChange}
                         onCursorChange={setCursor}
+                        fontSize={preferences.fontSize}
+                        fontFamily={preferences.fontFamily}
+                        wordWrap={preferences.wordWrap}
+                        tabSize={preferences.tabSize}
                       />
                     ) : (
                       <div className="flex h-full items-center justify-center text-[13px] text-[#858585]">Select a file to edit.</div>
@@ -4391,6 +5299,10 @@ export function BuilderWindow() {
                           code={activeTabObj.content}
                           onChange={handleEditorChange}
                           onCursorChange={setCursor}
+                          fontSize={preferences.fontSize}
+                          fontFamily={preferences.fontFamily}
+                          wordWrap={preferences.wordWrap}
+                          tabSize={preferences.tabSize}
                         />
                       ) : (
                         <div className="flex h-full items-center justify-center text-[13px] text-[#858585]">Select a file to edit.</div>
@@ -4407,9 +5319,19 @@ export function BuilderWindow() {
                   onClose={() => setTerminalOpen(false)}
                   onMinimize={() => setTerminalOpen(false)}
                   workspacePath={workspace?.path}
+                  queuedCommand={queuedTerminalCommand}
+                  onQueuedCommandHandled={() => setQueuedTerminalCommand(null)}
                 />
               )}
             </>
+          )}
+          {pendingCreate && (
+            <CreateEntryDialog
+              target={pendingCreate}
+              onChange={(value) => setPendingCreate((prev) => (prev ? { ...prev, value } : prev))}
+              onCancel={handleCancelCreate}
+              onConfirm={() => void handleConfirmCreate()}
+            />
           )}
           <StatusBar
             fileName={fileName}
