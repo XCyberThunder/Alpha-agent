@@ -2293,9 +2293,17 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
   ipcMain.handle('project-builder-save-file', async (_, { projectId, filePath, content }) => {
     try {
       const existing = readProjectState(projectId)
-      const files = existing.files.map((file) =>
-        file.path === filePath ? { ...file, content: String(content || '') } : file
-      )
+      const nextContent = String(content || '')
+      const targetPath = safeProjectFilePath(existing.metadata.projectPath, filePath)
+      ensureDir(path.dirname(targetPath))
+      fs.writeFileSync(targetPath, nextContent, 'utf8')
+
+      const hasExistingFile = existing.files.some((file) => file.path === filePath)
+      const files = hasExistingFile
+        ? existing.files.map((file) =>
+            file.path === filePath ? { ...file, content: nextContent } : file
+          )
+        : [...existing.files, { path: filePath, content: nextContent }]
       const state = writeProjectState(
         projectId,
         existing.metadata.name,

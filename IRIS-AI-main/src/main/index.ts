@@ -15,48 +15,21 @@ import {
 } from 'electron'
 import path, { join } from 'path'
 import fs from 'fs'
-import { electronApp, optimizer, is } from '@electron-toolkit/utils'
+import os from 'os'
 import icon from '../../resources/alpha.png?asset'
 
-import registerIpcHandlers from './logic/alpha-memory-save'
-import registerSystemHandlers from './logic/get-system-info'
-import registerFileSearch from './logic/file-search'
-import registerFileOps from './logic/file-ops'
-import registerFileWrite from './logic/file-write'
-import registerFileRead from './logic/file-read'
-import registerFileOpen from './logic/file-open'
-import registerDirLoader from './logic/dir-load'
-import registerFileScanner from './logic/file-launcher'
-import registerAppLauncher from './logic/app-launcher'
-import registerNotesHandlers from './logic/notes-manager'
-import registerWebAgent from './logic/web-agent'
-import registerGhostControl from './logic/ghost-control'
-import registerterminalControl from './logic/terminal-control'
-import registerGalleryHandlers from './logic/gallery-manager'
-import registerGmailHandlers from './logic/gmail-manager'
-import registerLocationHandlers from './logic/live-location'
-import registerAdbHandlers from './logic/adb-manager'
-import registerRealityHacker from './logic/reality-hacker'
-import registerAlphaCoder from './services/alpha-coder'
-import registerBuilderWindow from './services/builder-window'
-import registerBuilderWorkspace from './services/builder-workspace'
-import registerProjectBuilder from './services/project-builder'
-import registerPlaywrightBrowser from './services/playwright-browser'
-import registerKiloBridge from './kilo/kilo-bridge'
-import registerTelekinesis from './logic/telekinesis'
-import registerPermanentMemory from './logic/permanent-memory'
-import registerWormhole from './services/wormhole'
-import registerOracle from './services/RAG-oracle'
-import registerDeepResearch from './services/deep-research'
-import registerWidgetMaker from './auto/widget-manager'
-import registerWebsiteBuilder from './auto/website-builder'
-import registerWorkflowManager from './workflow/workflow-manager'
-import registerDropZoneControl from './handlers/SmartDropZone-Handler'
-import registerScreenPeeler from './handlers/ScreenPeeler-handler'
-import registerPhantomKeyboard from './handlers/PhantomControl-handler'
-import registerSecurityVault from './security/Security'
-import registerLockSystem from './security/lock-system'
-import { autoUpdater } from 'electron-updater'
+const runtimeLogPath = join(os.tmpdir(), 'alpha-runtime-startup.log')
+const hasRendererUrl = Boolean(process.env['ELECTRON_RENDERER_URL'])
+
+function writeRuntimeLog(message: string) {
+  try {
+    fs.appendFileSync(runtimeLogPath, `[${new Date().toISOString()}] ${message}\n`)
+  } catch {
+    // ignore runtime log failures
+  }
+}
+
+writeRuntimeLog('main-module:imports-loaded')
 
 app.commandLine.appendSwitch('use-fake-ui-for-media-stream')
 
@@ -69,6 +42,7 @@ if (process.defaultApp) {
 }
 
 const gotTheLock = app.requestSingleInstanceLock()
+writeRuntimeLog(`main-module:single-instance-lock=${String(gotTheLock)}`)
 if (!gotTheLock) {
   app.quit()
 }
@@ -79,7 +53,23 @@ let isOverlayMode = false
 let isOverlayChatOpen = false
 let isQuitting = false
 
-const secureConfigPath = join(app.getPath('userData'), 'alpha_secure_vault.json')
+const getSecureConfigPath = () => join(app.getPath('userData'), 'alpha_secure_vault.json')
+
+process.on('uncaughtException', (error) => {
+  writeRuntimeLog(`uncaughtException: ${error?.stack || error?.message || String(error)}`)
+})
+
+process.on('unhandledRejection', (reason) => {
+  const message =
+    reason instanceof Error
+      ? reason.stack || reason.message
+      : typeof reason === 'string'
+        ? reason
+        : JSON.stringify(reason)
+  writeRuntimeLog(`unhandledRejection: ${message}`)
+})
+
+writeRuntimeLog('main-module:loaded')
 
 function encryptVaultValue(value: string): string {
   if (safeStorage.isEncryptionAvailable()) {
@@ -97,6 +87,7 @@ function decryptVaultValue(value?: string): string {
 }
 
 function readSecureVault(): Record<string, any> {
+  const secureConfigPath = getSecureConfigPath()
   if (!fs.existsSync(secureConfigPath)) return {}
   try {
     return JSON.parse(fs.readFileSync(secureConfigPath, 'utf8'))
@@ -106,6 +97,7 @@ function readSecureVault(): Record<string, any> {
 }
 
 function writeSecureVault(data: Record<string, any>) {
+  const secureConfigPath = getSecureConfigPath()
   fs.writeFileSync(secureConfigPath, JSON.stringify(data))
 }
 
@@ -407,6 +399,7 @@ const rotateKeySlot = (secureData: Record<string, any>, group: ApiKeyGroup) => {
 }
 
 function createWindow(): void {
+  writeRuntimeLog('createWindow:start')
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 720,
@@ -426,10 +419,24 @@ function createWindow(): void {
   })
 
   mainWindow.on('ready-to-show', () => {
+    writeRuntimeLog('createWindow:ready-to-show')
     if (mainWindow) mainWindow.show()
   })
 
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
+    writeRuntimeLog(`renderer:did-fail-load code=${errorCode} desc=${errorDescription} url=${validatedURL}`)
+  })
+
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    writeRuntimeLog(`renderer:render-process-gone reason=${details.reason} exitCode=${details.exitCode}`)
+  })
+
+  mainWindow.webContents.on('unresponsive', () => {
+    writeRuntimeLog('renderer:unresponsive')
+  })
+
   mainWindow.on('close', (event) => {
+    writeRuntimeLog(`window:close isQuitting=${isQuitting}`)
     if (isQuitting) return
     event.preventDefault()
     setOverlayMode(true)
@@ -454,9 +461,11 @@ function createWindow(): void {
     return { action: 'deny' }
   })
 
-  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+  if (hasRendererUrl && process.env['ELECTRON_RENDERER_URL']) {
+    writeRuntimeLog(`createWindow:loadURL ${process.env['ELECTRON_RENDERER_URL']}`)
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
+    writeRuntimeLog(`createWindow:loadFile ${join(__dirname, '../renderer/index.html')}`)
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
 }
@@ -470,6 +479,7 @@ function showMainWindow() {
 
 function createTray() {
   if (tray) return
+  writeRuntimeLog(`createTray:start icon=${String(icon)}`)
   tray = new Tray(icon)
   tray.setToolTip('alpha is running in background')
   tray.setContextMenu(
@@ -562,48 +572,64 @@ function applyOverlayBounds(displayWidth?: number, displayHeight?: number) {
   })
 }
 
-app.whenReady().then(() => {
-  electronApp.setAppUserModelId('com.thunder.alpha')
-
-  const appUpdateConfigPath = join(process.resourcesPath, 'app-update.yml')
-  const canCheckForUpdates = !is.dev && fs.existsSync(appUpdateConfigPath)
-
-  autoUpdater.autoDownload = canCheckForUpdates
-  autoUpdater.autoInstallOnAppQuit = true
-
-  if (canCheckForUpdates) {
-    autoUpdater.checkForUpdatesAndNotify().catch((err) => {
-      console.warn('Auto-updater check skipped:', err)
-    })
+app.whenReady().then(async () => {
+  writeRuntimeLog('app.whenReady:start')
+  if (typeof app.setAppUserModelId === 'function') {
+    app.setAppUserModelId('com.thunder.alpha')
   }
 
-  autoUpdater.on('update-available', (info) => {
-    dialog.showMessageBox({
-      type: 'info',
-      title: 'Update Found',
-      message: `Neural Core Update Found: v${info.version}. Downloading in background...`
-    })
-  })
+  const appUpdateConfigPath = join(process.resourcesPath, 'app-update.yml')
+  const canCheckForUpdates = !hasRendererUrl && fs.existsSync(appUpdateConfigPath)
+  try {
+    const updaterModule = await import('electron-updater')
+    const autoUpdater =
+      updaterModule.autoUpdater ||
+      updaterModule.default?.autoUpdater ||
+      updaterModule.default
+    if (!autoUpdater) {
+      throw new Error('autoUpdater export unavailable')
+    }
+    autoUpdater.autoDownload = canCheckForUpdates
+    autoUpdater.autoInstallOnAppQuit = true
 
-  autoUpdater.on('error', (err) => {
-    console.warn('Auto-updater error:', err == null ? 'unknown error' : err)
-  })
+    if (canCheckForUpdates) {
+      autoUpdater.checkForUpdatesAndNotify().catch((err) => {
+        console.warn('Auto-updater check skipped:', err)
+      })
+    }
 
-  autoUpdater.on('update-downloaded', () => {
-    dialog
-      .showMessageBox({
+    autoUpdater.on('update-available', (info) => {
+      dialog.showMessageBox({
         type: 'info',
-        title: 'Update Ready',
-        message: 'New version downloaded! The system will now force reboot to apply the patch.',
-        buttons: ['Execute Restart']
+        title: 'Update Found',
+        message: `Neural Core Update Found: v${info.version}. Downloading in background...`
       })
-      .then(() => {
-        setImmediate(() => {
-          app.removeAllListeners('window-all-closed')
-          autoUpdater.quitAndInstall(false, true)
+    })
+
+    autoUpdater.on('error', (err) => {
+      console.warn('Auto-updater error:', err == null ? 'unknown error' : err)
+    })
+
+    autoUpdater.on('update-downloaded', () => {
+      dialog
+        .showMessageBox({
+          type: 'info',
+          title: 'Update Ready',
+          message: 'New version downloaded! The system will now force reboot to apply the patch.',
+          buttons: ['Execute Restart']
         })
-      })
-  })
+        .then(() => {
+          setImmediate(() => {
+            app.removeAllListeners('window-all-closed')
+            autoUpdater.quitAndInstall(false, true)
+          })
+        })
+    })
+  } catch (error) {
+    writeRuntimeLog(
+      `updater:init-failed ${error instanceof Error ? error.stack || error.message : String(error)}`
+    )
+  }
 
   session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
     const allowedPermissions = [
@@ -667,7 +693,7 @@ app.whenReady().then(() => {
       }
       delete secureData.deepgram
 
-      fs.writeFileSync(secureConfigPath, JSON.stringify(secureData))
+      writeSecureVault(secureData)
       return { success: true }
     } catch (error: any) {
       return { success: false, error: error.message }
@@ -676,7 +702,7 @@ app.whenReady().then(() => {
   )
 
   ipcMain.handle('secure-get-keys', async () => {
-    if (!fs.existsSync(secureConfigPath)) return null
+    if (!fs.existsSync(getSecureConfigPath())) return null
     try {
       const data = readSecureVault()
       const brainSlot = getActiveKeySlot(data, 'geminiBrain')
@@ -757,7 +783,7 @@ app.whenReady().then(() => {
       }
       target.enabled = true
       if (!secureData.activeKeySlots?.[group]) markActiveKeySlot(secureData, group, Number(slot))
-      fs.writeFileSync(secureConfigPath, JSON.stringify(secureData))
+      writeSecureVault(secureData)
       return { success: true, statuses: getKeyStatuses(secureData) }
     } catch (error: any) {
       return { success: false, error: error.message }
@@ -778,7 +804,7 @@ app.whenReady().then(() => {
       if (!target.enabled && secureData.activeKeySlots?.[group] === Number(slot)) {
         rotateKeySlot(secureData, group)
       }
-      fs.writeFileSync(secureConfigPath, JSON.stringify(secureData))
+      writeSecureVault(secureData)
       return { success: true, statuses: getKeyStatuses(secureData) }
     } catch (error: any) {
       return { success: false, error: error.message }
@@ -793,7 +819,7 @@ app.whenReady().then(() => {
       if (!target) return { success: false, key: '', slot: null }
       target.lastUsedAt = new Date().toISOString()
       markActiveKeySlot(secureData, group, target.slot)
-      fs.writeFileSync(secureConfigPath, JSON.stringify(secureData))
+      writeSecureVault(secureData)
       return {
         success: true,
         key: decryptKeySlot(target),
@@ -818,7 +844,7 @@ app.whenReady().then(() => {
         next.lastFailureReason = ''
         next.lastUsedAt = new Date().toISOString()
       }
-      fs.writeFileSync(secureConfigPath, JSON.stringify(secureData))
+      writeSecureVault(secureData)
       return {
         success: Boolean(next),
         key: next ? decryptKeySlot(next) : '',
@@ -842,7 +868,7 @@ app.whenReady().then(() => {
       target.status = 'failed'
       target.lastFailureReason = String(reason || 'Provider failure')
       target.lastCheckedAt = new Date().toISOString()
-      fs.writeFileSync(secureConfigPath, JSON.stringify(secureData))
+      writeSecureVault(secureData)
       return { success: true, statuses: getKeyStatuses(secureData) }
     } catch (error: any) {
       return { success: false, error: error.message }
@@ -861,7 +887,7 @@ app.whenReady().then(() => {
       target.status = 'rate-limited'
       target.lastFailureReason = 'Rate limit or quota reached'
       target.lastCheckedAt = new Date().toISOString()
-      fs.writeFileSync(secureConfigPath, JSON.stringify(secureData))
+      writeSecureVault(secureData)
       return { success: true, statuses: getKeyStatuses(secureData) }
     } catch (error: any) {
       return { success: false, error: error.message }
@@ -897,7 +923,7 @@ app.whenReady().then(() => {
           const body = await response.text()
           target.status = response.status === 429 ? 'rate-limited' : 'failed'
           target.lastFailureReason = normalizeProviderErrorMessage('Gemini', response.status, body, 'gemini-2.5-flash')
-          fs.writeFileSync(secureConfigPath, JSON.stringify(secureData))
+          writeSecureVault(secureData)
           return { success: false, error: target.lastFailureReason, statuses: getKeyStatuses(secureData) }
         }
       } else if (supportsProviderConfig(group)) {
@@ -934,7 +960,7 @@ app.whenReady().then(() => {
         if (!response.success) {
           target.status = /rate limit|quota/i.test(response.error || '') ? 'rate-limited' : 'failed'
           target.lastFailureReason = response.error || `${providerName} test failed.`
-          fs.writeFileSync(secureConfigPath, JSON.stringify(secureData))
+          writeSecureVault(secureData)
           return { success: false, error: target.lastFailureReason, statuses: getKeyStatuses(secureData) }
         }
       } else if (group === 'groq' || group === 'kimi') {
@@ -950,7 +976,7 @@ app.whenReady().then(() => {
         if (!response.success) {
           target.status = /rate limit|quota/i.test(response.error || '') ? 'rate-limited' : 'failed'
           target.lastFailureReason = response.error || `${group} test failed.`
-          fs.writeFileSync(secureConfigPath, JSON.stringify(secureData))
+          writeSecureVault(secureData)
           return { success: false, error: target.lastFailureReason, statuses: getKeyStatuses(secureData) }
         }
       } else {
@@ -961,7 +987,7 @@ app.whenReady().then(() => {
 
       if (target.enabled) target.status = 'available'
       target.lastFailureReason = ''
-      fs.writeFileSync(secureConfigPath, JSON.stringify(secureData))
+      writeSecureVault(secureData)
       return {
         success: true,
         status: target.status,
@@ -975,7 +1001,7 @@ app.whenReady().then(() => {
 
 
   ipcMain.handle('check-keys-exist', () => {
-    return fs.existsSync(secureConfigPath)
+    return fs.existsSync(getSecureConfigPath())
   })
 
   ipcMain.handle('get-launch-on-startup', () => {
@@ -1003,7 +1029,16 @@ app.whenReady().then(() => {
   })
 
   app.on('browser-window-created', (_, window) => {
-    optimizer.watchWindowShortcuts(window)
+    window.webContents.on('before-input-event', (event, input) => {
+      if (input.type === 'keyDown' && input.control && input.shift && input.key.toUpperCase() === 'I') {
+        event.preventDefault()
+        if (window.webContents.isDevToolsOpened()) {
+          window.webContents.closeDevTools()
+        } else {
+          window.webContents.openDevTools({ mode: 'detach' })
+        }
+      }
+    })
   })
 
   app.on('open-url', (event, url) => {
@@ -1013,54 +1048,64 @@ app.whenReady().then(() => {
     }
   })
 
-  registerLockSystem()
-  registerSecurityVault()
-  registerPhantomKeyboard()
-  registerScreenPeeler()
-  registerDropZoneControl(ipcMain)
-  registerWorkflowManager()
-  registerWebsiteBuilder()
-  registerWidgetMaker()
-  registerDeepResearch({ ipcMain })
-  registerOracle({ ipcMain })
-  registerWormhole({ ipcMain })
-  registerPermanentMemory({ ipcMain, app })
-  registerTelekinesis({ ipcMain })
-  registerAlphaCoder({ ipcMain, app })
-  registerKiloBridge({ ipcMain })
-  registerProjectBuilder({ ipcMain })
-  registerBuilderWorkspace(ipcMain)
-  registerBuilderWindow({
-    ipcMain,
-    rendererUrl: process.env['ELECTRON_RENDERER_URL'],
-    icon,
-    preloadPath: join(__dirname, '../preload/index.js')
-  })
-  registerPlaywrightBrowser({
-    ipcMain,
-    readSecureVault,
-    writeSecureVault,
-    normalizePlaywrightSettings
-  })
-  registerRealityHacker(ipcMain)
-  registerAdbHandlers(ipcMain)
-  registerLocationHandlers(ipcMain)
-  registerGmailHandlers(ipcMain)
-  registerGalleryHandlers(ipcMain)
-  registerterminalControl(ipcMain)
-  registerGhostControl(ipcMain)
-  registerWebAgent(ipcMain)
-  registerNotesHandlers(ipcMain)
-  registerAppLauncher(ipcMain)
-  registerDirLoader(ipcMain)
-  registerFileOpen(ipcMain)
-  registerFileSearch(ipcMain)
-  registerFileRead(ipcMain)
-  registerFileWrite(ipcMain)
-  registerFileOps(ipcMain)
-  registerFileScanner(ipcMain)
-  registerSystemHandlers(ipcMain)
-  registerIpcHandlers({ ipcMain, app })
+  const safeRegister = async (label: string, runner: () => Promise<void> | void) => {
+    writeRuntimeLog(`register:start:${label}`)
+    await runner()
+    writeRuntimeLog(`register:done:${label}`)
+  }
+
+  await safeRegister('lock-system', async () => (await import('./security/lock-system')).default())
+  await safeRegister('security-vault', async () => (await import('./security/Security')).default())
+  await safeRegister('phantom-keyboard', async () => (await import('./handlers/PhantomControl-handler')).default())
+  await safeRegister('screen-peeler', async () => (await import('./handlers/ScreenPeeler-handler')).default())
+  await safeRegister('drop-zone-control', async () => (await import('./handlers/SmartDropZone-Handler')).default(ipcMain))
+  await safeRegister('workflow-manager', async () => (await import('./workflow/workflow-manager')).default())
+  await safeRegister('website-builder', async () => (await import('./auto/website-builder')).default())
+  await safeRegister('widget-maker', async () => (await import('./auto/widget-manager')).default())
+  await safeRegister('deep-research', async () => (await import('./services/deep-research')).default({ ipcMain }))
+  await safeRegister('oracle', async () => (await import('./services/RAG-oracle')).default({ ipcMain }))
+  await safeRegister('wormhole', async () => (await import('./services/wormhole')).default({ ipcMain }))
+  await safeRegister('permanent-memory', async () => (await import('./logic/permanent-memory')).default({ ipcMain, app }))
+  await safeRegister('telekinesis', async () => (await import('./logic/telekinesis')).default({ ipcMain }))
+  await safeRegister('alpha-coder', async () => (await import('./services/alpha-coder')).default({ ipcMain, app }))
+  await safeRegister('kilo-bridge', async () => (await import('./kilo/kilo-bridge')).default({ ipcMain }))
+  await safeRegister('project-builder', async () => (await import('./services/project-builder')).default({ ipcMain }))
+  await safeRegister('builder-workspace', async () => (await import('./services/builder-workspace')).default(ipcMain))
+  await safeRegister('builder-window', async () =>
+    (await import('./services/builder-window')).default({
+      ipcMain,
+      rendererUrl: process.env['ELECTRON_RENDERER_URL'],
+      icon,
+      preloadPath: join(__dirname, '../preload/index.js')
+    })
+  )
+  await safeRegister('playwright-browser', async () =>
+    (await import('./services/playwright-browser')).default({
+      ipcMain,
+      readSecureVault,
+      writeSecureVault,
+      normalizePlaywrightSettings
+    })
+  )
+  await safeRegister('reality-hacker', async () => (await import('./logic/reality-hacker')).default(ipcMain))
+  await safeRegister('adb-handlers', async () => (await import('./logic/adb-manager')).default(ipcMain))
+  await safeRegister('location-handlers', async () => (await import('./logic/live-location')).default(ipcMain))
+  await safeRegister('gmail-handlers', async () => (await import('./logic/gmail-manager')).default(ipcMain))
+  await safeRegister('gallery-handlers', async () => (await import('./logic/gallery-manager')).default(ipcMain))
+  await safeRegister('terminal-control', async () => (await import('./logic/terminal-control')).default(ipcMain))
+  await safeRegister('ghost-control', async () => (await import('./logic/ghost-control')).default(ipcMain))
+  await safeRegister('web-agent', async () => (await import('./logic/web-agent')).default(ipcMain))
+  await safeRegister('notes-handlers', async () => (await import('./logic/notes-manager')).default(ipcMain))
+  await safeRegister('app-launcher', async () => (await import('./logic/app-launcher')).default(ipcMain))
+  await safeRegister('dir-loader', async () => (await import('./logic/dir-load')).default(ipcMain))
+  await safeRegister('file-open', async () => (await import('./logic/file-open')).default(ipcMain))
+  await safeRegister('file-search', async () => (await import('./logic/file-search')).default(ipcMain))
+  await safeRegister('file-read', async () => (await import('./logic/file-read')).default(ipcMain))
+  await safeRegister('file-write', async () => (await import('./logic/file-write')).default(ipcMain))
+  await safeRegister('file-ops', async () => (await import('./logic/file-ops')).default(ipcMain))
+  await safeRegister('file-scanner', async () => (await import('./logic/file-launcher')).default(ipcMain))
+  await safeRegister('system-handlers', async () => (await import('./logic/get-system-info')).default(ipcMain))
+  await safeRegister('ipc-handlers', async () => (await import('./logic/alpha-memory-save')).default({ ipcMain, app }))
 
   ipcMain.handle('get-screen-source', async () => {
     const sources = await desktopCapturer.getSources({ types: ['screen'] })
@@ -1069,6 +1114,7 @@ app.whenReady().then(() => {
 
   createWindow()
   createTray()
+  writeRuntimeLog('app.whenReady:window-and-tray-created')
 
   globalShortcut.register('CommandOrControl+Shift+I', () => toggleOverlayMode())
   ipcMain.on('toggle-overlay', () => toggleOverlayMode())
@@ -1081,6 +1127,8 @@ app.whenReady().then(() => {
   app.on('activate', function () {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+}).catch((error) => {
+  writeRuntimeLog(`app.whenReady:catch ${error?.stack || error?.message || String(error)}`)
 })
 
 app.on('will-quit', () => {
