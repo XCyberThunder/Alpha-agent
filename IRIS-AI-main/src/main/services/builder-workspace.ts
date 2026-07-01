@@ -247,6 +247,14 @@ const assertInsideWorkspace = (workspacePath: string, targetPath: string) => {
   }
 }
 
+const assertNotWorkspaceRoot = (workspacePath: string, targetPath: string) => {
+  const normalizedWorkspace = path.resolve(workspacePath)
+  const normalizedTarget = path.resolve(targetPath)
+  if (normalizedWorkspace === normalizedTarget) {
+    throw new Error('Workspace root cannot be deleted.')
+  }
+}
+
 const pickWindow = () => BrowserWindow.getFocusedWindow()
 
 const sendTerminalEvent = (webContentsId: number, payload: Record<string, unknown>) => {
@@ -467,6 +475,50 @@ export default function registerBuilderWorkspace(ipcMain: IpcMain) {
         return {
           success: false,
           error: error instanceof Error ? error.message : 'Failed to create folder.'
+        }
+      }
+    }
+  )
+
+  ipcMain.handle(
+    'builder-workspace:delete-path',
+    async (_, { targetPath, workspacePath }: { targetPath: string; workspacePath?: string | null }) => {
+      try {
+        if (!targetPath || !fs.existsSync(targetPath)) {
+          return { success: false, error: 'Selected path not found.' }
+        }
+
+        const resolvedTarget = path.resolve(targetPath)
+        let workspace: WorkspaceSnapshot | null = null
+
+        if (workspacePath) {
+          if (!(await isDirectory(workspacePath))) {
+            return { success: false, error: 'Workspace folder not found.' }
+          }
+          assertInsideWorkspace(workspacePath, resolvedTarget)
+          assertNotWorkspaceRoot(workspacePath, resolvedTarget)
+        }
+
+        const stats = await fsp.stat(resolvedTarget)
+        if (stats.isDirectory()) {
+          await fsp.rm(resolvedTarget, { recursive: true, force: false })
+        } else {
+          await fsp.unlink(resolvedTarget)
+        }
+
+        if (workspacePath && fs.existsSync(workspacePath)) {
+          workspace = await buildWorkspaceSnapshot(workspacePath)
+        }
+
+        return {
+          success: true,
+          deletedPath: resolvedTarget,
+          workspace
+        }
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : 'Failed to delete path.'
         }
       }
     }

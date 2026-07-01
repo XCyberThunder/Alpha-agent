@@ -43,6 +43,13 @@ export type BuilderWorkspaceFileResponse = {
   error?: string
 }
 
+export type BuilderWorkspaceDeleteResponse = {
+  success: boolean
+  workspace?: BuilderWorkspaceSnapshot | null
+  deletedPath?: string
+  error?: string
+}
+
 export type BuilderWorkspaceTerminalOpenResponse = {
   success: boolean
   sessionId?: string
@@ -119,6 +126,12 @@ export const createBuilderWorkspaceFolder = async (payload: {
   name: string
 }): Promise<BuilderWorkspaceStateResponse> =>
   window.electron.ipcRenderer.invoke('builder-workspace:create-folder', payload)
+
+export const deleteBuilderWorkspacePath = async (payload: {
+  targetPath: string
+  workspacePath?: string | null
+}): Promise<BuilderWorkspaceDeleteResponse> =>
+  window.electron.ipcRenderer.invoke('builder-workspace:delete-path', payload)
 
 export const revealBuilderWorkspacePath = async (
   targetPath: string

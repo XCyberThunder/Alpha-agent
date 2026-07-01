@@ -34,6 +34,7 @@ export type BuilderProjectResponse = {
   projectPath?: string
   cancelled?: boolean
   usedFallback?: boolean
+  providerTrace?: BuilderProviderTrace
 }
 
 export type BuilderChatResponse = {
@@ -43,6 +44,17 @@ export type BuilderChatResponse = {
   code?: string
   providerLabel?: string
   cancelled?: boolean
+  providerTrace?: BuilderProviderTrace
+}
+
+export type BuilderProviderTrace = {
+  providerUsed: string
+  modelUsed: string
+  mode: 'chat' | 'coding' | 'edit'
+  fallbackUsed: boolean
+  responseStatus: 'success' | 'failed' | 'cancelled'
+  parsedFilesCount?: number
+  error?: string
 }
 
 export type BuilderTerminalResult = {

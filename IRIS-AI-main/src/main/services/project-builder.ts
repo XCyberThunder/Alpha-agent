@@ -69,6 +69,16 @@ type ProviderChatResult =
   | { success: true; content: string; providerLabel: string }
   | { success: false; code: string; message: string; providerLabel: string; cancelled?: boolean }
 
+type ProviderTrace = {
+  providerUsed: string
+  modelUsed: string
+  mode: 'chat' | 'coding' | 'edit'
+  fallbackUsed: boolean
+  responseStatus: 'success' | 'failed' | 'cancelled'
+  parsedFilesCount?: number
+  error?: string
+}
+
 type BuilderPromptIntent =
   | 'NORMAL_CHAT'
   | 'CODING_GENERATE'
@@ -2057,6 +2067,11 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
     const projectType = detectProjectType(prompt || '')
     const providerSelection = parseProviderSelection(provider)
     const selectedModelId = providerSelection.modelId || getProviderDefaults(providerSelection.provider).modelId
+    const providerTraceBase: Omit<ProviderTrace, 'responseStatus' | 'fallbackUsed'> = {
+      providerUsed: providerSelection.label || providerSelection.provider,
+      modelUsed: selectedModelId || PROJECT_MODEL,
+      mode: intent === 'CODING_EDIT' ? 'edit' : 'coding'
+    }
     debugBuilder('create-request', {
       intent,
       provider: providerSelection.provider,
@@ -2083,7 +2098,13 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
           error: generated.message,
           code: generated.code,
           providerError: generated.message,
-          providerCode: generated.code
+          providerCode: generated.code,
+          providerTrace: {
+            ...providerTraceBase,
+            responseStatus: generated.cancelled ? 'cancelled' : 'failed',
+            fallbackUsed: false,
+            error: generated.message
+          }
         }
       }
 
@@ -2112,7 +2133,17 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
         success: true,
         state,
         previewHtml: inlinePreviewHtml(state.files),
-        ...(resolved.providerNotice ? { providerError: resolved.providerNotice, usedFallback: resolved.usedFallback } : {})
+        ...(resolved.providerNotice ? { providerError: resolved.providerNotice, usedFallback: resolved.usedFallback } : {}),
+        providerTrace: {
+          providerUsed: generated.providerLabel,
+          modelUsed:
+            providerSelection.modelId || payload.modelId || payload.projectModel || selectedModelId || PROJECT_MODEL,
+          mode: intent === 'CODING_EDIT' ? 'edit' : 'coding',
+          responseStatus: 'success',
+          fallbackUsed: resolved.usedFallback,
+          parsedFilesCount: resolved.files.length,
+          ...(resolved.providerNotice ? { error: resolved.providerNotice } : {})
+        }
       }
     } catch (error: any) {
       if (error?.name === 'AbortError') {
@@ -2137,10 +2168,16 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
     }
     const kiloService = getKiloService()
     const providerSelection = parseProviderSelection(provider, existing.metadata.providerUsed)
+    const selectedModelId = providerSelection.modelId || existing.metadata.modelUsed || getProviderDefaults(providerSelection.provider).modelId
+    const providerTraceBase: Omit<ProviderTrace, 'responseStatus' | 'fallbackUsed'> = {
+      providerUsed: providerSelection.label || providerSelection.provider,
+      modelUsed: selectedModelId || PROJECT_MODEL,
+      mode: intent === 'CODING_EDIT' ? 'edit' : 'coding'
+    }
     debugBuilder('update-request', {
       intent,
       provider: providerSelection.provider,
-      modelId: providerSelection.modelId || existing.metadata.modelUsed,
+      modelId: selectedModelId,
       promptLength: (prompt || '').length,
       requestId,
       projectId
@@ -2188,7 +2225,13 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
         success: true,
         state: existing,
         previewHtml: inlinePreviewHtml(existing.files),
-        providerError: kiloResult.error || 'Kilo task complete nahi hua.'
+        providerError: kiloResult.error || 'Kilo task complete nahi hua.',
+        providerTrace: {
+          ...providerTraceBase,
+          responseStatus: 'failed',
+          fallbackUsed: false,
+          error: kiloResult.error || 'Kilo task complete nahi hua.'
+        }
       }
     }
 
@@ -2212,7 +2255,13 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
         error: kiloDisabledMessage ? `${kiloDisabledMessage}\n\n${generated.message}` : generated.message,
         code: generated.code,
         providerError: kiloDisabledMessage ? `${kiloDisabledMessage}\n\n${generated.message}` : generated.message,
-        providerCode: generated.code
+        providerCode: generated.code,
+        providerTrace: {
+          ...providerTraceBase,
+          responseStatus: generated.cancelled ? 'cancelled' : 'failed',
+          fallbackUsed: false,
+          error: kiloDisabledMessage ? `${kiloDisabledMessage}\n\n${generated.message}` : generated.message
+        }
       }
     }
 
@@ -2248,16 +2297,27 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
       state,
       previewHtml: inlinePreviewHtml(state.files),
       ...(kiloDisabledMessage ? { message: kiloDisabledMessage } : {}),
-      ...(resolved.providerNotice ? { providerError: resolved.providerNotice, usedFallback: resolved.usedFallback } : {})
+      ...(resolved.providerNotice ? { providerError: resolved.providerNotice, usedFallback: resolved.usedFallback } : {}),
+      providerTrace: {
+        providerUsed: generated.providerLabel,
+        modelUsed:
+          providerSelection.modelId || payload.modelId || payload.projectModel || existing.metadata.modelUsed || PROJECT_MODEL,
+        mode: intent === 'CODING_EDIT' ? 'edit' : 'coding',
+        responseStatus: 'success',
+        fallbackUsed: resolved.usedFallback,
+        parsedFilesCount: resolved.files.length,
+        ...(resolved.providerNotice ? { error: resolved.providerNotice } : {})
+      }
     }
   })
 
   ipcMain.handle('project-builder-chat', async (_, { prompt, provider = 'kiloGateway', projectId, requestId }) => {
     const currentFiles = projectId ? readProjectState(projectId).files : undefined
     const providerSelection = parseProviderSelection(provider)
+    const selectedModelId = providerSelection.modelId || getProviderDefaults(providerSelection.provider).modelId
     debugBuilder('chat-request', {
       provider: providerSelection.provider,
-      modelId: providerSelection.modelId || getProviderDefaults(providerSelection.provider).modelId,
+      modelId: selectedModelId,
       promptLength: (prompt || '').length,
       requestId,
       projectId
@@ -2272,14 +2332,29 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
           cancelled: result.cancelled,
           error: result.message,
           code: result.code,
-          providerLabel: result.providerLabel
+          providerLabel: result.providerLabel,
+          providerTrace: {
+            providerUsed: result.providerLabel || providerSelection.label || providerSelection.provider,
+            modelUsed: selectedModelId || PROJECT_MODEL,
+            mode: 'chat',
+            responseStatus: result.cancelled ? 'cancelled' : 'failed',
+            fallbackUsed: false,
+            error: result.message
+          }
         }
       }
 
       return {
         success: true,
         message: result.content,
-        providerLabel: result.providerLabel
+        providerLabel: result.providerLabel,
+        providerTrace: {
+          providerUsed: result.providerLabel,
+          modelUsed: selectedModelId || PROJECT_MODEL,
+          mode: 'chat',
+          responseStatus: 'success',
+          fallbackUsed: false
+        }
       }
     } catch (error: any) {
       if (error?.name === 'AbortError') {

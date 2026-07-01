@@ -24,7 +24,7 @@ import {
   GitBranch as GitIcon, AlertCircle, Info, Bell, Radio, ChevronLeft,
   Minus, Square, LayoutGrid, Plug, Star, Bot, Box, TerminalSquare,
   Container, ArrowRight, MessageSquare, Maximize2, Undo2, FileSearch,
-  TestTube, BookOpen, KeyRound, Bell as BellIcon, Palette, Keyboard,
+  TestTube, BookOpen, KeyRound, Bell as BellIcon, Palette, Keyboard, Copy,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@renderer/lib/utils";
@@ -42,6 +42,7 @@ import {
   clearBuilderRecentWorkspaces,
   createBuilderWorkspaceFile,
   createBuilderWorkspaceFolder,
+  deleteBuilderWorkspacePath,
   disposeBuilderTerminal,
   getBuilderWorkspaceState,
   openBuilderLooseFileDialog,
@@ -50,6 +51,7 @@ import {
   openBuilderWorkspaceFolderDialog,
   readBuilderWorkspaceFile,
   refreshBuilderWorkspace,
+  revealBuilderWorkspacePath,
   searchBuilderWorkspace,
   sendBuilderTerminalInput,
   type BuilderWorkspaceTerminalEvent,
@@ -62,6 +64,7 @@ import {
   getBuilderModelStatuses,
   getBuilderWindowState,
   type BuilderModelStatuses,
+  type BuilderProviderTrace,
   setBuilderModelEnabled,
   type BuilderProjectState,
   type BuilderProviderSelection,
@@ -92,8 +95,11 @@ function TerminalPanel({
   const [output, setOutput] = useState<string[]>([]);
   const [input, setInput] = useState("");
   const [exitCode, setExitCode] = useState<number | null>(null);
+  const [commandHistory, setCommandHistory] = useState<string[]>([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
   const sessionIdRef = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const hiddenInputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     let disposed = false;
@@ -142,7 +148,13 @@ function TerminalPanel({
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [output]);
+  }, [output, input]);
+
+  useEffect(() => {
+    if (activeTab === "terminal") {
+      window.setTimeout(() => hiddenInputRef.current?.focus(), 0);
+    }
+  }, [activeTab]);
 
   const runInput = useCallback(async () => {
     const command = input.trimEnd();
@@ -150,6 +162,8 @@ function TerminalPanel({
     setOutput((prev) => [...prev, `${cwd || "~"} > ${command}`]);
     setInput("");
     setExitCode(null);
+    setCommandHistory((prev) => [...prev, command].slice(-50));
+    setHistoryIndex(-1);
     await sendBuilderTerminalInput(sessionIdRef.current, `${command}\n`);
   }, [cwd, input]);
 
@@ -160,6 +174,54 @@ function TerminalPanel({
     void sendBuilderTerminalInput(sessionIdRef.current, `${queuedCommand}\n`);
     onQueuedCommandHandled?.();
   }, [cwd, onQueuedCommandHandled, queuedCommand, sessionId]);
+
+  const focusTerminal = useCallback(() => {
+    hiddenInputRef.current?.focus();
+  }, []);
+
+  const handleTerminalKeyDown = useCallback(
+    async (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if (!sessionIdRef.current) return;
+
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c") {
+        if (!input) {
+          event.preventDefault();
+          await sendBuilderTerminalInput(sessionIdRef.current, "\u0003");
+          setOutput((prev) => [...prev, "^C"]);
+        }
+        return;
+      }
+
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        await runInput();
+        return;
+      }
+
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        if (!commandHistory.length) return;
+        const nextIndex = historyIndex < 0 ? commandHistory.length - 1 : Math.max(0, historyIndex - 1);
+        setHistoryIndex(nextIndex);
+        setInput(commandHistory[nextIndex] || "");
+        return;
+      }
+
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        if (!commandHistory.length) return;
+        if (historyIndex < 0 || historyIndex >= commandHistory.length - 1) {
+          setHistoryIndex(-1);
+          setInput("");
+          return;
+        }
+        const nextIndex = historyIndex + 1;
+        setHistoryIndex(nextIndex);
+        setInput(commandHistory[nextIndex] || "");
+      }
+    },
+    [commandHistory, historyIndex, input, runInput]
+  );
 
   return (
     <div className="flex shrink-0 flex-col border-t border-[#2b2b2b] bg-[#1e1e1e]" style={{ height }}>
@@ -191,7 +253,23 @@ function TerminalPanel({
           <button onClick={onClose} className="rounded p-1 text-[#858585] hover:bg-white/[0.06] hover:text-[#cccccc]" title="Close"><X size={14} /></button>
         </div>
       </div>
-      <div className="alpha-scroll-thin flex-1 overflow-y-auto p-2 font-mono text-[12.5px] leading-[1.5]" ref={scrollRef}>
+      <div
+        className="alpha-scroll-thin relative flex-1 overflow-y-auto p-2 font-mono text-[12.5px] leading-[1.5] outline-none"
+        ref={scrollRef}
+        onClick={focusTerminal}
+        tabIndex={0}
+      >
+        <textarea
+          ref={hiddenInputRef}
+          value={input}
+          onChange={(event) => {
+            setInput(event.target.value);
+            setHistoryIndex(-1);
+          }}
+          onKeyDown={(event) => void handleTerminalKeyDown(event)}
+          className="pointer-events-none absolute left-0 top-0 h-px w-px opacity-0"
+          aria-hidden
+        />
         {activeTab === "terminal" ? (
           <div className="space-y-1">
             {output.length === 0 ? (
@@ -203,6 +281,13 @@ function TerminalPanel({
                 </div>
               ))
             )}
+            <div className="flex items-center gap-2 text-[#cccccc]">
+              <span className="text-[#6a6a6a]">{cwd || "~"} &gt;</span>
+              <span className="whitespace-pre-wrap break-all">
+                {input || <span className="text-[#6a6a6a]">Type a command and press Enter</span>}
+              </span>
+              <span className="inline-block h-4 w-[1px] animate-pulse bg-[#cccccc]" />
+            </div>
           </div>
         ) : activeTab === "problems" ? (
           <div className="text-[12px] text-[#858585]">Problems panel will reflect diagnostics from the real workspace.</div>
@@ -214,31 +299,9 @@ function TerminalPanel({
           <div className="text-[12px] text-[#858585]">No forwarded ports for this workspace.</div>
         )}
       </div>
-      {activeTab === "terminal" && (
-        <div className="flex items-center gap-2 border-t border-[#2b2b2b] px-2 py-2">
-          <span className="max-w-[32%] truncate font-mono text-[11px] text-[#6a6a6a]">{cwd || "No workspace"}</span>
-          <input
-            value={input}
-            onChange={(event) => setInput(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault();
-                void runInput();
-              }
-            }}
-            placeholder="Run a command in this workspace"
-            className="flex-1 rounded-md border border-[#3c3c3c] bg-[#252526] px-2 py-1 text-[12px] text-[#cccccc] placeholder:text-[#6a6a6a] focus:border-[#007acc] focus:outline-none"
-          />
-          <button
-            onClick={() => void runInput()}
-            disabled={!input.trim() || !sessionId}
-            className="rounded-md border border-[#3c3c3c] bg-[#252526] px-2.5 py-1 text-[11px] text-[#cccccc] transition-colors hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Run
-          </button>
-          {exitCode !== null && <span className="text-[11px] text-[#858585]">exit {exitCode}</span>}
-        </div>
-      )}
+      {activeTab === "terminal" && exitCode !== null ? (
+        <div className="border-t border-[#2b2b2b] px-3 py-1.5 text-[11px] text-[#858585]">exit {exitCode}</div>
+      ) : null}
     </div>
   );
 }
@@ -308,6 +371,7 @@ type AgentMessage = {
   content: string
   createdAt: string
   providerLabel?: string
+  trace?: BuilderProviderTrace
   error?: boolean
   loading?: boolean
   transient?: boolean
@@ -358,6 +422,17 @@ type CodingContextState = {
 }
 
 type BuilderRequestLifecycleState = "idle" | "running" | "completed" | "failed" | "cancelled"
+
+type QuickOpenEntry =
+  | { id: string; kind: "file"; label: string; description: string; filePath: string }
+  | { id: string; kind: "command"; label: string; description: string; run: () => void }
+
+type PendingDeleteTarget = {
+  path: string
+  name: string
+  type: "file" | "folder"
+  workspacePath?: string | null
+}
 
 const BUILDER_PREFERENCES_KEY = "alpha-builder-preferences-v1";
 
@@ -698,6 +773,92 @@ function saveStoredChat(workspacePath: string | null, messages: AgentMessage[]) 
   } catch {
     // ignore persistence errors
   }
+}
+
+function archiveChatSession(workspacePath: string | null, messages: AgentMessage[]) {
+  const persisted = messages.filter((message) => !message.transient);
+  if (!persisted.length) return;
+  const storageKey = `${chatStorageKey(workspacePath)}:history`;
+  const sessionTitle =
+    persisted.find((message) => message.role === "user")?.content.slice(0, 72) || "Builder chat";
+
+  try {
+    const existing = JSON.parse(window.localStorage.getItem(storageKey) || "[]") as Array<{
+      id: string
+      title: string
+      createdAt: string
+      messages: AgentMessage[]
+    }>;
+    const next = [
+      {
+        id: makeMessageId(),
+        title: sessionTitle,
+        createdAt: new Date().toISOString(),
+        messages: persisted,
+      },
+      ...(Array.isArray(existing) ? existing : []),
+    ].slice(0, 12);
+    window.localStorage.setItem(storageKey, JSON.stringify(next));
+  } catch {
+    // ignore archive failures
+  }
+}
+
+function clearAllStoredBuilderChats() {
+  try {
+    const keys: string[] = [];
+    for (let index = 0; index < window.localStorage.length; index += 1) {
+      const key = window.localStorage.key(index);
+      if (key?.startsWith("alpha-builder-chat:")) keys.push(key);
+    }
+    keys.forEach((key) => window.localStorage.removeItem(key));
+  } catch {
+    // ignore storage cleanup failures
+  }
+}
+
+function formatProviderProof(trace?: BuilderProviderTrace | null) {
+  if (!trace) return null;
+  const normalizedProvider = trace.providerUsed.trim().toLowerCase();
+  const normalizedModel = trace.modelUsed.trim().toLowerCase();
+  if (normalizedProvider.includes(normalizedModel)) {
+    return `Used: ${trace.providerUsed}`;
+  }
+  return `Used: ${trace.providerUsed} / ${trace.modelUsed}`;
+}
+
+function formatProviderTrace(trace?: BuilderProviderTrace | null) {
+  if (!trace) return null;
+  const parts = [
+    `mode: ${trace.mode}`,
+    `status: ${trace.responseStatus}`,
+    `fallback: ${trace.fallbackUsed ? "yes" : "no"}`,
+  ];
+  if (typeof trace.parsedFilesCount === "number") {
+    parts.push(`files: ${trace.parsedFilesCount}`);
+  }
+  if (trace.error) {
+    parts.push(`error: ${trace.error}`);
+  }
+  return parts.join(" · ");
+}
+
+function collectQuickOpenFiles(nodes: BuilderWorkspaceNode[], limit = 300, prefix = ""): Array<{ filePath: string; label: string; description: string }> {
+  const entries: Array<{ filePath: string; label: string; description: string }> = [];
+  for (const node of nodes) {
+    if (entries.length >= limit) break;
+    const relativePath = prefix ? `${prefix}/${node.name}` : node.name;
+    if (node.type === "file") {
+      entries.push({
+        filePath: node.path,
+        label: node.name,
+        description: relativePath,
+      });
+      continue;
+    }
+    entries.push(...collectQuickOpenFiles(node.children ?? [], limit - entries.length, relativePath));
+  }
+  return entries;
 }
 
 function collectWorkspaceFilePaths(nodes: BuilderWorkspaceNode[], limit = 24, prefix = ""): string[] {
@@ -1264,11 +1425,13 @@ function TitleBar({
   menus,
   onMenuAction,
   onWindowAction,
+  onQuickOpen,
 }: {
   workspaceLabel: string
   menus: MenuDef[]
   onMenuAction?: (menuId: string, label: string, actionId?: string) => void
   onWindowAction?: (action: "minimize" | "maximize" | "close") => void
+  onQuickOpen?: () => void
 }) {
   return (
     <div
@@ -1279,11 +1442,15 @@ function TitleBar({
         <MenuBar menus={menus} onAnyAction={(menuId, item) => onMenuAction?.(menuId, item.label, item.actionId)} />
       </div>
       <div className="absolute left-1/2 top-1/2 flex w-[min(440px,40vw)] -translate-x-1/2 -translate-y-1/2 items-center" style={{ ["WebkitAppRegion" as any]: "no-drag" }}>
-        <div className="flex h-6 w-full items-center gap-2 rounded-md border border-[#4a4a4a] bg-[#252526] px-2 text-[12px] text-[#969696] hover:border-[#5a5a5a] hover:bg-[#2a2a2a]">
+        <button
+          type="button"
+          onClick={onQuickOpen}
+          className="flex h-6 w-full items-center gap-2 rounded-md border border-[#4a4a4a] bg-[#252526] px-2 text-[12px] text-[#969696] hover:border-[#5a5a5a] hover:bg-[#2a2a2a]"
+        >
           <Search size={13} className="shrink-0 text-[#969696]" />
           <span className="truncate">{workspaceLabel}</span>
           <ChevronDown size={12} className="shrink-0 text-[#6a6a6a]" />
-        </div>
+        </button>
       </div>
       <div className="flex items-center" style={{ ["WebkitAppRegion" as any]: "no-drag" }}>
         <WindowBtn title="Minimize" onClick={() => onWindowAction?.("minimize")}><Minus size={14} strokeWidth={1.5} /></WindowBtn>
@@ -1425,6 +1592,9 @@ function FileExplorer({
   onCreateFile,
   onCreateFolder,
   onRefresh,
+  onDeleteSelected,
+  onRevealSelected,
+  canDeleteSelected,
 }: {
   workspaceName: string
   tree: FileNode[]
@@ -1435,6 +1605,9 @@ function FileExplorer({
   onCreateFile: () => void
   onCreateFolder: () => void
   onRefresh: () => void
+  onDeleteSelected?: () => void
+  onRevealSelected?: () => void
+  canDeleteSelected?: boolean
 }) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [outlineCollapsed, setOutlineCollapsed] = useState(false);
@@ -1452,7 +1625,35 @@ function FileExplorer({
     <div className="flex h-full flex-col bg-[#252526] text-[#cccccc]">
       <div className="flex h-9 items-center justify-between px-3 pt-2">
         <span className="text-[11px] font-semibold tracking-[0.14em] text-[#cccccc]">EXPLORER</span>
-        <MoreHorizontal size={14} className="text-[#858585] hover:text-[#cccccc]" />
+        <Popover>
+          <PopoverTrigger asChild>
+            <button className="rounded p-1 text-[#858585] transition-colors hover:bg-white/[0.06] hover:text-[#cccccc]">
+              <MoreHorizontal size={14} />
+            </button>
+          </PopoverTrigger>
+          <PopoverContent align="end" sideOffset={6} className="w-52 border-[#454545] bg-[#252526] p-1 text-[#cccccc]">
+            <button
+              onClick={onRefresh}
+              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[12px] hover:bg-[#04395e] hover:text-white"
+            >
+              <RefreshCw size={13} /> Refresh Explorer
+            </button>
+            <button
+              onClick={() => onRevealSelected?.()}
+              disabled={!selectedPath}
+              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[12px] hover:bg-[#04395e] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Folder size={13} /> Reveal Selected
+            </button>
+            <button
+              onClick={() => onDeleteSelected?.()}
+              disabled={!canDeleteSelected}
+              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[12px] text-[#fca5a5] hover:bg-[#4a1f1f] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <X size={13} /> Delete Selected
+            </button>
+          </PopoverContent>
+        </Popover>
       </div>
       <div className="group flex h-6 items-center justify-between pl-2 pr-3 text-[11px] font-bold tracking-[0.12em] text-[#cccccc]">
         <button className="flex items-center gap-1 hover:text-white" onClick={() => toggle(workspaceName)}>
@@ -2094,6 +2295,16 @@ function CodingAgent({
   onAccessChange,
   workspaceName,
   activeFileName,
+  onNewChat,
+  onClearCurrentChat,
+  onDeleteWorkspaceHistory,
+  onClearAllHistory,
+  onExportChat,
+  onCopyLastResponse,
+  onCopyLastPrompt,
+  onResetAgentState,
+  showProviderTrace,
+  onToggleProviderTrace,
 }: {
   messages: AgentMessage[]
   input: string
@@ -2108,6 +2319,16 @@ function CodingAgent({
   onAccessChange: (level: AccessLevel) => void
   workspaceName: string
   activeFileName?: string
+  onNewChat: () => void
+  onClearCurrentChat: () => void
+  onDeleteWorkspaceHistory: () => void
+  onClearAllHistory: () => void
+  onExportChat: () => void
+  onCopyLastResponse: () => void
+  onCopyLastPrompt: () => void
+  onResetAgentState: () => void
+  showProviderTrace: boolean
+  onToggleProviderTrace: () => void
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -2121,6 +2342,29 @@ function CodingAgent({
           <Sparkles size={14} className="text-[#10b981]" />
           <span className="text-[11px] font-semibold tracking-[0.14em] text-[#cccccc]">CODING AGENT</span>
         </div>
+        <Popover>
+          <PopoverTrigger asChild>
+            <button className="rounded p-1 text-[#858585] transition-colors hover:bg-white/[0.06] hover:text-[#cccccc]">
+              <MoreHorizontal size={14} />
+            </button>
+          </PopoverTrigger>
+          <PopoverContent align="end" sideOffset={6} className="w-64 border-[#454545] bg-[#252526] p-1 text-[#cccccc]">
+            <button onClick={onNewChat} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[12px] hover:bg-[#04395e] hover:text-white"><Plus size={13} /> New Chat</button>
+            <button onClick={onClearCurrentChat} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[12px] hover:bg-[#04395e] hover:text-white"><History size={13} /> Clear Current Chat</button>
+            <button onClick={onDeleteWorkspaceHistory} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[12px] hover:bg-[#04395e] hover:text-white"><Folder size={13} /> Delete Workspace History</button>
+            <button onClick={onClearAllHistory} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[12px] hover:bg-[#4a1f1f] hover:text-white"><X size={13} /> Clear All Builder History</button>
+            <div className="my-1 h-px bg-[#454545]" />
+            <button onClick={onExportChat} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[12px] hover:bg-[#04395e] hover:text-white"><FileText size={13} /> Export Chat as Markdown</button>
+            <button onClick={onCopyLastResponse} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[12px] hover:bg-[#04395e] hover:text-white"><Copy size={13} /> Copy Last Response</button>
+            <button onClick={onCopyLastPrompt} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[12px] hover:bg-[#04395e] hover:text-white"><ArrowUp size={13} /> Copy Last Prompt</button>
+            <button onClick={onResetAgentState} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[12px] hover:bg-[#04395e] hover:text-white"><RefreshCw size={13} /> Reset Agent State</button>
+            <div className="my-1 h-px bg-[#454545]" />
+            <button onClick={onToggleProviderTrace} className="flex w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-left text-[12px] hover:bg-[#04395e] hover:text-white">
+              <span className="flex items-center gap-2"><Info size={13} /> Provider Trace / Debug Info</span>
+              {showProviderTrace ? <Check size={13} /> : null}
+            </button>
+          </PopoverContent>
+        </Popover>
       </div>
       <div ref={scrollRef} className="alpha-scroll-thin flex-1 overflow-y-auto px-3 py-3">
         {messages.length === 0 ? (
@@ -2161,6 +2405,12 @@ function CodingAgent({
                     {new Date(message.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                     {message.providerLabel ? ` · ${message.providerLabel}` : ""}
                   </div>
+                  {message.trace ? (
+                    <div className="mt-1 text-[10px] text-[#6f6f75]">
+                      {formatProviderProof(message.trace)}
+                      {showProviderTrace ? <div className="mt-0.5">{formatProviderTrace(message.trace)}</div> : null}
+                    </div>
+                  ) : null}
                 </div>
               </div>
             ))}
@@ -2225,7 +2475,7 @@ function CodingAgent({
    TabBar
    ============================================================ */
 function TabBar({
-  tabs, activeTab, mode, onSelect, onClose, onModeChange,
+  tabs, activeTab, mode, onSelect, onClose, onModeChange, onMoreAction,
 }: {
   tabs: OpenTab[];
   activeTab: string;
@@ -2233,6 +2483,7 @@ function TabBar({
   onSelect: (path: string) => void;
   onClose: (path: string) => void;
   onModeChange: (m: EditorMode) => void;
+  onMoreAction: (action: "refresh-preview" | "save-active" | "close-active" | "close-others" | "copy-path" | "reveal-file" | "toggle-terminal" | "reset-layout") => void;
 }) {
   return (
     <div className="flex h-9 items-stretch border-b border-black/40 bg-[#252526]">
@@ -2281,7 +2532,22 @@ function TabBar({
         <ModeToggle active={mode === "preview"} onClick={() => onModeChange("preview")} icon={Eye} label="Preview" />
         <ModeToggle active={mode === "split"} onClick={() => onModeChange("split")} icon={Columns2} label="Split" />
         <div className="mx-1 h-4 w-px bg-black/30" />
-        <button title="More actions" className="rounded p-1.5 text-[#858585] hover:bg-white/[0.06] hover:text-[#cccccc]"><MoreHorizontal size={15} /></button>
+        <Popover>
+          <PopoverTrigger asChild>
+            <button title="More actions" className="rounded p-1.5 text-[#858585] hover:bg-white/[0.06] hover:text-[#cccccc]"><MoreHorizontal size={15} /></button>
+          </PopoverTrigger>
+          <PopoverContent align="end" sideOffset={6} className="w-52 border-[#454545] bg-[#252526] p-1 text-[#cccccc]">
+            <button onClick={() => onMoreAction("refresh-preview")} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[12px] hover:bg-[#04395e] hover:text-white"><RefreshCw size={13} /> Refresh Preview</button>
+            <button onClick={() => onMoreAction("save-active")} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[12px] hover:bg-[#04395e] hover:text-white"><Check size={13} /> Save Active File</button>
+            <button onClick={() => onMoreAction("close-active")} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[12px] hover:bg-[#04395e] hover:text-white"><X size={13} /> Close Active Tab</button>
+            <button onClick={() => onMoreAction("close-others")} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[12px] hover:bg-[#04395e] hover:text-white"><Files size={13} /> Close Other Tabs</button>
+            <div className="my-1 h-px bg-[#454545]" />
+            <button onClick={() => onMoreAction("copy-path")} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[12px] hover:bg-[#04395e] hover:text-white"><Copy size={13} /> Copy Active File Path</button>
+            <button onClick={() => onMoreAction("reveal-file")} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[12px] hover:bg-[#04395e] hover:text-white"><Folder size={13} /> Open Active File in Explorer</button>
+            <button onClick={() => onMoreAction("toggle-terminal")} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[12px] hover:bg-[#04395e] hover:text-white"><TerminalSquare size={13} /> Toggle Terminal</button>
+            <button onClick={() => onMoreAction("reset-layout")} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[12px] hover:bg-[#04395e] hover:text-white"><LayoutGrid size={13} /> Reset Layout</button>
+          </PopoverContent>
+        </Popover>
         <button title="Split editor" className="rounded p-1.5 text-[#858585] hover:bg-white/[0.06] hover:text-[#cccccc]"><SplitSquareHorizontal size={15} /></button>
       </div>
     </div>
@@ -2416,7 +2682,7 @@ function StatusBar({
   hasWorkspace: boolean
 }) {
   return (
-    <div className="flex h-6 items-stretch justify-between bg-[#007acc] text-[11px] text-white">
+    <div className="flex h-6 items-stretch justify-between border-t border-[#202020] bg-[#181818] text-[11px] text-[#cfcfcf]">
       <div className="flex items-stretch">
         {branch ? <StatusItem icon={GitBranch} label={branch} /> : <StatusItem icon={Folder} label={hasWorkspace ? "Workspace" : "No Folder"} />}
         <StatusItem icon={Radio} label={hasWorkspace ? "Ready" : "Idle"} />
@@ -4192,6 +4458,139 @@ function CreateEntryDialog({
   );
 }
 
+function DeleteConfirmDialog({
+  target,
+  onCancel,
+  onConfirm,
+}: {
+  target: PendingDeleteTarget
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  return (
+    <div className="absolute inset-0 z-[140] flex items-center justify-center bg-black/45 backdrop-blur-[2px]">
+      <div className="w-[380px] rounded-lg border border-[#3c3c3c] bg-[#252526] p-4 shadow-2xl">
+        <div className="text-[13px] font-semibold text-[#ffffff]">Delete {target.type}</div>
+        <div className="mt-2 text-[12px] leading-relaxed text-[#a1a1aa]">
+          {target.type === "folder"
+            ? `Delete folder and all contents?\n${target.name}`
+            : `Delete ${target.name}? This will remove it from disk.`}
+        </div>
+        <div className="mt-4 flex justify-end gap-2">
+          <button onClick={onCancel} className="rounded-md border border-[#3c3c3c] bg-[#1e1e1e] px-3 py-1.5 text-[12px] text-[#cccccc] hover:bg-white/[0.04]">Cancel</button>
+          <button onClick={onConfirm} className="rounded-md bg-[#a63a3a] px-3 py-1.5 text-[12px] font-medium text-white hover:bg-[#c14a4a]">Delete</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function QuickOpenOverlay({
+  open,
+  entries,
+  onClose,
+  onSelect,
+}: {
+  open: boolean
+  entries: QuickOpenEntry[]
+  onClose: () => void
+  onSelect: (entry: QuickOpenEntry) => void
+}) {
+  const [query, setQuery] = useState("");
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (open) {
+      setQuery("");
+      setSelectedIndex(0);
+      window.setTimeout(() => inputRef.current?.focus(), 0);
+    }
+  }, [open]);
+
+  const filtered = useMemo(() => {
+    const trimmed = query.trim().toLowerCase();
+    if (!trimmed) return entries.slice(0, 20);
+    return entries
+      .filter((entry) =>
+        entry.label.toLowerCase().includes(trimmed) || entry.description.toLowerCase().includes(trimmed)
+      )
+      .slice(0, 20);
+  }, [entries, query]);
+
+  useEffect(() => {
+    setSelectedIndex((index) => Math.min(index, Math.max(filtered.length - 1, 0)));
+  }, [filtered.length]);
+
+  if (!open) return null;
+
+  return (
+    <div className="absolute inset-0 z-[150] bg-black/30" onClick={onClose}>
+      <div
+        className="mx-auto mt-16 w-[min(680px,76vw)] rounded-xl border border-[#3c3c3c] bg-[#252526] shadow-2xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-center gap-2 border-b border-[#3c3c3c] px-3 py-2">
+          <Search size={14} className="text-[#858585]" />
+          <input
+            ref={inputRef}
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                onClose();
+                return;
+              }
+              if (event.key === "ArrowDown") {
+                event.preventDefault();
+                setSelectedIndex((index) => Math.min(index + 1, Math.max(filtered.length - 1, 0)));
+                return;
+              }
+              if (event.key === "ArrowUp") {
+                event.preventDefault();
+                setSelectedIndex((index) => Math.max(index - 1, 0));
+                return;
+              }
+              if (event.key === "Enter") {
+                event.preventDefault();
+                const chosen = filtered[selectedIndex];
+                if (chosen) onSelect(chosen);
+              }
+            }}
+            placeholder="Quick Open or > command"
+            className="flex-1 bg-transparent text-[13px] text-[#cccccc] placeholder:text-[#6a6a6a] focus:outline-none"
+          />
+        </div>
+        <div className="alpha-scroll-thin max-h-[420px] overflow-y-auto py-1">
+          {filtered.length === 0 ? (
+            <div className="px-3 py-6 text-[12px] text-[#858585]">No matching files or commands.</div>
+          ) : (
+            filtered.map((entry, index) => (
+              <button
+                key={entry.id}
+                onClick={() => onSelect(entry)}
+                className={cn(
+                  "flex w-full items-start gap-3 px-3 py-2 text-left text-[12px]",
+                  index === selectedIndex ? "bg-[#04395e] text-white" : "text-[#cccccc] hover:bg-white/[0.04]"
+                )}
+              >
+                <span className="mt-0.5 flex h-6 w-6 items-center justify-center rounded bg-[#1e1e1e] text-[#858585]">
+                  {entry.kind === "file" ? <FileText size={13} /> : <TerminalSquare size={13} />}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <div className="truncate">{entry.label}</div>
+                  <div className="truncate text-[11px] text-[#858585]">{entry.description}</div>
+                </span>
+              </button>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ============================================================
    BuilderWindow — main component that wires everything together
    ============================================================ */
@@ -4227,6 +4626,9 @@ export function BuilderWindow() {
   const [lastAgentIntent, setLastAgentIntent] = useState<BuilderAgentIntent>("NORMAL_CHAT");
   const [preferences, setPreferences] = useState<BuilderPreferences>(() => loadBuilderPreferences());
   const [lastCodingContext, setLastCodingContext] = useState<CodingContextState | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<PendingDeleteTarget | null>(null);
+  const [quickOpenVisible, setQuickOpenVisible] = useState(false);
+  const [showProviderTrace, setShowProviderTrace] = useState(false);
   const requestLifecycleRef = useRef<Record<string, BuilderRequestLifecycleState>>({});
   const requestThinkingMessageRef = useRef<Record<string, string>>({});
 
@@ -4488,6 +4890,7 @@ export function BuilderWindow() {
     return workspace.path;
   }, [workspace?.path, selectedExplorerPath, selectedExplorerType, activeTabObj?.path]);
 
+
   const reloadWorkspace = useCallback(async () => {
     if (!workspace?.path) return;
     const response = await refreshBuilderWorkspace(workspace.path);
@@ -4616,6 +5019,13 @@ export function BuilderWindow() {
   const handleCancelCreate = useCallback(() => {
     setPendingCreate(null);
   }, []);
+
+  const canDeleteSelected =
+    !!workspace?.path &&
+    !!selectedExplorerPath &&
+    selectedExplorerPath !== workspace.path &&
+    isWithinWorkspace(selectedExplorerPath, workspace.path);
+
 
   const handleSaveCurrent = useCallback(async () => {
     if (!activeTabObj) return;
@@ -4761,6 +5171,203 @@ export function BuilderWindow() {
     setView("debug");
   }, [activeTabObj?.path, appendAgentMessage]);
 
+  const handleQuickOpenSelect = useCallback(
+    async (entry: QuickOpenEntry) => {
+      if (entry.kind === "command") {
+        entry.run();
+        setQuickOpenVisible(false);
+        return;
+      }
+      await handleOpenExplorerFile(entry.label, entry.filePath);
+      setQuickOpenVisible(false);
+    },
+    [handleOpenExplorerFile]
+  );
+
+  const handleDeleteSelected = useCallback(() => {
+    if (!selectedExplorerPath || !selectedExplorerType) return;
+    if (!workspace?.path || selectedExplorerPath === workspace.path) return;
+    setPendingDelete({
+      path: selectedExplorerPath,
+      name: basename(selectedExplorerPath),
+      type: selectedExplorerType,
+      workspacePath: workspace.path,
+    });
+  }, [selectedExplorerPath, selectedExplorerType, workspace?.path]);
+
+  const handleConfirmDelete = useCallback(async () => {
+    if (!pendingDelete) return;
+    const response = await deleteBuilderWorkspacePath({
+      targetPath: pendingDelete.path,
+      workspacePath: pendingDelete.workspacePath,
+    });
+    if (!response.success) {
+      window.alert(response.error ?? "Delete failed.");
+      return;
+    }
+
+    setPendingDelete(null);
+    if (response.workspace) {
+      syncWorkspaceState(response.workspace);
+    } else if (workspace?.path) {
+      void reloadWorkspace();
+    }
+
+    setTabs((prev) =>
+      prev.filter(
+        (tab) =>
+          tab.path !== pendingDelete.path &&
+          !tab.path.startsWith(`${pendingDelete.path}\\`) &&
+          !tab.path.startsWith(`${pendingDelete.path}/`)
+      )
+    );
+    setActiveTab((current) =>
+      current === pendingDelete.path ||
+      current.startsWith(`${pendingDelete.path}\\`) ||
+      current.startsWith(`${pendingDelete.path}/`)
+        ? ""
+        : current
+    );
+    setSelectedExplorerPath(workspace?.path ?? null);
+    setSelectedExplorerType(workspace?.path ? "folder" : null);
+  }, [pendingDelete, reloadWorkspace, syncWorkspaceState, workspace?.path]);
+
+  const handleRevealSelected = useCallback(async (targetPathOverride?: string | null) => {
+    const targetPath = targetPathOverride || selectedExplorerPath || activeTabObj?.path;
+    if (!targetPath) return;
+    const response = await revealBuilderWorkspacePath(targetPath);
+    if (!response.success && response.error) {
+      window.alert(response.error);
+    }
+  }, [activeTabObj?.path, selectedExplorerPath]);
+
+  const handleNewChat = useCallback(() => {
+    archiveChatSession(chatScopePath, agentMessages);
+    setAgentMessages([]);
+    setAgentInput("");
+  }, [agentMessages, chatScopePath]);
+
+  const handleClearCurrentChat = useCallback(() => {
+    if (!agentMessages.length || window.confirm("Clear current Builder chat?")) {
+      archiveChatSession(chatScopePath, agentMessages);
+      setAgentMessages([]);
+      setAgentInput("");
+    }
+  }, [agentMessages, chatScopePath]);
+
+  const handleDeleteWorkspaceHistory = useCallback(() => {
+    if (!window.confirm("Delete current workspace chat history?")) return;
+    const currentKey = chatStorageKey(chatScopePath);
+    window.localStorage.removeItem(currentKey);
+    window.localStorage.removeItem(`${currentKey}:history`);
+    setAgentMessages([]);
+  }, [chatScopePath]);
+
+  const handleClearAllHistory = useCallback(() => {
+    if (!window.confirm("Clear all Builder chat history?")) return;
+    clearAllStoredBuilderChats();
+    setAgentMessages([]);
+  }, []);
+
+  const handleExportChat = useCallback(() => {
+    const markdown = agentMessages
+      .filter((message) => !message.transient)
+      .map((message) => `## ${message.role.toUpperCase()} · ${new Date(message.createdAt).toLocaleString()}\n\n${message.content}\n`)
+      .join("\n");
+    const blob = new Blob([markdown || "# Builder Chat\n"], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${workspaceLabel.replace(/\s+/g, "-").toLowerCase()}-chat.md`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }, [agentMessages, workspaceLabel]);
+
+  const handleCopyLastResponse = useCallback(async () => {
+    const latest = [...agentMessages].reverse().find((message) => message.role === "assistant" || message.role === "status");
+    if (!latest) return;
+    await navigator.clipboard.writeText(latest.content);
+  }, [agentMessages]);
+
+  const handleCopyLastPrompt = useCallback(async () => {
+    const latest = [...agentMessages].reverse().find((message) => message.role === "user");
+    if (!latest) return;
+    await navigator.clipboard.writeText(latest.content);
+  }, [agentMessages]);
+
+  const handleResetAgentState = useCallback(async () => {
+    if (activeRequestId) {
+      await cancelBuilderRequest(activeRequestId);
+    }
+    requestLifecycleRef.current = {};
+    requestThinkingMessageRef.current = {};
+    setActiveRequestId(null);
+    setLastCodingContext(null);
+    setLastAgentIntent("NORMAL_CHAT");
+  }, [activeRequestId]);
+
+  const handleTabMoreAction = useCallback(
+    (action: "refresh-preview" | "save-active" | "close-active" | "close-others" | "copy-path" | "reveal-file" | "toggle-terminal" | "reset-layout") => {
+      if (action === "refresh-preview") {
+        setPreviewVersion((prev) => prev + 1);
+        return;
+      }
+      if (action === "save-active") {
+        void handleSaveCurrent();
+        return;
+      }
+      if (action === "close-active" && activeTab) {
+        handleCloseTab(activeTab);
+        return;
+      }
+      if (action === "close-others" && activeTab) {
+        setTabs((prev) => prev.filter((tab) => tab.path === activeTab));
+        return;
+      }
+      if (action === "copy-path" && activeTabObj?.path) {
+        void navigator.clipboard.writeText(activeTabObj.path);
+        return;
+      }
+      if (action === "reveal-file" && activeTabObj?.path) {
+        void handleRevealSelected(activeTabObj.path);
+        return;
+      }
+      if (action === "toggle-terminal") {
+        setTerminalOpen((value) => !value);
+        return;
+      }
+      if (action === "reset-layout") {
+        setMode("code");
+        setView("explorer");
+        setTerminalOpen(false);
+      }
+    },
+    [activeTab, activeTabObj?.path, handleCloseTab, handleRevealSelected, handleSaveCurrent]
+  );
+
+  const quickOpenEntries = useMemo<QuickOpenEntry[]>(() => {
+    const fileEntries = workspace
+      ? collectQuickOpenFiles(workspace.tree).map((entry) => ({
+          id: `file:${entry.filePath}`,
+          kind: "file" as const,
+          label: entry.label,
+          description: entry.description,
+          filePath: entry.filePath,
+        }))
+      : [];
+
+    const commandEntries: QuickOpenEntry[] = [
+      { id: "cmd:open-folder", kind: "command", label: "> Open Folder", description: "Open a workspace folder", run: () => void handleOpenFolder() },
+      { id: "cmd:new-file", kind: "command", label: "> New File", description: "Create a new file in the workspace", run: () => void handleCreateFile() },
+      { id: "cmd:new-folder", kind: "command", label: "> New Folder", description: "Create a new folder in the workspace", run: () => void handleCreateFolder() },
+      { id: "cmd:settings", kind: "command", label: "> Settings", description: "Open Builder settings", run: () => { setShowSettings(true); setShowProfile(false); } },
+      { id: "cmd:terminal", kind: "command", label: "> Toggle Terminal", description: "Show or hide terminal", run: () => setTerminalOpen((value) => !value) },
+      { id: "cmd:run", kind: "command", label: "> Run Active File", description: "Run the active file using terminal/preview", run: () => handleRunActiveFile() },
+    ];
+
+    return [...commandEntries, ...fileEntries];
+  }, [workspace, handleCreateFile, handleCreateFolder, handleOpenFolder, handleRunActiveFile]);
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       const primary = event.ctrlKey || event.metaKey;
@@ -4792,6 +5399,12 @@ export function BuilderWindow() {
         return;
       }
 
+      if (primary && key === "p") {
+        event.preventDefault();
+        setQuickOpenVisible(true);
+        return;
+      }
+
       if (primary && key === ",") {
         event.preventDefault();
         setShowSettings(true);
@@ -4802,11 +5415,17 @@ export function BuilderWindow() {
       if ((primary && event.key === "F5") || (primary && key === "f5")) {
         event.preventDefault();
         handleRunActiveFile();
+        return;
+      }
+
+      if (event.key === "Delete" && canDeleteSelected) {
+        event.preventDefault();
+        handleDeleteSelected();
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [handleCreateFile, handleRunActiveFile, handleSaveCurrent]);
+  }, [canDeleteSelected, handleCreateFile, handleDeleteSelected, handleRunActiveFile, handleSaveCurrent]);
 
   const handleWindowAction = useCallback((action: "minimize" | "maximize" | "close") => {
     void window.electron.ipcRenderer.invoke(`builder-window-${action === "maximize" ? "maximize-toggle" : action}`);
@@ -4832,6 +5451,10 @@ export function BuilderWindow() {
       setView("search");
       setShowProfile(false);
       setShowSettings(false);
+      return;
+    }
+    if (l.includes("go to file") || l.includes("command palette")) {
+      setQuickOpenVisible(true);
       return;
     }
     if (actionId === "run-active-file") {
@@ -5001,6 +5624,7 @@ export function BuilderWindow() {
             content: response.error || "Provider request failed.",
             error: true,
             providerLabel: response.providerLabel || requestedModel.name,
+            trace: response.providerTrace,
           });
           return;
         }
@@ -5011,6 +5635,7 @@ export function BuilderWindow() {
           role: "assistant",
           content: response.message || "Done.",
           providerLabel: response.providerLabel || requestedModel.name,
+          trace: response.providerTrace,
         });
         return;
       }
@@ -5029,6 +5654,7 @@ export function BuilderWindow() {
           content: response.error || response.providerError || "Builder request failed.",
           error: true,
           providerLabel: requestedModel.name,
+          trace: response.providerTrace,
         });
         return;
       }
@@ -5060,12 +5686,15 @@ export function BuilderWindow() {
       finalizeAgentRequest(requestId, "completed", {
         role: "assistant",
         content:
-          response.providerError ||
-          response.message ||
-          `Applied ${response.state.files.length} file update${response.state.files.length === 1 ? "" : "s"}.`,
+          response.usedFallback
+            ? `Fallback scaffold used because selected provider response was unusable.\n\nApplied ${response.state.files.length} file update${response.state.files.length === 1 ? "" : "s"}.`
+            : response.providerError ||
+              response.message ||
+              `Applied ${response.state.files.length} file update${response.state.files.length === 1 ? "" : "s"} using ${response.providerTrace?.providerUsed || response.state.metadata.providerUsed} / ${response.providerTrace?.modelUsed || response.state.metadata.modelUsed}.`,
         error: false,
         providerLabel: response.state.metadata.providerUsed,
         tone: "success",
+        trace: response.providerTrace,
       });
     } catch (error: any) {
       const cancelled = error?.name === "AbortError";
@@ -5177,6 +5806,7 @@ export function BuilderWindow() {
         menus={dynamicMenus}
         onMenuAction={handleMenuAction}
         onWindowAction={handleWindowAction}
+        onQuickOpen={() => setQuickOpenVisible(true)}
       />
       <div className="flex min-h-0 flex-1">
         <ActivityBar
@@ -5221,6 +5851,16 @@ export function BuilderWindow() {
               onAccessChange={setAccess}
               workspaceName={workspaceLabel}
               activeFileName={activeTabObj?.name}
+              onNewChat={handleNewChat}
+              onClearCurrentChat={handleClearCurrentChat}
+              onDeleteWorkspaceHistory={handleDeleteWorkspaceHistory}
+              onClearAllHistory={handleClearAllHistory}
+              onExportChat={handleExportChat}
+              onCopyLastResponse={handleCopyLastResponse}
+              onCopyLastPrompt={handleCopyLastPrompt}
+              onResetAgentState={() => void handleResetAgentState()}
+              showProviderTrace={showProviderTrace}
+              onToggleProviderTrace={() => setShowProviderTrace((value) => !value)}
             />
           </aside>
         ) : view === "search" ? (
@@ -5250,6 +5890,9 @@ export function BuilderWindow() {
               onCreateFile={handleCreateFile}
               onCreateFolder={handleCreateFolder}
               onRefresh={() => void reloadWorkspace()}
+              onDeleteSelected={handleDeleteSelected}
+              onRevealSelected={() => void handleRevealSelected()}
+              canDeleteSelected={canDeleteSelected}
             />
           </aside>
         ) : null}
@@ -5268,6 +5911,7 @@ export function BuilderWindow() {
               <TabBar
                 tabs={tabs} activeTab={activeTab} mode={mode}
                 onSelect={setActiveTab} onClose={handleCloseTab} onModeChange={setMode}
+                onMoreAction={handleTabMoreAction}
               />
               <Breadcrumbs path={breadcrumbPath} modified={activeTabObj?.dirty} />
               <div className="relative min-h-0 flex-1">
@@ -5333,6 +5977,19 @@ export function BuilderWindow() {
               onConfirm={() => void handleConfirmCreate()}
             />
           )}
+          <QuickOpenOverlay
+            open={quickOpenVisible}
+            entries={quickOpenEntries}
+            onClose={() => setQuickOpenVisible(false)}
+            onSelect={(entry) => void handleQuickOpenSelect(entry)}
+          />
+          {pendingDelete ? (
+            <DeleteConfirmDialog
+              target={pendingDelete}
+              onCancel={() => setPendingDelete(null)}
+              onConfirm={() => void handleConfirmDelete()}
+            />
+          ) : null}
           <StatusBar
             fileName={fileName}
             ln={cursor.line}
