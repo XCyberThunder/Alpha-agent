@@ -24,6 +24,7 @@ export type BuilderProjectState = {
 export type BuilderProjectResponse = {
   success: boolean
   state?: BuilderProjectState
+  changeSet?: BuilderChangeSet
   previewHtml?: string
   message?: string
   error?: string
@@ -34,6 +35,7 @@ export type BuilderProjectResponse = {
   projectPath?: string
   cancelled?: boolean
   usedFallback?: boolean
+  reviewRequired?: boolean
   providerTrace?: BuilderProviderTrace
 }
 
@@ -61,6 +63,45 @@ export type BuilderProviderTrace = {
   filesApplied?: number
   parserResult?: string
   error?: string
+}
+
+export type BuilderApplyMode = 'review' | 'auto' | 'ask'
+
+export type BuilderChangeSetFile = {
+  path: string
+  oldContent: string | null
+  newContent: string | null
+  changeType: 'create' | 'update' | 'delete'
+  diffText: string
+  safeToApply: boolean
+  warnings: string[]
+  applied?: boolean
+}
+
+export type BuilderChangeSet = {
+  id: string
+  requestId: string
+  projectId: string
+  projectName: string
+  projectType: string
+  providerUsed: string
+  modelUsed: string
+  selectedProvider: string
+  selectedModelId: string
+  actualProviderCalled: string
+  actualModelCalled: string
+  mode: 'generate' | 'edit'
+  createdAt: string
+  workspacePath: string
+  userPrompt: string
+  status: 'pending_review' | 'applied' | 'rejected' | 'partially_applied' | 'failed'
+  files: BuilderChangeSetFile[]
+  fallbackUsed: boolean
+  parsedFilesCount: number
+  parserResult: string
+  rawOutput?: string
+  providerTrace?: BuilderProviderTrace
+  backupSnapshotId?: string | null
 }
 
 export type BuilderTerminalResult = {
@@ -134,22 +175,25 @@ export type BuilderProviderSelection =
 export const createBuilderProject = async (
   prompt: string,
   provider: BuilderProviderSelection = 'kiloGateway',
-  requestId?: string
+  requestId?: string,
+  applyMode: BuilderApplyMode = 'review'
 ): Promise<BuilderProjectResponse> => {
-  return window.electron.ipcRenderer.invoke('project-builder-create', { prompt, provider, requestId })
+  return window.electron.ipcRenderer.invoke('project-builder-create', { prompt, provider, requestId, applyMode })
 }
 
 export const updateBuilderProject = async (
   projectId: string,
   prompt: string,
   provider?: BuilderProviderSelection,
-  requestId?: string
+  requestId?: string,
+  applyMode: BuilderApplyMode = 'review'
 ): Promise<BuilderProjectResponse> => {
   return window.electron.ipcRenderer.invoke('project-builder-update', {
     projectId,
     prompt,
     provider,
-    requestId
+    requestId,
+    applyMode
   })
 }
 
@@ -211,6 +255,46 @@ export const restoreBuilderProjectLastBackup = async (
   projectId: string
 ): Promise<BuilderProjectResponse> => {
   return window.electron.ipcRenderer.invoke('project-builder-restore-last-backup', { projectId })
+}
+
+export const listBuilderChangeSets = async (
+  projectId?: string,
+  workspacePath?: string
+): Promise<{ success: boolean; changesets?: BuilderChangeSet[]; error?: string }> => {
+  return window.electron.ipcRenderer.invoke('project-builder-list-changesets', { projectId, workspacePath })
+}
+
+export const applyBuilderChangeSet = async (payload: {
+  projectId?: string
+  workspacePath?: string
+  changeSetId: string
+  selectedPaths?: string[]
+}): Promise<BuilderProjectResponse> => {
+  return window.electron.ipcRenderer.invoke('project-builder-apply-changeset', payload)
+}
+
+export const rejectBuilderChangeSet = async (payload: {
+  projectId?: string
+  workspacePath?: string
+  changeSetId: string
+}): Promise<BuilderProjectResponse> => {
+  return window.electron.ipcRenderer.invoke('project-builder-reject-changeset', payload)
+}
+
+export const undoBuilderLastAiChange = async (payload: {
+  projectId?: string
+  workspacePath?: string
+  changeSetId?: string
+}): Promise<BuilderProjectResponse> => {
+  return window.electron.ipcRenderer.invoke('project-builder-undo-last-ai-change', payload)
+}
+
+export const deleteBuilderChangeSet = async (payload: {
+  projectId?: string
+  workspacePath?: string
+  changeSetId: string
+}): Promise<{ success: boolean; error?: string }> => {
+  return window.electron.ipcRenderer.invoke('project-builder-delete-changeset', payload)
 }
 
 export const openBuilderWindow = async (payload: {

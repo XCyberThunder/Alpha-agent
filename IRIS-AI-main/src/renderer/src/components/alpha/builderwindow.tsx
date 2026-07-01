@@ -58,13 +58,19 @@ import {
   writeBuilderWorkspaceFile,
 } from "@renderer/services/builder-workspace";
 import {
+  applyBuilderChangeSet,
   cancelBuilderRequest,
   chatBuilderPrompt,
   createBuilderProject,
+  deleteBuilderChangeSet,
   getBuilderWindowMeta,
   getBuilderModelStatuses,
   getBuilderWindowState,
+  listBuilderChangeSets,
   openBuilderDataFolder,
+  rejectBuilderChangeSet,
+  type BuilderApplyMode,
+  type BuilderChangeSet,
   type BuilderModelStatuses,
   type BuilderProviderTrace,
   restoreBuilderProjectLastBackup,
@@ -74,6 +80,7 @@ import {
   type BuilderProviderSelection,
   saveBuilderProjectFile,
   testBuilderModelSlot,
+  undoBuilderLastAiChange,
   updateBuilderProject,
 } from "@renderer/services/project-builder";
 
@@ -412,6 +419,7 @@ type PendingCreateTarget = {
 
 type BuilderPreferences = {
   autoSave: boolean
+  aiApplyMode: BuilderApplyMode
   wordWrap: boolean
   tabSize: number
   fontSize: number
@@ -450,10 +458,13 @@ type PendingDeleteTarget = {
   workspacePath?: string | null
 }
 
+type ChangeSetSelectionMap = Record<string, boolean>
+
 const BUILDER_PREFERENCES_KEY = "alpha-builder-preferences-v1";
 
 const defaultBuilderPreferences: BuilderPreferences = {
   autoSave: false,
+  aiApplyMode: "review",
   wordWrap: false,
   tabSize: 2,
   fontSize: 12.5,
@@ -469,6 +480,10 @@ function loadBuilderPreferences(): BuilderPreferences {
     const parsed = JSON.parse(raw) as Partial<BuilderPreferences>;
     return {
       autoSave: typeof parsed.autoSave === "boolean" ? parsed.autoSave : defaultBuilderPreferences.autoSave,
+      aiApplyMode:
+        parsed.aiApplyMode === "review" || parsed.aiApplyMode === "auto" || parsed.aiApplyMode === "ask"
+          ? parsed.aiApplyMode
+          : defaultBuilderPreferences.aiApplyMode,
       wordWrap: typeof parsed.wordWrap === "boolean" ? parsed.wordWrap : defaultBuilderPreferences.wordWrap,
       tabSize:
         typeof parsed.tabSize === "number" && Number.isFinite(parsed.tabSize) ? parsed.tabSize : defaultBuilderPreferences.tabSize,
@@ -488,6 +503,27 @@ function loadBuilderPreferences(): BuilderPreferences {
   } catch {
     return defaultBuilderPreferences;
   }
+}
+
+function buildChangeSetSelection(changeSet: BuilderChangeSet | null): ChangeSetSelectionMap {
+  if (!changeSet) return {};
+  return Object.fromEntries(
+    changeSet.files
+      .filter((file) => !file.applied)
+      .map((file) => [file.path, file.safeToApply])
+  );
+}
+
+function summarizeDiff(diffText: string) {
+  const lines = diffText.split("\n");
+  let added = 0;
+  let removed = 0;
+  for (const line of lines) {
+    if (line.startsWith("+++ ") || line.startsWith("--- ")) continue;
+    if (line.startsWith("+")) added += 1;
+    if (line.startsWith("-")) removed += 1;
+  }
+  return { added, removed };
 }
 
 function LivePreview({
@@ -1151,6 +1187,8 @@ function buildMenus(recentWorkspaces: BuilderWorkspaceSummary[]): MenuDef[] {
     items: [
       { type: "item", label: "Undo", shortcut: "Ctrl+Z" },
       { type: "item", label: "Redo", shortcut: "Ctrl+Y" },
+      { type: "item", label: "Undo Last AI Change", actionId: "undo-last-ai-change" },
+      { type: "item", label: "AI Change History", actionId: "view-ai-change-history" },
       { type: "separator" },
       { type: "item", label: "Cut", shortcut: "Ctrl+X" },
       { type: "item", label: "Copy", shortcut: "Ctrl+C" },
@@ -2332,6 +2370,13 @@ function CodingAgent({
   onCopyLastResponse,
   onCopyLastPrompt,
   onResetAgentState,
+  hasPendingChange,
+  hasChangeHistory,
+  onReviewPendingChange,
+  onViewChangeHistory,
+  onUndoLastAiChange,
+  onRejectPendingChange,
+  onCopyPendingDiff,
   showProviderTrace,
   onToggleProviderTrace,
 }: {
@@ -2356,6 +2401,13 @@ function CodingAgent({
   onCopyLastResponse: () => void
   onCopyLastPrompt: () => void
   onResetAgentState: () => void
+  hasPendingChange: boolean
+  hasChangeHistory: boolean
+  onReviewPendingChange: () => void
+  onViewChangeHistory: () => void
+  onUndoLastAiChange: () => void
+  onRejectPendingChange: () => void
+  onCopyPendingDiff: () => void
   showProviderTrace: boolean
   onToggleProviderTrace: () => void
 }) {
@@ -2387,6 +2439,42 @@ function CodingAgent({
             <button onClick={onCopyLastResponse} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[12px] hover:bg-[#04395e] hover:text-white"><Copy size={13} /> Copy Last Response</button>
             <button onClick={onCopyLastPrompt} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[12px] hover:bg-[#04395e] hover:text-white"><ArrowUp size={13} /> Copy Last Prompt</button>
             <button onClick={onResetAgentState} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[12px] hover:bg-[#04395e] hover:text-white"><RefreshCw size={13} /> Reset Agent State</button>
+            <div className="my-1 h-px bg-[#454545]" />
+            <button
+              onClick={onReviewPendingChange}
+              disabled={!hasPendingChange}
+              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[12px] hover:bg-[#04395e] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <FileSearch size={13} /> Review Pending AI Changes
+            </button>
+            <button
+              onClick={onCopyPendingDiff}
+              disabled={!hasPendingChange}
+              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[12px] hover:bg-[#04395e] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Copy size={13} /> Copy Pending Diff
+            </button>
+            <button
+              onClick={onRejectPendingChange}
+              disabled={!hasPendingChange}
+              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[12px] hover:bg-[#4a1f1f] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <X size={13} /> Reject Pending AI Changes
+            </button>
+            <button
+              onClick={onUndoLastAiChange}
+              disabled={!hasChangeHistory}
+              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[12px] hover:bg-[#04395e] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Undo2 size={13} /> Undo Last AI Change
+            </button>
+            <button
+              onClick={onViewChangeHistory}
+              disabled={!hasChangeHistory}
+              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[12px] hover:bg-[#04395e] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <History size={13} /> View AI Change History
+            </button>
             <div className="my-1 h-px bg-[#454545]" />
             <button onClick={onToggleProviderTrace} className="flex w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-left text-[12px] hover:bg-[#04395e] hover:text-white">
               <span className="flex items-center gap-2"><Info size={13} /> Provider Trace / Debug Info</span>
@@ -2512,7 +2600,18 @@ function TabBar({
   onSelect: (path: string) => void;
   onClose: (path: string) => void;
   onModeChange: (m: EditorMode) => void;
-  onMoreAction: (action: "refresh-preview" | "save-active" | "close-active" | "close-others" | "copy-path" | "reveal-file" | "toggle-terminal" | "reset-layout") => void;
+  onMoreAction: (action:
+    "refresh-preview" |
+    "save-active" |
+    "close-active" |
+    "close-others" |
+    "copy-path" |
+    "reveal-file" |
+    "toggle-terminal" |
+    "reset-layout" |
+    "review-pending-ai-changes" |
+    "view-ai-change-history" |
+    "undo-last-ai-change") => void;
 }) {
   return (
     <div className="flex h-9 items-stretch border-b border-black/40 bg-[#252526]">
@@ -2575,6 +2674,10 @@ function TabBar({
             <button onClick={() => onMoreAction("reveal-file")} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[12px] hover:bg-[#04395e] hover:text-white"><Folder size={13} /> Open Active File in Explorer</button>
             <button onClick={() => onMoreAction("toggle-terminal")} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[12px] hover:bg-[#04395e] hover:text-white"><TerminalSquare size={13} /> Toggle Terminal</button>
             <button onClick={() => onMoreAction("reset-layout")} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[12px] hover:bg-[#04395e] hover:text-white"><LayoutGrid size={13} /> Reset Layout</button>
+            <div className="my-1 h-px bg-[#454545]" />
+            <button onClick={() => onMoreAction("review-pending-ai-changes")} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[12px] hover:bg-[#04395e] hover:text-white"><FileSearch size={13} /> Review Pending AI Changes</button>
+            <button onClick={() => onMoreAction("view-ai-change-history")} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[12px] hover:bg-[#04395e] hover:text-white"><History size={13} /> View AI Change History</button>
+            <button onClick={() => onMoreAction("undo-last-ai-change")} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[12px] hover:bg-[#04395e] hover:text-white"><Undo2 size={13} /> Undo Last AI Change</button>
           </PopoverContent>
         </Popover>
         <button title="Split editor" className="rounded p-1.5 text-[#858585] hover:bg-white/[0.06] hover:text-[#cccccc]"><SplitSquareHorizontal size={15} /></button>
@@ -3917,6 +4020,18 @@ function SettingsPanel({
                   onChange={(checked) => onPreferencesChange({ autoSave: checked })}
                 />
                 <SelectRow
+                  label="AI apply mode"
+                  desc="Choose whether ALPHA reviews AI edits before touching project files."
+                  value={preferences.aiApplyMode}
+                  options={["review", "auto", "ask"]}
+                  labels={{
+                    review: "Review before apply",
+                    auto: "Auto apply with backup",
+                    ask: "Ask every time",
+                  }}
+                  onChange={(value) => onPreferencesChange({ aiApplyMode: value as BuilderApplyMode })}
+                />
+                <SelectRow
                   label="Window title bar style"
                   desc="Builder uses the custom title bar for the VS Code-style layout."
                   value="Custom"
@@ -4780,6 +4895,215 @@ function QuickOpenOverlay({
   );
 }
 
+function ChangeSetReviewContent({
+  changeSet,
+  selectedMap,
+  onTogglePath,
+  onApplyAll,
+  onApplySelected,
+  onReject,
+  onOpenFile,
+  onCopyDiff,
+}: {
+  changeSet: BuilderChangeSet
+  selectedMap: ChangeSetSelectionMap
+  onTogglePath: (filePath: string) => void
+  onApplyAll: () => void
+  onApplySelected: () => void
+  onReject: () => void
+  onOpenFile: (filePath: string) => void
+  onCopyDiff: (diffText: string) => void
+}) {
+  const pendingFiles = useMemo(() => changeSet.files.filter((file) => !file.applied), [changeSet.files]);
+  const reviewFiles = pendingFiles.length ? pendingFiles : changeSet.files;
+  const [activePath, setActivePath] = useState<string>(reviewFiles[0]?.path || "");
+  const [showRawOutput, setShowRawOutput] = useState(false);
+
+  useEffect(() => {
+    if (!reviewFiles.some((file) => file.path === activePath)) {
+      setActivePath(reviewFiles[0]?.path || "");
+    }
+  }, [activePath, reviewFiles]);
+
+  const activeFile = reviewFiles.find((file) => file.path === activePath) || reviewFiles[0] || changeSet.files[0];
+  const selectedCount = pendingFiles.filter((file) => selectedMap[file.path]).length;
+
+  return (
+    <div className="flex h-full min-h-0 flex-col bg-[#1e1e1e] text-[#cccccc]">
+      <div className="flex items-center justify-between gap-3 border-b border-[#2b2b2b] px-4 py-3">
+        <div>
+          <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#8aa9cf]">AI Change Review</div>
+          <div className="mt-1 text-[14px] font-semibold text-white">{changeSet.projectName}</div>
+          <div className="mt-1 text-[12px] text-[#8b949e]">
+            {changeSet.providerUsed} / {changeSet.modelUsed} · {pendingFiles.length} pending file{pendingFiles.length === 1 ? "" : "s"}
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowRawOutput((prev) => !prev)}
+            className="rounded border border-[#3c3c3c] bg-[#252526] px-2.5 py-1 text-[11px] text-[#cccccc] hover:bg-[#2a2d2e]"
+          >
+            {showRawOutput ? "Hide Raw Output" : "View Raw Output"}
+          </button>
+          <button onClick={onReject} className="rounded border border-[#5a2a2a] bg-[#2a1616] px-2.5 py-1 text-[11px] text-[#fca5a5] hover:bg-[#3a1e1e]">
+            Reject All
+          </button>
+            <button
+              onClick={onApplySelected}
+              disabled={selectedCount === 0 || pendingFiles.length === 0}
+              className="rounded border border-[#3c3c3c] bg-[#252526] px-2.5 py-1 text-[11px] text-[#cccccc] hover:bg-[#2a2d2e] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Apply Selected
+            </button>
+            <button
+              onClick={onApplyAll}
+              disabled={pendingFiles.length === 0}
+              className="rounded border border-[#0e639c] bg-[#0e639c] px-2.5 py-1 text-[11px] text-white hover:bg-[#1177bb] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Apply All
+            </button>
+        </div>
+      </div>
+      <div className="min-h-0 flex-1">
+        <PanelGroup autoSaveId="builder-ai-review-layout" orientation="horizontal" className="h-full w-full">
+          <Panel defaultSize={28} minSize={18} maxSize={42}>
+            <div className="alpha-scroll-thin h-full overflow-y-auto border-r border-[#2b2b2b] bg-[#252526]">
+              <div className="border-b border-[#2b2b2b] px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-[#cccccc]">
+                Proposed changes
+              </div>
+              <div className="space-y-1 p-2">
+                {reviewFiles.map((file) => {
+                  const stats = summarizeDiff(file.diffText);
+                  const isActive = activeFile?.path === file.path;
+                  return (
+                    <button
+                      key={file.path}
+                      onClick={() => setActivePath(file.path)}
+                      className={cn(
+                        "flex w-full items-start gap-2 rounded-md border px-2 py-2 text-left transition-colors",
+                        isActive ? "border-[#0e639c] bg-[#04395e]/40" : "border-[#2b2b2b] bg-[#1e1e1e] hover:bg-white/[0.03]"
+                      )}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={!!selectedMap[file.path]}
+                        disabled={!file.safeToApply || file.applied || pendingFiles.length === 0}
+                        onChange={() => onTogglePath(file.path)}
+                        onClick={(event) => event.stopPropagation()}
+                        className="mt-0.5"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-[12px] font-medium text-white">{file.path}</div>
+                        <div className="mt-1 flex items-center gap-2 text-[11px] text-[#8b949e]">
+                          <span className="uppercase">{file.changeType}</span>
+                          <span className="text-[#73c991]">+{stats.added}</span>
+                          <span className="text-[#f48771]">-{stats.removed}</span>
+                        </div>
+                        {file.warnings.length ? (
+                          <div className="mt-1 text-[11px] text-[#fca5a5]">{file.warnings.join(" ")}</div>
+                        ) : null}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </Panel>
+          <PanelResizeHandle className="w-[3px] bg-[#1f1f1f] hover:bg-[#007acc]" />
+          <Panel defaultSize={72} minSize={40}>
+            <div className="flex h-full min-h-0 flex-col bg-[#1e1e1e]">
+              <div className="flex items-center justify-between border-b border-[#2b2b2b] px-3 py-2">
+                <div className="truncate text-[12px] font-medium text-white">{activeFile?.path || "No file selected"}</div>
+                {activeFile ? (
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => onCopyDiff(activeFile.diffText)} className="rounded border border-[#3c3c3c] bg-[#252526] px-2 py-1 text-[11px] text-[#cccccc] hover:bg-[#2a2d2e]">
+                      Copy Diff
+                    </button>
+                    <button onClick={() => onOpenFile(activeFile.path)} className="rounded border border-[#3c3c3c] bg-[#252526] px-2 py-1 text-[11px] text-[#cccccc] hover:bg-[#2a2d2e]">
+                      Open File
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+              <div className="alpha-scroll-thin min-h-0 flex-1 overflow-auto p-3">
+                {showRawOutput ? (
+                  <pre className="whitespace-pre-wrap rounded-md border border-[#2b2b2b] bg-[#111111] p-3 font-mono text-[12px] leading-6 text-[#d4d4d4]">
+                    {changeSet.rawOutput || "No raw provider output available."}
+                  </pre>
+                ) : activeFile ? (
+                  <pre className="whitespace-pre-wrap rounded-md border border-[#2b2b2b] bg-[#111111] p-3 font-mono text-[12px] leading-6 text-[#d4d4d4]">
+                    {activeFile.diffText}
+                  </pre>
+                ) : (
+                  <div className="text-[12px] text-[#8b949e]">No pending file selected.</div>
+                )}
+              </div>
+            </div>
+          </Panel>
+        </PanelGroup>
+      </div>
+    </div>
+  );
+}
+
+function ChangeHistoryContent({
+  changeSets,
+  onReview,
+  onRestore,
+  onDelete,
+}: {
+  changeSets: BuilderChangeSet[]
+  onReview: (changeSet: BuilderChangeSet) => void
+  onRestore: (changeSet: BuilderChangeSet) => void
+  onDelete: (changeSet: BuilderChangeSet) => void
+}) {
+  return (
+    <div className="flex h-full min-h-0 flex-col bg-[#1e1e1e] text-[#cccccc]">
+      <div className="border-b border-[#2b2b2b] px-4 py-3">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#8aa9cf]">AI Change History</div>
+        <div className="mt-1 text-[13px] text-[#8b949e]">Recent Builder AI changesets with restore points and diff review.</div>
+      </div>
+      <div className="alpha-scroll-thin min-h-0 flex-1 overflow-y-auto p-3">
+        {changeSets.length === 0 ? (
+          <div className="rounded-md border border-[#2b2b2b] bg-[#252526] px-3 py-2 text-[12px] text-[#8b949e]">
+            No AI changes recorded for this workspace yet.
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {changeSets.map((changeSet) => (
+              <div key={changeSet.id} className="rounded-lg border border-[#2b2b2b] bg-[#252526] p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="truncate text-[13px] font-medium text-white">{changeSet.userPrompt}</div>
+                    <div className="mt-1 text-[11px] text-[#8b949e]">
+                      {new Date(changeSet.createdAt).toLocaleString()} · {changeSet.providerUsed} / {changeSet.modelUsed}
+                    </div>
+                    <div className="mt-1 text-[11px] uppercase tracking-wide text-[#73c991]">{changeSet.status.replace(/_/g, " ")}</div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <button onClick={() => onReview(changeSet)} className="rounded border border-[#3c3c3c] bg-[#1e1e1e] px-2 py-1 text-[11px] text-[#cccccc] hover:bg-[#2a2d2e]">View Diff</button>
+                    <button
+                      onClick={() => onRestore(changeSet)}
+                      disabled={changeSet.status !== "applied" && changeSet.status !== "partially_applied"}
+                      className="rounded border border-[#3c3c3c] bg-[#1e1e1e] px-2 py-1 text-[11px] text-[#cccccc] hover:bg-[#2a2d2e] disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Restore
+                    </button>
+                    <button onClick={() => onDelete(changeSet)} className="rounded border border-[#5a2a2a] bg-[#2a1616] px-2 py-1 text-[11px] text-[#fca5a5] hover:bg-[#3a1e1e]">Delete Record</button>
+                  </div>
+                </div>
+                <div className="mt-2 text-[11px] text-[#8b949e]">
+                  {changeSet.files.length} file change{changeSet.files.length === 1 ? "" : "s"} · parser {changeSet.parserResult}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function CenteredModal({
   open,
   onClose,
@@ -4864,6 +5188,11 @@ export function BuilderWindow() {
   const [pendingDelete, setPendingDelete] = useState<PendingDeleteTarget | null>(null);
   const [quickOpenVisible, setQuickOpenVisible] = useState(false);
   const [showProviderTrace, setShowProviderTrace] = useState(false);
+  const [pendingChangeSet, setPendingChangeSet] = useState<BuilderChangeSet | null>(null);
+  const [changeHistory, setChangeHistory] = useState<BuilderChangeSet[]>([]);
+  const [showChangeReview, setShowChangeReview] = useState(false);
+  const [showChangeHistory, setShowChangeHistory] = useState(false);
+  const [changeSetSelection, setChangeSetSelection] = useState<ChangeSetSelectionMap>({});
   const requestLifecycleRef = useRef<Record<string, BuilderRequestLifecycleState>>({});
   const requestThinkingMessageRef = useRef<Record<string, string>>({});
 
@@ -4949,6 +5278,47 @@ export function BuilderWindow() {
     []
   );
 
+  const refreshChangeHistory = useCallback(async (projectId?: string | null, workspacePath?: string | null) => {
+    const response = await listBuilderChangeSets(projectId ?? undefined, workspacePath ?? undefined);
+    if (!response.success) return;
+    const history = response.changesets || [];
+    setChangeHistory(history);
+    setPendingChangeSet((current) => {
+      if (current) {
+        const refreshedCurrent = history.find((item) => item.id === current.id);
+        if (refreshedCurrent) return refreshedCurrent;
+      }
+      return history.find((item) => item.status === "pending_review" || item.status === "partially_applied") || null;
+    });
+  }, []);
+
+  useEffect(() => {
+    void refreshChangeHistory(currentProjectId, workspace?.path);
+  }, [currentProjectId, refreshChangeHistory, workspace?.path]);
+
+  useEffect(() => {
+    setChangeSetSelection(buildChangeSetSelection(pendingChangeSet));
+  }, [pendingChangeSet?.id]);
+
+  const handleToggleChangeSetPath = useCallback((filePath: string) => {
+    setChangeSetSelection((prev) => ({
+      ...prev,
+      [filePath]: !prev[filePath],
+    }));
+  }, []);
+
+  const handleCopyPendingDiff = useCallback(async () => {
+    if (!pendingChangeSet) {
+      window.alert("No pending AI diff available.");
+      return;
+    }
+    const diffText = pendingChangeSet.files
+      .filter((file) => !file.applied)
+      .map((file) => `### ${file.path}\n${file.diffText}`)
+      .join("\n\n");
+    await navigator.clipboard.writeText(diffText || "No pending diff available.");
+  }, [pendingChangeSet]);
+
   const openTabFromFile = useCallback(
     (file: { path: string; name: string; content: string }) => {
       const nextTab: OpenTab = {
@@ -5004,6 +5374,160 @@ export function BuilderWindow() {
     },
     []
   );
+
+  const handleOpenChangeSetFile = useCallback(async (filePath: string) => {
+    if (!workspace?.path) {
+      window.alert("Open or apply this workspace first to inspect files.");
+      return;
+    }
+    const absolutePath = `${workspace.path.replace(/[\\/]+$/, "")}${workspace.path.includes("\\") ? "\\" : "/"}${filePath.replace(/\//g, workspace.path.includes("\\") ? "\\" : "/")}`;
+    const response = await readBuilderWorkspaceFile(absolutePath);
+    if (response.success && response.file) {
+      openTabFromFile(response.file);
+      return;
+    }
+    window.alert("This file is part of a pending AI changeset and is not on disk yet.");
+  }, [openTabFromFile, workspace?.path]);
+
+  const handleApplyChangeSet = useCallback(async (mode: "all" | "selected") => {
+    if (!pendingChangeSet) {
+      window.alert("No pending AI changes to apply.");
+      return;
+    }
+    const selectedPaths =
+      mode === "selected"
+        ? Object.entries(changeSetSelection)
+            .filter(([, checked]) => checked)
+            .map(([filePath]) => filePath)
+        : pendingChangeSet.files.filter((file) => !file.applied && file.safeToApply).map((file) => file.path);
+    const response = await applyBuilderChangeSet({
+      projectId: pendingChangeSet.projectId || currentProjectId || undefined,
+      workspacePath: pendingChangeSet.workspacePath || workspace?.path || undefined,
+      changeSetId: pendingChangeSet.id,
+      selectedPaths,
+    });
+    if (!response.success || !response.state) {
+      window.alert(response.error || "Failed to apply AI changes.");
+      return;
+    }
+    const workspaceResponse = await openBuilderWorkspace(response.state.metadata.projectPath);
+    if (workspaceResponse.success) {
+      syncWorkspaceState(workspaceResponse.workspace ?? null, workspaceResponse.recentWorkspaces ?? []);
+      setCurrentProjectId(response.state.metadata.id);
+      setChatScopePath(response.state.metadata.projectPath);
+      setChatHydrated(true);
+      syncTabsFromProjectState(response.state);
+      await openPreferredWorkspaceFile(workspaceResponse.workspace ?? null, response.state.files?.[0]?.path ?? null);
+    }
+    setPreviewVersion((prev) => prev + 1);
+    if (response.changeSet?.status === "applied") {
+      setPendingChangeSet(null);
+      setShowChangeReview(false);
+    } else if (response.changeSet) {
+      setPendingChangeSet(response.changeSet);
+    }
+    appendAgentMessage({
+      role: "assistant",
+      content: response.message || "AI changes applied.",
+      providerLabel: response.changeSet?.providerUsed || pendingChangeSet.providerUsed,
+      tone: "success",
+    });
+    await refreshChangeHistory(response.state.metadata.id, response.state.metadata.projectPath);
+  }, [
+    appendAgentMessage,
+    changeSetSelection,
+    currentProjectId,
+    openPreferredWorkspaceFile,
+    pendingChangeSet,
+    refreshChangeHistory,
+    syncTabsFromProjectState,
+    syncWorkspaceState,
+    workspace?.path,
+  ]);
+
+  const handleRejectPendingChangeSet = useCallback(async () => {
+    if (!pendingChangeSet) {
+      window.alert("No pending AI changes to reject.");
+      return;
+    }
+    const response = await rejectBuilderChangeSet({
+      projectId: pendingChangeSet.projectId || currentProjectId || undefined,
+      workspacePath: pendingChangeSet.workspacePath || workspace?.path || undefined,
+      changeSetId: pendingChangeSet.id,
+    });
+    if (!response.success) {
+      window.alert(response.error || "Failed to reject AI changes.");
+      return;
+    }
+    setPendingChangeSet(null);
+    setShowChangeReview(false);
+    appendAgentMessage({
+      role: "status",
+      content: response.message || "AI changes rejected. No files changed.",
+      providerLabel: pendingChangeSet.providerUsed,
+    });
+    await refreshChangeHistory(pendingChangeSet.projectId || currentProjectId, pendingChangeSet.workspacePath || workspace?.path || null);
+  }, [appendAgentMessage, currentProjectId, pendingChangeSet, refreshChangeHistory, workspace?.path]);
+
+  const handleUndoLastAiChange = useCallback(async (changeSet?: BuilderChangeSet) => {
+    const target = changeSet || pendingChangeSet || changeHistory.find((entry) => entry.status === "applied" || entry.status === "partially_applied");
+    if (!target) {
+      window.alert("No applied AI changes available to undo.");
+      return;
+    }
+    if (!window.confirm("Undo last AI change? This will restore affected files to their previous state.")) return;
+    const response = await undoBuilderLastAiChange({
+      projectId: target.projectId || currentProjectId || undefined,
+      workspacePath: target.workspacePath || workspace?.path || undefined,
+      changeSetId: target.id,
+    });
+    if (!response.success || !response.state) {
+      window.alert(response.error || "Undo failed.");
+      return;
+    }
+    const workspaceResponse = await openBuilderWorkspace(response.state.metadata.projectPath);
+    if (workspaceResponse.success) {
+      syncWorkspaceState(workspaceResponse.workspace ?? null, workspaceResponse.recentWorkspaces ?? []);
+      setCurrentProjectId(response.state.metadata.id);
+      setChatScopePath(response.state.metadata.projectPath);
+      syncTabsFromProjectState(response.state);
+    }
+    setPreviewVersion((prev) => prev + 1);
+    appendAgentMessage({
+      role: "status",
+      content: response.message || "Previous AI snapshot restored.",
+      providerLabel: target.providerUsed,
+      tone: "success",
+    });
+    await refreshChangeHistory(response.state.metadata.id, response.state.metadata.projectPath);
+  }, [
+    appendAgentMessage,
+    changeHistory,
+    currentProjectId,
+    pendingChangeSet,
+    refreshChangeHistory,
+    syncTabsFromProjectState,
+    syncWorkspaceState,
+    workspace?.path,
+  ]);
+
+  const handleDeleteChangeSetRecord = useCallback(async (changeSet: BuilderChangeSet) => {
+    if (!window.confirm("Delete this AI change history record?")) return;
+    const response = await deleteBuilderChangeSet({
+      projectId: changeSet.projectId || currentProjectId || undefined,
+      workspacePath: changeSet.workspacePath || workspace?.path || undefined,
+      changeSetId: changeSet.id,
+    });
+    if (!response.success) {
+      window.alert(response.error || "Failed to delete AI change record.");
+      return;
+    }
+    if (pendingChangeSet?.id === changeSet.id) {
+      setPendingChangeSet(null);
+      setShowChangeReview(false);
+    }
+    await refreshChangeHistory(changeSet.projectId || currentProjectId, changeSet.workspacePath || workspace?.path || null);
+  }, [currentProjectId, pendingChangeSet?.id, refreshChangeHistory, workspace?.path]);
 
   const loadWorkspaceProjectId = useCallback(async (snapshot: BuilderWorkspaceSnapshot | null) => {
     const hasRootProjectMeta = snapshot?.tree.some((node) => node.type === "file" && node.name === "project.json");
@@ -5663,7 +6187,18 @@ export function BuilderWindow() {
   }, [activeRequestId]);
 
   const handleTabMoreAction = useCallback(
-    (action: "refresh-preview" | "save-active" | "close-active" | "close-others" | "copy-path" | "reveal-file" | "toggle-terminal" | "reset-layout") => {
+    (action:
+      "refresh-preview" |
+      "save-active" |
+      "close-active" |
+      "close-others" |
+      "copy-path" |
+      "reveal-file" |
+      "toggle-terminal" |
+      "reset-layout" |
+      "review-pending-ai-changes" |
+      "view-ai-change-history" |
+      "undo-last-ai-change") => {
       if (action === "refresh-preview") {
         setPreviewVersion((prev) => prev + 1);
         return;
@@ -5696,9 +6231,25 @@ export function BuilderWindow() {
         setMode("code");
         setView("explorer");
         setTerminalOpen(false);
+        return;
+      }
+      if (action === "review-pending-ai-changes") {
+        if (!pendingChangeSet) {
+          window.alert("No pending AI changes to review.");
+          return;
+        }
+        setShowChangeReview(true);
+        return;
+      }
+      if (action === "view-ai-change-history") {
+        setShowChangeHistory(true);
+        return;
+      }
+      if (action === "undo-last-ai-change") {
+        void handleUndoLastAiChange();
       }
     },
-    [activeTab, activeTabObj?.path, handleCloseTab, handleRevealSelected, handleSaveCurrent]
+    [activeTab, activeTabObj?.path, handleCloseTab, handleRevealSelected, handleSaveCurrent, handleUndoLastAiChange, pendingChangeSet]
   );
 
   const quickOpenEntries = useMemo<QuickOpenEntry[]>(() => {
@@ -5803,6 +6354,22 @@ export function BuilderWindow() {
     }
     if (actionId === "restore-clean-preview-files") {
       await handleRestoreLastCleanPreviewFiles();
+      return;
+    }
+    if (actionId === "review-pending-ai-changes") {
+      if (!pendingChangeSet) {
+        window.alert("No pending AI changes to review.");
+        return;
+      }
+      setShowChangeReview(true);
+      return;
+    }
+    if (actionId === "view-ai-change-history") {
+      setShowChangeHistory(true);
+      return;
+    }
+    if (actionId === "undo-last-ai-change") {
+      await handleUndoLastAiChange();
       return;
     }
     if (actionId === "open-search") {
@@ -5968,9 +6535,11 @@ export function BuilderWindow() {
     handleOpenFolder,
     handleOpenLooseFile,
     handleOpenRecentWorkspace,
+    handleUndoLastAiChange,
     handleRunActiveFile,
     handleRestoreLastCleanPreviewFiles,
     handleSaveCurrent,
+    pendingChangeSet,
     handleWindowAction,
     insertClipboardText,
     openSettingsModal,
@@ -6095,10 +6664,10 @@ export function BuilderWindow() {
 
       const response =
         intent === "CODING_EDIT" && currentProjectId
-          ? await updateBuilderProject(currentProjectId, effectivePrompt, providerSelection, requestId)
-          : await createBuilderProject(effectivePrompt, providerSelection, requestId);
+          ? await updateBuilderProject(currentProjectId, effectivePrompt, providerSelection, requestId, preferences.aiApplyMode)
+          : await createBuilderProject(effectivePrompt, providerSelection, requestId, preferences.aiApplyMode);
 
-      if (!response.success || !response.state) {
+      if (!response.success) {
         if (response.cancelled) {
           return;
         }
@@ -6112,6 +6681,36 @@ export function BuilderWindow() {
         return;
       }
       if (requestLifecycleRef.current[requestId] !== "running") {
+        return;
+      }
+
+      if (response.reviewRequired && response.changeSet) {
+        setPendingChangeSet(response.changeSet);
+        setShowChangeReview(true);
+        setShowChangeHistory(false);
+        setCurrentProjectId((current) => current || response.changeSet?.projectId || null);
+        setChatScopePath((current) => current || response.changeSet?.workspacePath || null);
+        await refreshChangeHistory(response.changeSet.projectId, response.changeSet.workspacePath);
+        finalizeAgentRequest(requestId, "completed", {
+          role: "assistant",
+          content:
+            response.message ||
+            `AI changes ready for review. ${response.changeSet.files.length} proposed file change${response.changeSet.files.length === 1 ? "" : "s"} from ${response.changeSet.providerUsed} / ${response.changeSet.modelUsed}.`,
+          providerLabel: response.changeSet.providerUsed,
+          tone: "success",
+          trace: response.providerTrace,
+        });
+        return;
+      }
+
+      if (!response.state) {
+        finalizeAgentRequest(requestId, "failed", {
+          role: "assistant",
+          content: response.error || response.providerError || "Builder request completed without project state.",
+          error: true,
+          providerLabel: requestedModel.name,
+          trace: response.providerTrace,
+        });
         return;
       }
 
@@ -6136,6 +6735,7 @@ export function BuilderWindow() {
       }
 
       setPreviewVersion((prev) => prev + 1);
+      await refreshChangeHistory(response.state.metadata.id, response.state.metadata.projectPath);
       finalizeAgentRequest(requestId, "completed", {
         role: "assistant",
         content:
@@ -6179,11 +6779,13 @@ export function BuilderWindow() {
     selectedModelId,
     syncTabsFromProjectState,
     syncWorkspaceState,
+    refreshChangeHistory,
     workspaceFileHints,
     workspace?.path,
     workspaceLabel,
     activeTabObj?.content,
     activeTabObj?.path,
+    preferences.aiApplyMode,
   ]);
 
   useEffect(() => {
@@ -6442,6 +7044,13 @@ export function BuilderWindow() {
                   onCopyLastResponse={handleCopyLastResponse}
                   onCopyLastPrompt={handleCopyLastPrompt}
                   onResetAgentState={() => void handleResetAgentState()}
+                  hasPendingChange={!!pendingChangeSet}
+                  hasChangeHistory={changeHistory.length > 0}
+                  onReviewPendingChange={() => setShowChangeReview(true)}
+                  onViewChangeHistory={() => setShowChangeHistory(true)}
+                  onUndoLastAiChange={() => void handleUndoLastAiChange()}
+                  onRejectPendingChange={() => void handleRejectPendingChangeSet()}
+                  onCopyPendingDiff={() => void handleCopyPendingDiff()}
                   showProviderTrace={showProviderTrace}
                   onToggleProviderTrace={() => setShowProviderTrace((value) => !value)}
                 />
@@ -6546,6 +7155,42 @@ export function BuilderWindow() {
             onOpenWorkspaceFolder={() => void handleOpenWorkspaceFolder()}
             onClearChat={handleClearCurrentChat}
             onCopyVersion={() => void handleCopyVersion()}
+          />
+        </CenteredModal>
+        <CenteredModal
+          open={showChangeReview && !!pendingChangeSet}
+          onClose={() => setShowChangeReview(false)}
+          widthClassName="max-w-none"
+          contentStyle={{ width: "min(1120px, 92vw)", height: "min(760px, 84vh)" }}
+        >
+          {pendingChangeSet ? (
+            <ChangeSetReviewContent
+              changeSet={pendingChangeSet}
+              selectedMap={changeSetSelection}
+              onTogglePath={handleToggleChangeSetPath}
+              onApplyAll={() => void handleApplyChangeSet("all")}
+              onApplySelected={() => void handleApplyChangeSet("selected")}
+              onReject={() => void handleRejectPendingChangeSet()}
+              onOpenFile={(filePath) => void handleOpenChangeSetFile(filePath)}
+              onCopyDiff={(diffText) => void navigator.clipboard.writeText(diffText)}
+            />
+          ) : null}
+        </CenteredModal>
+        <CenteredModal
+          open={showChangeHistory}
+          onClose={() => setShowChangeHistory(false)}
+          widthClassName="max-w-none"
+          contentStyle={{ width: "min(980px, 88vw)", height: "min(720px, 82vh)" }}
+        >
+          <ChangeHistoryContent
+            changeSets={changeHistory}
+            onReview={(changeSet) => {
+              setPendingChangeSet(changeSet);
+              setShowChangeReview(true);
+              setShowChangeHistory(false);
+            }}
+            onRestore={(changeSet) => void handleUndoLastAiChange(changeSet)}
+            onDelete={(changeSet) => void handleDeleteChangeSetRecord(changeSet)}
           />
         </CenteredModal>
         <div className="contents">

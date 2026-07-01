@@ -1,5 +1,6 @@
 import fs from 'fs'
 import path from 'path'
+import crypto from 'crypto'
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'child_process'
 import { promisify } from 'util'
 import { app, BrowserWindow, IpcMain, safeStorage, shell } from 'electron'
@@ -62,7 +63,7 @@ type ProviderSelection = {
 }
 
 type ProviderResult =
-  | { success: true; payload: any; providerLabel: string; actualProvider: ProviderName; actualModel: string }
+  | { success: true; payload: any; providerLabel: string; actualProvider: ProviderName; actualModel: string; rawOutput?: string }
   | { success: false; code: string; message: string; providerLabel: string; actualProvider: ProviderName; actualModel: string; cancelled?: boolean }
 
 type ProviderChatResult =
@@ -83,6 +84,54 @@ type ProviderTrace = {
   filesApplied?: number
   parserResult?: string
   error?: string
+}
+
+type ChangeApplyMode = 'review' | 'auto' | 'ask'
+
+type ChangeFileType = 'create' | 'update' | 'delete'
+
+type ChangeSetStatus =
+  | 'pending_review'
+  | 'applied'
+  | 'rejected'
+  | 'partially_applied'
+  | 'failed'
+
+type BuilderChangeSetFile = {
+  path: string
+  oldContent: string | null
+  newContent: string | null
+  changeType: ChangeFileType
+  diffText: string
+  safeToApply: boolean
+  warnings: string[]
+  applied?: boolean
+}
+
+type BuilderChangeSet = {
+  id: string
+  requestId: string
+  projectId: string
+  projectName: string
+  projectType: string
+  providerUsed: string
+  modelUsed: string
+  selectedProvider: string
+  selectedModelId: string
+  actualProviderCalled: string
+  actualModelCalled: string
+  mode: 'generate' | 'edit'
+  createdAt: string
+  workspacePath: string
+  userPrompt: string
+  status: ChangeSetStatus
+  files: BuilderChangeSetFile[]
+  fallbackUsed: boolean
+  parsedFilesCount: number
+  parserResult: string
+  rawOutput?: string
+  providerTrace?: ProviderTrace
+  backupSnapshotId?: string | null
 }
 
 type BuilderPromptIntent =
@@ -114,6 +163,8 @@ const KILO_GATEWAY_DEFAULT_BASE_URL = 'https://api.kilo.ai/api/gateway'
 const KILO_GATEWAY_DEFAULT_MODEL_ID = 'laguna-m.1:free'
 const ROUTEWAY_DEFAULT_BASE_URL = 'https://api.routeway.ai/v1'
 const BACKUP_DIR_NAME = '.alpha-backups'
+const CHANGESET_HISTORY_LIMIT = 50
+const BACKUP_HISTORY_LIMIT = 20
 const PROMPT_LEAKAGE_PATTERNS: RegExp[] = [
   /\bCurrent workspace:/i,
   /\bWorkspace file tree:/i,
@@ -125,7 +176,13 @@ const PROMPT_LEAKAGE_PATTERNS: RegExp[] = [
   /\bDo not ask which builder\b/i,
   /\bOriginal request:/i,
   /\bReturn strict JSON only\b/i,
-  /\bSchema:\s*\{/i
+  /\bSchema:\s*\{/i,
+  /\bselectedProvider\b/i,
+  /\bselectedModelId\b/i,
+  /\bprovider trace\b/i,
+  /\bAPI key\b/i,
+  /\bAuthorization:\b/i,
+  /\bBearer\b/i
 ]
 
 const projectTypeRules: Array<{ type: string; pattern: RegExp }> = [
@@ -746,8 +803,10 @@ const normalizeGeminiText = (data: any) =>
 export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }) {
   const userDataPath = app.getPath('userData')
   const projectsRoot = path.resolve(userDataPath, 'projects')
+  const changesetsRoot = path.resolve(userDataPath, 'builder', 'changesets')
   const secureConfigPath = path.join(userDataPath, 'alpha_secure_vault.json')
   ensureDir(projectsRoot)
+  ensureDir(changesetsRoot)
 
   const decryptVaultValue = (value?: string) => {
     if (!value) return ''
@@ -1203,10 +1262,11 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
         },
         providerLabel,
         actualProvider,
-        actualModel
+        actualModel,
+        rawOutput: content
       }
     }
-    return { success: true, payload: parsed, providerLabel, actualProvider, actualModel }
+    return { success: true, payload: parsed, providerLabel, actualProvider, actualModel, rawOutput: content }
   }
 
   const resolveGeminiSelection = (selection?: ProviderSelection) => {
@@ -2114,6 +2174,198 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
   const buildStructuredRetryPrompt = (prompt: string) =>
     `Original request: ${prompt}\n\nYou are inside ALPHA Builder with an active workspace. Your previous response was not in usable file format. Return strict JSON only using this schema: {"projectName":"string","projectType":"string","summary":"string","files":[{"path":"relative/path","content":"file contents"}]}. Do not include markdown or explanation.`
 
+  const getWorkspaceHistoryKey = (workspacePath: string) => {
+    const normalized = workspacePath.replace(/\\/g, '/').toLowerCase()
+    const base = slugify(path.basename(normalized) || 'workspace')
+    const hash = crypto.createHash('sha1').update(normalized).digest('hex').slice(0, 10)
+    return `${base}-${hash}`
+  }
+
+  const getWorkspaceChangesetDir = (workspacePath: string) =>
+    path.join(changesetsRoot, getWorkspaceHistoryKey(workspacePath))
+
+  const getChangesetRecordPath = (workspacePath: string, changeSetId: string) =>
+    path.join(getWorkspaceChangesetDir(workspacePath), `${changeSetId}.json`)
+
+  const redactSecrets = (value?: string | null) => {
+    const source = String(value || '')
+    return source
+      .replace(/Bearer\s+[A-Za-z0-9._\-+/=]+/gi, 'Bearer [redacted]')
+      .replace(/Authorization:\s*[^\n\r]+/gi, 'Authorization: [redacted]')
+      .replace(/api[_ -]?key\s*[:=]\s*[^\s"'`]+/gi, 'apiKey=[redacted]')
+  }
+
+  const buildUnifiedDiff = (filePath: string, oldContent: string | null, newContent: string | null) => {
+    const oldLines = (oldContent ?? '').replace(/\r\n/g, '\n').split('\n')
+    const newLines = (newContent ?? '').replace(/\r\n/g, '\n').split('\n')
+    const max = Math.max(oldLines.length, newLines.length)
+    const lines = [`--- ${filePath}`, `+++ ${filePath}`, '@@']
+    for (let index = 0; index < max; index += 1) {
+      const before = oldLines[index]
+      const after = newLines[index]
+      if (before === after) {
+        if (typeof before === 'string') lines.push(` ${before}`)
+        continue
+      }
+      if (typeof before === 'string') lines.push(`-${before}`)
+      if (typeof after === 'string') lines.push(`+${after}`)
+    }
+    return lines.join('\n')
+  }
+
+  const pruneWorkspaceHistory = (workspacePath: string) => {
+    const changesetDir = getWorkspaceChangesetDir(workspacePath)
+    if (fs.existsSync(changesetDir)) {
+      const jsonFiles = fs
+        .readdirSync(changesetDir, { withFileTypes: true })
+        .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+        .map((entry) => ({
+          name: entry.name,
+          fullPath: path.join(changesetDir, entry.name),
+          mtime: fs.statSync(path.join(changesetDir, entry.name)).mtimeMs
+        }))
+        .sort((a, b) => b.mtime - a.mtime)
+      jsonFiles.slice(CHANGESET_HISTORY_LIMIT).forEach((entry) => {
+        try {
+          fs.unlinkSync(entry.fullPath)
+        } catch {
+          // ignore cleanup failures
+        }
+      })
+    }
+
+    const backupRoot = path.join(workspacePath, BACKUP_DIR_NAME)
+    if (fs.existsSync(backupRoot)) {
+      const backupDirs = fs
+        .readdirSync(backupRoot, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => ({
+          name: entry.name,
+          fullPath: path.join(backupRoot, entry.name),
+          mtime: fs.statSync(path.join(backupRoot, entry.name)).mtimeMs
+        }))
+        .sort((a, b) => b.mtime - a.mtime)
+      backupDirs.slice(BACKUP_HISTORY_LIMIT).forEach((entry) => {
+        try {
+          fs.rmSync(entry.fullPath, { recursive: true, force: true })
+        } catch {
+          // ignore cleanup failures
+        }
+      })
+    }
+  }
+
+  const saveChangeSet = (changeSet: BuilderChangeSet) => {
+    const targetDir = getWorkspaceChangesetDir(changeSet.workspacePath)
+    ensureDir(targetDir)
+    fs.writeFileSync(getChangesetRecordPath(changeSet.workspacePath, changeSet.id), JSON.stringify(changeSet, null, 2), 'utf8')
+    pruneWorkspaceHistory(changeSet.workspacePath)
+  }
+
+  const listChangeSets = (workspacePath: string): BuilderChangeSet[] => {
+    const targetDir = getWorkspaceChangesetDir(workspacePath)
+    if (!fs.existsSync(targetDir)) return []
+    return fs
+      .readdirSync(targetDir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+      .map((entry) => {
+        try {
+          return JSON.parse(fs.readFileSync(path.join(targetDir, entry.name), 'utf8')) as BuilderChangeSet
+        } catch {
+          return null
+        }
+      })
+      .filter(Boolean)
+      .sort((a, b) => String(b!.createdAt).localeCompare(String(a!.createdAt))) as BuilderChangeSet[]
+  }
+
+  const readChangeSet = (workspacePath: string, changeSetId: string) => {
+    const targetPath = getChangesetRecordPath(workspacePath, changeSetId)
+    if (!fs.existsSync(targetPath)) return null
+    return JSON.parse(fs.readFileSync(targetPath, 'utf8')) as BuilderChangeSet
+  }
+
+  const markChangeSet = (workspacePath: string, changeSetId: string, mutate: (changeSet: BuilderChangeSet) => BuilderChangeSet) => {
+    const current = readChangeSet(workspacePath, changeSetId)
+    if (!current) return null
+    const next = mutate(current)
+    saveChangeSet(next)
+    return next
+  }
+
+  const createChangeSetFiles = (oldFiles: ProjectFile[], newFiles: ProjectFile[]): BuilderChangeSetFile[] => {
+    const oldMap = new Map(oldFiles.map((file) => [file.path, file.content]))
+    const newMap = new Map(newFiles.map((file) => [file.path, file.content]))
+    const allPaths = Array.from(new Set([...oldMap.keys(), ...newMap.keys()])).sort((a, b) => a.localeCompare(b))
+    return allPaths
+      .map((filePath) => {
+        const oldContent = oldMap.has(filePath) ? oldMap.get(filePath)! : null
+        const newContent = newMap.has(filePath) ? newMap.get(filePath)! : null
+        if (oldContent === newContent) return null
+        const changeType: ChangeFileType =
+          oldContent == null ? 'create' : newContent == null ? 'delete' : 'update'
+        const warnings: string[] = []
+        if (newContent && detectPromptLeakage(newContent)) {
+          warnings.push('Internal prompt/context leakage detected.')
+        }
+        return {
+          path: filePath,
+          oldContent,
+          newContent,
+          changeType,
+          diffText: buildUnifiedDiff(filePath, oldContent, newContent),
+          safeToApply: warnings.length === 0,
+          warnings
+        } satisfies BuilderChangeSetFile
+      })
+      .filter(Boolean) as BuilderChangeSetFile[]
+  }
+
+  const createPendingChangeSet = (args: {
+    projectId: string
+    projectName: string
+    projectType: string
+    workspacePath: string
+    prompt: string
+    requestId?: string
+    mode: 'generate' | 'edit'
+    oldFiles: ProjectFile[]
+    newFiles: ProjectFile[]
+    providerTrace: ProviderTrace
+    providerLabel: string
+    modelUsed: string
+    rawOutput?: string
+  }) => {
+    const files = createChangeSetFiles(args.oldFiles, args.newFiles)
+    const changeSet: BuilderChangeSet = {
+      id: `changeset-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      requestId: args.requestId || `request-${Date.now()}`,
+      projectId: args.projectId,
+      projectName: args.projectName,
+      projectType: args.projectType,
+      providerUsed: args.providerLabel,
+      modelUsed: args.modelUsed,
+      selectedProvider: args.providerTrace.selectedProvider || '',
+      selectedModelId: args.providerTrace.selectedModelId || '',
+      actualProviderCalled: args.providerTrace.actualProviderCalled || '',
+      actualModelCalled: args.providerTrace.actualModelCalled || '',
+      mode: args.mode,
+      createdAt: new Date().toISOString(),
+      workspacePath: args.workspacePath,
+      userPrompt: args.prompt,
+      status: 'pending_review',
+      files,
+      fallbackUsed: args.providerTrace.fallbackUsed,
+      parsedFilesCount: args.providerTrace.parsedFilesCount || files.length,
+      parserResult: args.providerTrace.parserResult || 'structured',
+      rawOutput: redactSecrets(args.rawOutput),
+      providerTrace: args.providerTrace,
+      backupSnapshotId: null
+    }
+    saveChangeSet(changeSet)
+    return changeSet
+  }
+
   const createProjectBackup = (projectPath: string, previousFiles: ProjectFile[], nextFiles: ProjectFile[]) => {
     if (!previousFiles.length) return null
     const previousMap = new Map(previousFiles.map((file) => [file.path, file.content]))
@@ -2133,6 +2385,155 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
     }
 
     return backupRoot
+  }
+
+  const createChangeSetBackup = (changeSet: BuilderChangeSet) => {
+    const backupRoot = path.join(changeSet.workspacePath, BACKUP_DIR_NAME, changeSet.id)
+    ensureDir(backupRoot)
+    const manifest = {
+      requestId: changeSet.requestId,
+      timestamp: new Date().toISOString(),
+      workspacePath: changeSet.workspacePath,
+      providerUsed: changeSet.providerUsed,
+      modelUsed: changeSet.modelUsed,
+      files: changeSet.files.map((file) => ({
+        path: file.path,
+        changeType: file.changeType,
+        hasOriginalContent: typeof file.oldContent === 'string'
+      }))
+    }
+    for (const file of changeSet.files) {
+      if (typeof file.oldContent !== 'string') continue
+      const backupFile = safeProjectFilePath(backupRoot, file.path)
+      ensureDir(path.dirname(backupFile))
+      fs.writeFileSync(backupFile, file.oldContent, 'utf8')
+    }
+    fs.writeFileSync(path.join(backupRoot, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf8')
+    pruneWorkspaceHistory(changeSet.workspacePath)
+    return changeSet.id
+  }
+
+  const applyChangeSetToProject = (
+    changeSet: BuilderChangeSet,
+    selectedPaths?: string[]
+  ): { success: boolean; state?: ProjectState; appliedCount: number; remainingCount: number; error?: string; changeSet?: BuilderChangeSet } => {
+    const selected = selectedPaths?.length ? new Set(selectedPaths) : null
+    const eligibleFiles = changeSet.files.filter((file) => !file.applied && file.safeToApply && (!selected || selected.has(file.path)))
+    if (!eligibleFiles.length) {
+      return { success: false, appliedCount: 0, remainingCount: changeSet.files.filter((file) => !file.applied).length, error: 'No safe pending AI changes selected.' }
+    }
+
+    ensureDir(changeSet.workspacePath)
+    const backupSnapshotId = changeSet.backupSnapshotId || createChangeSetBackup(changeSet)
+    const nextFiles = changeSet.files.map((file) =>
+      eligibleFiles.some((entry) => entry.path === file.path) ? { ...file, applied: true } : file
+    )
+
+    for (const file of eligibleFiles) {
+      const targetFile = safeProjectFilePath(changeSet.workspacePath, file.path)
+      if (file.changeType === 'delete') {
+        if (fs.existsSync(targetFile)) fs.rmSync(targetFile, { force: true })
+        continue
+      }
+      ensureDir(path.dirname(targetFile))
+      fs.writeFileSync(targetFile, file.newContent ?? '', 'utf8')
+    }
+
+    const currentState = fs.existsSync(path.join(changeSet.workspacePath, 'project.json'))
+      ? readProjectState(changeSet.projectId)
+      : {
+          metadata: {
+            id: changeSet.projectId,
+            name: changeSet.projectName,
+            type: changeSet.projectType,
+            createdAt: changeSet.createdAt,
+            updatedAt: changeSet.createdAt,
+            modelUsed: changeSet.modelUsed,
+            providerUsed: changeSet.providerUsed,
+            files: [],
+            lastPrompt: changeSet.userPrompt,
+            projectPath: changeSet.workspacePath
+          } satisfies ProjectMetadata,
+          files: [] as ProjectFile[]
+        }
+
+    const diskMap = new Map(currentState.files.map((file) => [file.path, file.content]))
+    for (const file of eligibleFiles) {
+      if (file.changeType === 'delete') {
+        diskMap.delete(file.path)
+      } else {
+        diskMap.set(file.path, file.newContent ?? '')
+      }
+    }
+
+    const mergedFiles = Array.from(diskMap.entries())
+      .map(([filePath, content]) => ({ path: filePath, content }))
+      .sort((a, b) => a.path.localeCompare(b.path))
+
+    const state = writeProjectState(
+      changeSet.projectId,
+      changeSet.projectName,
+      changeSet.userPrompt,
+      mergedFiles,
+      changeSet.providerUsed,
+      changeSet.modelUsed,
+      currentState.files
+    )
+
+    const appliedCount = nextFiles.filter((file) => file.applied).length
+    const remainingCount = nextFiles.filter((file) => !file.applied).length
+    const updatedChangeSet: BuilderChangeSet = {
+      ...changeSet,
+      files: nextFiles,
+      backupSnapshotId,
+      status: remainingCount > 0 ? 'partially_applied' : 'applied'
+    }
+    saveChangeSet(updatedChangeSet)
+    return { success: true, state, appliedCount, remainingCount, changeSet: updatedChangeSet }
+  }
+
+  const restoreChangeSetSnapshot = (changeSet: BuilderChangeSet) => {
+    const currentState = readProjectState(changeSet.projectId)
+    const nextMap = new Map(currentState.files.map((file) => [file.path, file.content]))
+    const appliedFiles = changeSet.files.filter((file) => file.applied || changeSet.status === 'applied')
+    if (!appliedFiles.length) {
+      return { success: false, error: 'No applied AI changes found to restore.' }
+    }
+
+    for (const file of appliedFiles) {
+      const targetPath = safeProjectFilePath(changeSet.workspacePath, file.path)
+      if (file.changeType === 'create') {
+        if (fs.existsSync(targetPath)) fs.rmSync(targetPath, { force: true })
+        nextMap.delete(file.path)
+        continue
+      }
+      const restoredContent = file.oldContent ?? ''
+      ensureDir(path.dirname(targetPath))
+      fs.writeFileSync(targetPath, restoredContent, 'utf8')
+      nextMap.set(file.path, restoredContent)
+    }
+
+    const restoredFiles = Array.from(nextMap.entries())
+      .map(([filePath, content]) => ({ path: filePath, content }))
+      .sort((a, b) => a.path.localeCompare(b.path))
+
+    const state = writeProjectState(
+      changeSet.projectId,
+      changeSet.projectName,
+      changeSet.userPrompt,
+      restoredFiles,
+      changeSet.providerUsed,
+      changeSet.modelUsed,
+      currentState.files
+    )
+
+    const reverted = {
+      ...changeSet,
+      status: 'rejected' as ChangeSetStatus,
+      files: changeSet.files.map((file) => ({ ...file, applied: false }))
+    }
+    saveChangeSet(reverted)
+    return { success: true, state, changeSet: reverted }
   }
 
   const runAbortableBuilderRequest = async <T>(
@@ -2332,7 +2733,7 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
     })
   }
 
-  ipcMain.handle('project-builder-create', async (_, { prompt, provider = 'kiloGateway', requestId }) => {
+  ipcMain.handle('project-builder-create', async (_, { prompt, provider = 'kiloGateway', requestId, applyMode = 'review' as ChangeApplyMode }) => {
     const intent = classifyBuilderPrompt(prompt || '')
     if (intent === 'NORMAL_CHAT' || intent === 'EXPLAIN_CODE' || intent === 'RUN_COMMAND') {
       return {
@@ -2436,34 +2837,88 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
         fallbackUsed: resolved.usedFallback,
         files: resolved.files.length
       })
-      const state = writeProjectState(
+      const modelUsed = providerSelection.modelId || payload.modelId || payload.projectModel || selectedModelId || PROJECT_MODEL
+      const projectPath = path.join(projectsRoot, projectName)
+      const successTrace: ProviderTrace = {
+        ...providerTraceBase,
+        actualProviderCalled,
+        actualModelCalled: generated.actualModel,
+        providerUsed: generated.providerLabel,
+        modelUsed,
+        mode: intent === 'CODING_EDIT' ? 'edit' : 'coding',
+        responseStatus: 'success',
+        fallbackUsed: resolved.usedFallback,
+        parsedFilesCount: resolved.files.length,
+        filesApplied: applyMode === 'auto' ? resolved.files.length : 0,
+        parserResult: resolved.parserResult,
+        ...(resolved.providerNotice ? { error: resolved.providerNotice } : {})
+      }
+      const changeSet = createPendingChangeSet({
+        projectId: projectName,
         projectName,
-        projectName,
-        prompt || '',
-        resolved.files,
-        generated.providerLabel,
-        providerSelection.modelId || payload.modelId || payload.projectModel || selectedModelId || PROJECT_MODEL
-      )
+        projectType,
+        workspacePath: projectPath,
+        prompt: prompt || '',
+        requestId,
+        mode: intent === 'CODING_EDIT' ? 'edit' : 'generate',
+        oldFiles: [],
+        newFiles: resolved.files,
+        providerTrace: successTrace,
+        providerLabel: generated.providerLabel,
+        modelUsed,
+        rawOutput: generated.rawOutput
+      })
+
+      if (changeSet.files.some((file) => !file.safeToApply)) {
+        return {
+          success: false,
+          error: 'Provider output contained internal prompt/context. No files were changed.',
+          providerError: 'Provider output contained internal prompt/context. No files were changed.',
+          providerTrace: {
+            ...successTrace,
+            responseStatus: 'failed',
+            filesApplied: 0,
+            parserResult: 'prompt-leakage',
+            error: 'Provider output contained internal prompt/context. No files were changed.'
+          }
+        }
+      }
+
+      if (applyMode !== 'auto') {
+        return {
+          success: true,
+          message: 'AI changes ready for review.',
+          reviewRequired: true,
+          changeSet,
+          previewHtml: inlinePreviewHtml(resolved.files),
+          providerTrace: successTrace
+        }
+      }
+
+      const applied = applyChangeSetToProject(changeSet)
+      if (!applied.success || !applied.state || !applied.changeSet) {
+        return {
+          success: false,
+          error: applied.error || 'Failed to apply AI changes.',
+          providerError: applied.error || 'Failed to apply AI changes.',
+          providerTrace: {
+            ...successTrace,
+            responseStatus: 'failed',
+            filesApplied: 0,
+            error: applied.error || 'Failed to apply AI changes.'
+          }
+        }
+      }
 
       return {
         success: true,
-        state,
-        previewHtml: inlinePreviewHtml(state.files),
+        state: applied.state,
+        changeSet: applied.changeSet,
+        previewHtml: inlinePreviewHtml(applied.state.files),
         ...(resolved.providerNotice ? { providerError: resolved.providerNotice, usedFallback: resolved.usedFallback } : {}),
         providerTrace: {
-          ...providerTraceBase,
-          actualProviderCalled,
-          actualModelCalled: generated.actualModel,
-          providerUsed: generated.providerLabel,
-          modelUsed:
-            providerSelection.modelId || payload.modelId || payload.projectModel || selectedModelId || PROJECT_MODEL,
-          mode: intent === 'CODING_EDIT' ? 'edit' : 'coding',
-          responseStatus: 'success',
-          fallbackUsed: resolved.usedFallback,
-          parsedFilesCount: resolved.files.length,
-          filesApplied: resolved.files.length,
-          parserResult: resolved.parserResult,
-          ...(resolved.providerNotice ? { error: resolved.providerNotice } : {})
+          ...successTrace,
+          filesApplied: applied.appliedCount
         }
       }
     } catch (error: any) {
@@ -2474,7 +2929,7 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
     }
   })
 
-  ipcMain.handle('project-builder-update', async (_, { projectId, prompt, provider, requestId }) => {
+  ipcMain.handle('project-builder-update', async (_, { projectId, prompt, provider, requestId, applyMode = 'review' as ChangeApplyMode }) => {
     const existing = readProjectState(projectId)
     const intent = classifyBuilderPrompt(prompt || '', existing.files)
     if (intent === 'NORMAL_CHAT' || intent === 'EXPLAIN_CODE' || intent === 'RUN_COMMAND') {
@@ -2643,36 +3098,90 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
       fallbackUsed: resolved.usedFallback,
       files: resolved.files.length
     })
-    const state = writeProjectState(
+    const modelUsed = providerSelection.modelId || payload.modelId || payload.projectModel || existing.metadata.modelUsed || PROJECT_MODEL
+    const successTrace: ProviderTrace = {
+      ...providerTraceBase,
+      actualProviderCalled,
+      actualModelCalled: generated.actualModel,
+      providerUsed: generated.providerLabel,
+      modelUsed,
+      mode: intent === 'CODING_EDIT' ? 'edit' : 'coding',
+      responseStatus: 'success',
+      fallbackUsed: resolved.usedFallback,
+      parsedFilesCount: resolved.files.length,
+      filesApplied: applyMode === 'auto' ? resolved.files.length : 0,
+      parserResult: resolved.parserResult,
+      ...(resolved.providerNotice ? { error: resolved.providerNotice } : {})
+    }
+    const changeSet = createPendingChangeSet({
       projectId,
-      existing.metadata.name,
-      prompt || '',
-      resolved.files,
-      generated.providerLabel,
-      providerSelection.modelId || payload.modelId || payload.projectModel || existing.metadata.modelUsed || PROJECT_MODEL,
-      existing.files
-    )
+      projectName: existing.metadata.name,
+      projectType: existing.metadata.type,
+      workspacePath: existing.metadata.projectPath,
+      prompt: prompt || '',
+      requestId,
+      mode: intent === 'CODING_EDIT' ? 'edit' : 'generate',
+      oldFiles: existing.files,
+      newFiles: resolved.files,
+      providerTrace: successTrace,
+      providerLabel: generated.providerLabel,
+      modelUsed,
+      rawOutput: generated.rawOutput
+    })
+
+    if (changeSet.files.some((file) => !file.safeToApply)) {
+      return {
+        success: false,
+        error: 'Provider output contained internal prompt/context. No files were changed.',
+        providerError: 'Provider output contained internal prompt/context. No files were changed.',
+        providerTrace: {
+          ...successTrace,
+          responseStatus: 'failed',
+          filesApplied: 0,
+          parserResult: 'prompt-leakage',
+          error: 'Provider output contained internal prompt/context. No files were changed.'
+        }
+      }
+    }
+
+    if (applyMode !== 'auto') {
+      return {
+        success: true,
+        state: existing,
+        changeSet,
+        reviewRequired: true,
+        previewHtml: inlinePreviewHtml(existing.files),
+        ...(kiloDisabledMessage ? { message: kiloDisabledMessage } : {}),
+        ...(resolved.providerNotice ? { providerError: resolved.providerNotice, usedFallback: resolved.usedFallback } : {}),
+        providerTrace: successTrace
+      }
+    }
+
+    const applied = applyChangeSetToProject(changeSet)
+    if (!applied.success || !applied.state || !applied.changeSet) {
+      return {
+        success: false,
+        error: applied.error || 'Failed to apply AI changes.',
+        providerError: applied.error || 'Failed to apply AI changes.',
+        providerTrace: {
+          ...successTrace,
+          responseStatus: 'failed',
+          filesApplied: 0,
+          error: applied.error || 'Failed to apply AI changes.'
+        }
+      }
+    }
 
     return {
       success: true,
-      state,
-      previewHtml: inlinePreviewHtml(state.files),
+      state: applied.state,
+      changeSet: applied.changeSet,
+      previewHtml: inlinePreviewHtml(applied.state.files),
       ...(kiloDisabledMessage ? { message: kiloDisabledMessage } : {}),
       ...(resolved.providerNotice ? { providerError: resolved.providerNotice, usedFallback: resolved.usedFallback } : {}),
       providerTrace: {
-        ...providerTraceBase,
-        actualProviderCalled,
-        actualModelCalled: generated.actualModel,
-        providerUsed: generated.providerLabel,
-        modelUsed:
-          providerSelection.modelId || payload.modelId || payload.projectModel || existing.metadata.modelUsed || PROJECT_MODEL,
-        mode: intent === 'CODING_EDIT' ? 'edit' : 'coding',
-        responseStatus: 'success',
-        fallbackUsed: resolved.usedFallback,
-        parsedFilesCount: resolved.files.length,
-        filesApplied: resolved.files.length,
-        parserResult: resolved.parserResult,
-        ...(resolved.providerNotice ? { error: resolved.providerNotice } : {})
+        ...successTrace,
+        filesApplied: applied.appliedCount
       }
     }
   })
@@ -2793,6 +3302,103 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
       }
     } catch (error: any) {
       return { success: false, error: error?.message || 'Backup restore failed.' }
+    }
+  })
+
+  const resolveWorkspacePath = (projectId?: string, workspacePath?: string) => {
+    if (workspacePath?.trim()) return workspacePath
+    if (projectId) {
+      try {
+        return readProjectState(projectId).metadata.projectPath
+      } catch {
+        return path.join(projectsRoot, projectId)
+      }
+    }
+    return null
+  }
+
+  ipcMain.handle('project-builder-list-changesets', async (_, { projectId, workspacePath }) => {
+    try {
+      const resolvedWorkspacePath = resolveWorkspacePath(projectId, workspacePath)
+      if (!resolvedWorkspacePath) return { success: true, changesets: [] }
+      return { success: true, changesets: listChangeSets(resolvedWorkspacePath) }
+    } catch (error: any) {
+      return { success: false, error: error?.message || 'Failed to load AI change history.' }
+    }
+  })
+
+  ipcMain.handle('project-builder-apply-changeset', async (_, { projectId, workspacePath, changeSetId, selectedPaths }) => {
+    try {
+      const resolvedWorkspacePath = resolveWorkspacePath(projectId, workspacePath)
+      if (!resolvedWorkspacePath) return { success: false, error: 'Workspace not found for AI changeset.' }
+      const changeSet = readChangeSet(resolvedWorkspacePath, changeSetId)
+      if (!changeSet) return { success: false, error: 'AI changeset not found.' }
+      const applied = applyChangeSetToProject(changeSet, selectedPaths)
+      if (!applied.success || !applied.state || !applied.changeSet) {
+        return { success: false, error: applied.error || 'Failed to apply AI changes.' }
+      }
+      return {
+        success: true,
+        state: applied.state,
+        changeSet: applied.changeSet,
+        previewHtml: inlinePreviewHtml(applied.state.files),
+        message: `Applied ${applied.appliedCount} file${applied.appliedCount === 1 ? '' : 's'} using ${changeSet.providerUsed} / ${changeSet.modelUsed}.`
+      }
+    } catch (error: any) {
+      return { success: false, error: error?.message || 'Failed to apply AI changes.' }
+    }
+  })
+
+  ipcMain.handle('project-builder-reject-changeset', async (_, { projectId, workspacePath, changeSetId }) => {
+    try {
+      const resolvedWorkspacePath = resolveWorkspacePath(projectId, workspacePath)
+      if (!resolvedWorkspacePath) return { success: false, error: 'Workspace not found for AI changeset.' }
+      const changeSet = markChangeSet(resolvedWorkspacePath, changeSetId, (current) => ({
+        ...current,
+        status: 'rejected',
+        files: current.files.map((file) => ({ ...file, applied: false }))
+      }))
+      if (!changeSet) return { success: false, error: 'AI changeset not found.' }
+      return { success: true, changeSet, message: 'AI changes rejected. No files changed.' }
+    } catch (error: any) {
+      return { success: false, error: error?.message || 'Failed to reject AI changes.' }
+    }
+  })
+
+  ipcMain.handle('project-builder-undo-last-ai-change', async (_, { projectId, workspacePath, changeSetId }) => {
+    try {
+      const resolvedWorkspacePath = resolveWorkspacePath(projectId, workspacePath)
+      if (!resolvedWorkspacePath) return { success: false, error: 'Workspace not found for AI undo.' }
+      const candidate =
+        changeSetId
+          ? readChangeSet(resolvedWorkspacePath, changeSetId)
+          : listChangeSets(resolvedWorkspacePath).find((entry) => entry.status === 'applied' || entry.status === 'partially_applied')
+      if (!candidate) return { success: false, error: 'No applied AI change found to undo.' }
+      const restored = restoreChangeSetSnapshot(candidate)
+      if (!restored.success || !restored.state || !restored.changeSet) {
+        return { success: false, error: restored.error || 'Undo failed.' }
+      }
+      return {
+        success: true,
+        state: restored.state,
+        changeSet: restored.changeSet,
+        previewHtml: inlinePreviewHtml(restored.state.files),
+        message: 'Last AI change restored to previous snapshot.'
+      }
+    } catch (error: any) {
+      return { success: false, error: error?.message || 'Undo failed.' }
+    }
+  })
+
+  ipcMain.handle('project-builder-delete-changeset', async (_, { projectId, workspacePath, changeSetId }) => {
+    try {
+      const resolvedWorkspacePath = resolveWorkspacePath(projectId, workspacePath)
+      if (!resolvedWorkspacePath) return { success: false, error: 'Workspace not found for AI change history.' }
+      const targetPath = getChangesetRecordPath(resolvedWorkspacePath, changeSetId)
+      if (fs.existsSync(targetPath)) fs.unlinkSync(targetPath)
+      return { success: true }
+    } catch (error: any) {
+      return { success: false, error: error?.message || 'Failed to delete AI change record.' }
     }
   })
 
