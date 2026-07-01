@@ -230,6 +230,23 @@ export const closeBuilderWindow = async () => {
   return window.electron.ipcRenderer.invoke('builder-window-close')
 }
 
+export const getBuilderWindowMeta = async (): Promise<{
+  success: boolean
+  version?: string
+  dataPath?: string
+  error?: string
+}> => {
+  return window.electron.ipcRenderer.invoke('builder-window-get-meta')
+}
+
+export const openBuilderDataFolder = async (): Promise<{
+  success: boolean
+  path?: string
+  error?: string
+}> => {
+  return window.electron.ipcRenderer.invoke('builder-window-open-data-folder')
+}
+
 export const runBuilderProjectCommand = async (
   projectId: string,
   command: string

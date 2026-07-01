@@ -1,6 +1,6 @@
 import fs from 'fs'
 import path from 'path'
-import { BrowserWindow, IpcMain, dialog } from 'electron'
+import { app, BrowserWindow, IpcMain, dialog, shell } from 'electron'
 import { join } from 'path'
 
 type BuilderPayload = {
@@ -249,6 +249,18 @@ export default function registerBuilderWindow({
   ipcMain.handle('builder-window-close', async () => {
     builderWindow?.close()
     return { success: true }
+  })
+
+  ipcMain.handle('builder-window-get-meta', async () => ({
+    success: true,
+    version: app.getVersion(),
+    dataPath: app.getPath('userData')
+  }))
+
+  ipcMain.handle('builder-window-open-data-folder', async () => {
+    const dataPath = app.getPath('userData')
+    const error = await shell.openPath(dataPath)
+    return { success: !error, error: error || undefined, path: dataPath }
   })
 
   ipcMain.handle('builder-window-minimize', async () => {

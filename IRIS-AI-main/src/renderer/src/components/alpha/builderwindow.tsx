@@ -23,7 +23,7 @@ import {
   Camera, Monitor, Wifi, BatteryFull, Signal, Mic, Play, RefreshCw as Refresh,
   GitBranch as GitIcon, AlertCircle, Info, Bell, Radio, ChevronLeft,
   Minus, Square, LayoutGrid, Plug, Star, Bot, Box, TerminalSquare,
-  Container, ArrowRight, MessageSquare, Maximize2, Undo2, FileSearch,
+  Container, ArrowRight, MessageSquare, Maximize2, Undo2, FileSearch, Trash2,
   TestTube, BookOpen, KeyRound, Bell as BellIcon, Palette, Keyboard, Copy,
   type LucideIcon,
 } from "lucide-react";
@@ -61,10 +61,13 @@ import {
   cancelBuilderRequest,
   chatBuilderPrompt,
   createBuilderProject,
+  getBuilderWindowMeta,
   getBuilderModelStatuses,
   getBuilderWindowState,
+  openBuilderDataFolder,
   type BuilderModelStatuses,
   type BuilderProviderTrace,
+  saveBuilderModelSlot,
   setBuilderModelEnabled,
   type BuilderProjectState,
   type BuilderProviderSelection,
@@ -83,7 +86,7 @@ function TerminalPanel({
 }: {
   onClose: () => void
   onMinimize: () => void
-  height: number
+  height?: number
   workspacePath?: string | null
   queuedCommand?: string | null
   onQueuedCommandHandled?: () => void
@@ -224,7 +227,7 @@ function TerminalPanel({
   );
 
   return (
-    <div className="flex shrink-0 flex-col border-t border-[#2b2b2b] bg-[#1e1e1e]" style={{ height }}>
+    <div className="flex h-full min-h-0 flex-col border-t border-[#2b2b2b] bg-[#1e1e1e]" style={height ? { height } : undefined}>
       <div className="flex h-9 items-stretch border-b border-[#2b2b2b] pr-2">
         <div className="flex flex-1 items-stretch">
           {termTabs.map((t) => {
@@ -413,6 +416,18 @@ type BuilderPreferences = {
   fontSize: number
   fontFamily: string
   defaultShell: string
+}
+
+type BuilderWindowMeta = {
+  version: string
+  dataPath: string
+}
+
+type ProviderSlotDraft = {
+  key: string
+  baseUrl: string
+  modelId: string
+  providerMode: string
 }
 
 type CodingContextState = {
@@ -3213,6 +3228,11 @@ function FunctionalCodeEditor({
 
   const lines = code.split("\n");
   const editorHeight = Math.max(lines.length, 1) * editorLineHeight + 24;
+  const highlightedLines = useMemo(
+    () =>
+      lines.map((line) => (line.length ? tokenizeLine(line) : [{ text: " ", cls: "tok-plain" }])),
+    [lines]
+  );
 
   return (
     <div
@@ -3221,14 +3241,50 @@ function FunctionalCodeEditor({
     >
       <div className="flex min-w-full">
         <div
-          className="sticky left-0 z-10 select-none bg-[#1e1e1e] pr-2 pl-3 text-right text-[#858585]"
+          className="sticky left-0 z-10 select-none bg-[#1e1e1e] pr-2 pl-2 text-right text-[#6f7680]"
           style={{ fontFamily, fontSize: `${Math.max(11, fontSize - 0.5)}px` }}
         >
           {lines.map((_, i) => (
             <div key={i} className="leading-[19.4px]" style={{ height: `${editorLineHeight}px` }}>{i + 1}</div>
           ))}
         </div>
-        <div className="relative flex-1 pl-2 pr-6">
+        <div className="relative flex-1 pl-1 pr-4">
+          <pre
+            aria-hidden="true"
+            className={cn(
+              "pointer-events-none absolute inset-0 overflow-hidden px-2 py-0",
+              wordWrap ? "whitespace-pre-wrap break-words" : "whitespace-pre"
+            )}
+            style={{
+              height: `${editorHeight}px`,
+              fontFamily,
+              fontSize: `${fontSize}px`,
+              lineHeight: `${editorLineHeight}px`,
+              tabSize: tabSize as unknown as number,
+            }}
+          >
+            {highlightedLines.map((tokens, lineIndex) => (
+              <div key={`${fileName}-${lineIndex}`} style={{ height: `${editorLineHeight}px` }}>
+                {tokens.map((token, tokenIndex) => (
+                  <span
+                    key={`${lineIndex}-${tokenIndex}`}
+                    className={cn(
+                      token.cls === "tok-kw" && "text-[#c586c0]",
+                      token.cls === "tok-fn" && "text-[#dcdcaa]",
+                      token.cls === "tok-type" && "text-[#4ec9b0]",
+                      token.cls === "tok-str" && "text-[#ce9178]",
+                      token.cls === "tok-num" && "text-[#b5cea8]",
+                      token.cls === "tok-com" && "text-[#6a9955]",
+                      token.cls === "tok-punct" && "text-[#d4d4d4]",
+                      token.cls === "tok-plain" && "text-[#d4d4d4]"
+                    )}
+                  >
+                    {token.text}
+                  </span>
+                ))}
+              </div>
+            ))}
+          </pre>
           <textarea
             ref={textareaRef}
             value={code}
@@ -3243,12 +3299,13 @@ function FunctionalCodeEditor({
             data-file-name={fileName}
             aria-label={`Code editor for ${fileName}`}
             className={cn(
-              "block w-full resize-none overflow-hidden bg-transparent px-2 py-0 text-[#d4d4d4] selection:bg-[#264f78] selection:text-[#ffffff] focus:outline-none",
+              "relative z-10 block w-full resize-none overflow-hidden bg-transparent px-2 py-0 text-transparent selection:bg-[#264f78] selection:text-transparent focus:outline-none",
               wordWrap ? "whitespace-pre-wrap break-words" : "whitespace-pre"
             )}
             style={{
               height: `${editorHeight}px`,
               caretColor: "#d4d4d4",
+              textShadow: "0 0 0 rgba(0,0,0,0)",
               fontFamily,
               fontSize: `${fontSize}px`,
               lineHeight: `${editorLineHeight}px`,
@@ -3736,6 +3793,7 @@ const settingsByCategory: Record<string, SettingRow[]> = {
 
 function SettingsPanel({
   onClose,
+  initialCategory,
   preferences,
   onPreferencesChange,
   modelOptions,
@@ -3746,8 +3804,10 @@ function SettingsPanel({
   modelStatuses,
   onTestProvider,
   onToggleProvider,
+  onSaveProvider,
 }: {
   onClose: () => void
+  initialCategory?: string
   preferences: BuilderPreferences
   onPreferencesChange: (patch: Partial<BuilderPreferences>) => void
   modelOptions: BuilderModelOption[]
@@ -3758,9 +3818,11 @@ function SettingsPanel({
   modelStatuses: BuilderModelStatuses
   onTestProvider: (group: keyof BuilderModelStatuses, slot: number) => void
   onToggleProvider: (group: keyof BuilderModelStatuses, slot: number, enabled: boolean) => void
+  onSaveProvider: (group: keyof BuilderModelStatuses, slot: number, draft: ProviderSlotDraft) => Promise<void> | void
 }) {
-  const [category, setCategory] = useState<string>("common");
+  const [category, setCategory] = useState<string>(initialCategory || "common");
   const [query, setQuery] = useState("");
+  const [drafts, setDrafts] = useState<Record<string, ProviderSlotDraft>>({});
   const filteredModelOptions = useMemo(() => {
     if (!query.trim()) return modelOptions;
     const normalized = query.trim().toLowerCase();
@@ -3771,6 +3833,25 @@ function SettingsPanel({
       .filter(([, rows]) => rows?.length),
     [modelStatuses]
   );
+
+  useEffect(() => {
+    setCategory(initialCategory || "common");
+  }, [initialCategory]);
+
+  useEffect(() => {
+    const nextDrafts: Record<string, ProviderSlotDraft> = {};
+    for (const [group, rows] of Object.entries(modelStatuses)) {
+      rows.forEach((row) => {
+        nextDrafts[`${group}:${row.slot}`] = {
+          key: "",
+          baseUrl: row.baseUrl || "",
+          modelId: row.modelId || "",
+          providerMode: row.providerMode || ""
+        };
+      });
+    }
+    setDrafts(nextDrafts);
+  }, [modelStatuses]);
 
   return (
     <div className="flex h-full flex-col bg-[#1e1e1e] text-[#cccccc]">
@@ -3787,8 +3868,9 @@ function SettingsPanel({
         </div>
         <button onClick={onClose} className="rounded p-1 text-[#858585] hover:bg-white/[0.06] hover:text-[#cccccc]" title="Close"><X size={14} /></button>
       </div>
-      <div className="flex min-h-0 flex-1">
-        <div className="alpha-scroll-thin w-56 shrink-0 overflow-y-auto border-r border-[#2b2b2b] py-2">
+      <PanelGroup orientation="horizontal" className="min-h-0 flex-1">
+        <Panel defaultSize={26} minSize={18} maxSize={34}>
+        <div className="alpha-scroll-thin h-full overflow-y-auto border-r border-[#2b2b2b] py-2">
           {settingsCategories.map((c) => {
             const Icon = c.Icon;
             const isActive = c.id === category;
@@ -3806,7 +3888,10 @@ function SettingsPanel({
             );
           })}
         </div>
-        <div className="alpha-scroll-thin flex-1 overflow-y-auto p-4">
+        </Panel>
+        <PanelResizeHandle className="w-[3px] bg-[#1f1f1f] hover:bg-[#007acc]" />
+        <Panel defaultSize={74} minSize={56}>
+        <div className="alpha-scroll-thin h-full overflow-y-auto p-4">
           <div className="mx-auto max-w-[680px]">
             {category === "common" && (
               <>
@@ -3863,8 +3948,18 @@ function SettingsPanel({
                           {providerDisplayName(String(group))}
                         </div>
                         <div className="divide-y divide-[#2b2b2b]">
-                          {rows.map((row) => (
-                            <div key={`${group}-${row.slot}`} className="flex items-center gap-3 px-3 py-2 text-[12px]">
+                          {rows.map((row) => {
+                            const draftKey = `${String(group)}:${row.slot}`;
+                            const draft = drafts[draftKey] || {
+                              key: "",
+                              baseUrl: row.baseUrl || "",
+                              modelId: row.modelId || "",
+                              providerMode: row.providerMode || "",
+                            };
+                            const isGemini = String(group) === "geminiBrain";
+                            return (
+                            <div key={`${group}-${row.slot}`} className="space-y-3 px-3 py-3 text-[12px]">
+                              <div className="flex items-center gap-3">
                               <button
                                 onClick={() => onToggleProvider(group, row.slot, !row.enabled)}
                                 className={cn(
@@ -3889,13 +3984,63 @@ function SettingsPanel({
                                 </div>
                               </div>
                               <button
+                                onClick={() => void onSaveProvider(group, row.slot, draft)}
+                                className="rounded border border-[#3c3c3c] bg-[#1e1e1e] px-2 py-1 text-[11px] text-[#cccccc] hover:bg-[#2a2d2e]"
+                              >
+                                Save
+                              </button>
+                              <button
                                 onClick={() => onTestProvider(group, row.slot)}
                                 className="rounded border border-[#3c3c3c] bg-[#1e1e1e] px-2 py-1 text-[11px] text-[#cccccc] hover:bg-[#2a2d2e]"
                               >
                                 Test
                               </button>
+                              </div>
+                              <div className={cn("grid gap-2", isGemini ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1 sm:grid-cols-3")}>
+                                <label className="space-y-1">
+                                  <span className="text-[10px] uppercase tracking-wider text-[#858585]">Model ID</span>
+                                  <input
+                                    value={draft.modelId}
+                                    onChange={(event) => setDrafts((prev) => ({ ...prev, [draftKey]: { ...draft, modelId: event.target.value } }))}
+                                    placeholder="Enter exact model ID"
+                                    className="w-full rounded-md border border-[#3c3c3c] bg-[#1e1e1e] px-2 py-1.5 text-[12px] text-[#cccccc] focus:border-[#007acc] focus:outline-none"
+                                  />
+                                </label>
+                                {isGemini ? (
+                                  <label className="space-y-1">
+                                    <span className="text-[10px] uppercase tracking-wider text-[#858585]">API key</span>
+                                    <input
+                                      value={draft.key}
+                                      onChange={(event) => setDrafts((prev) => ({ ...prev, [draftKey]: { ...draft, key: event.target.value } }))}
+                                      placeholder="Optional: replace API key"
+                                      className="w-full rounded-md border border-[#3c3c3c] bg-[#1e1e1e] px-2 py-1.5 text-[12px] text-[#cccccc] focus:border-[#007acc] focus:outline-none"
+                                    />
+                                  </label>
+                                ) : (
+                                  <>
+                                    <label className="space-y-1">
+                                      <span className="text-[10px] uppercase tracking-wider text-[#858585]">Base URL</span>
+                                      <input
+                                        value={draft.baseUrl}
+                                        onChange={(event) => setDrafts((prev) => ({ ...prev, [draftKey]: { ...draft, baseUrl: event.target.value } }))}
+                                        placeholder="Provider base URL"
+                                        className="w-full rounded-md border border-[#3c3c3c] bg-[#1e1e1e] px-2 py-1.5 text-[12px] text-[#cccccc] focus:border-[#007acc] focus:outline-none"
+                                      />
+                                    </label>
+                                    <label className="space-y-1">
+                                      <span className="text-[10px] uppercase tracking-wider text-[#858585]">Provider mode</span>
+                                      <input
+                                        value={draft.providerMode}
+                                        onChange={(event) => setDrafts((prev) => ({ ...prev, [draftKey]: { ...draft, providerMode: event.target.value } }))}
+                                        placeholder="openai-compatible"
+                                        className="w-full rounded-md border border-[#3c3c3c] bg-[#1e1e1e] px-2 py-1.5 text-[12px] text-[#cccccc] focus:border-[#007acc] focus:outline-none"
+                                      />
+                                    </label>
+                                  </>
+                                )}
+                              </div>
                             </div>
-                          ))}
+                          )})}
                         </div>
                       </div>
                     ))
@@ -3953,7 +4098,8 @@ function SettingsPanel({
             )}
           </div>
         </div>
-      </div>
+        </Panel>
+      </PanelGroup>
     </div>
   );
 }
@@ -4049,25 +4195,78 @@ function InputRow({
 /* ============================================================
    ProfilePanel
    ============================================================ */
-type Profile = { id: string; name: string; email: string; plan: string; avatar: string; color: string };
+function ProfilePanel({
+  onClose,
+  workspaceName,
+  workspacePath,
+  selectedModelName,
+  appVersion,
+  dataPath,
+  onOpenSettings,
+  onOpenProviderSettings,
+  onOpenDataFolder,
+  onOpenWorkspaceFolder,
+  onClearChat,
+  onCopyVersion,
+}: {
+  onClose: () => void
+  workspaceName: string
+  workspacePath?: string | null
+  selectedModelName: string
+  appVersion: string
+  dataPath?: string
+  onOpenSettings: () => void
+  onOpenProviderSettings: () => void
+  onOpenDataFolder: () => void
+  onOpenWorkspaceFolder: () => void
+  onClearChat: () => void
+  onCopyVersion: () => void
+}) {
+  const actionButtons = [
+    {
+      label: "Open Settings",
+      description: "Editor, terminal, and Builder preferences.",
+      Icon: Settings,
+      onClick: onOpenSettings,
+      tone: "default" as const,
+    },
+    {
+      label: "Provider Settings",
+      description: "Edit exact model IDs, provider URLs, and test slots.",
+      Icon: Sparkles,
+      onClick: onOpenProviderSettings,
+      tone: "default" as const,
+    },
+    {
+      label: "Open Data Folder",
+      description: dataPath || "Reveal Builder app data on disk.",
+      Icon: FolderOpen,
+      onClick: onOpenDataFolder,
+      tone: "default" as const,
+    },
+    {
+      label: "Open Workspace Folder",
+      description: workspacePath || "No workspace is currently open.",
+      Icon: Folder,
+      onClick: onOpenWorkspaceFolder,
+      tone: workspacePath ? ("default" as const) : ("disabled" as const),
+    },
+    {
+      label: "Copy App Version",
+      description: `ALPHA Builder ${appVersion}`,
+      Icon: Copy,
+      onClick: onCopyVersion,
+      tone: "default" as const,
+    },
+    {
+      label: "Clear Builder Chat",
+      description: "Remove the current Builder chat thread from local history.",
+      Icon: Trash2,
+      onClick: onClearChat,
+      tone: "danger" as const,
+    },
+  ];
 
-const profiles: Profile[] = [
-  { id: "alpha", name: "ALPHA Dev", email: "dev@alpha.ai", plan: "ALPHA Pro", avatar: "AD", color: "#10b981" },
-  { id: "personal", name: "Personal", email: "you@example.com", plan: "Free", avatar: "PE", color: "#4daafc" },
-];
-
-const profileMenu = [
-  { id: "profile", label: "Profile", Icon: User },
-  { id: "accounts", label: "Signed in Accounts", Icon: User },
-  { id: "import", label: "Import GitHub Profile", Icon: GitBranch },
-  { id: "email", label: "Email & Sync", Icon: FileText },
-  { id: "prefs", label: "Preferences Sync", Icon: Refresh },
-  { id: "settings", label: "Account Settings", Icon: Settings },
-];
-
-function ProfilePanel({ onClose }: { onClose: () => void }) {
-  const [activeId, setActiveId] = useState<string>(profiles[0].id);
-  const active = profiles.find((p) => p.id === activeId)!;
   return (
     <div className="flex h-full flex-col bg-[#1e1e1e] text-[#cccccc]">
       <div className="flex h-9 shrink-0 items-center justify-between border-b border-[#2b2b2b] px-3">
@@ -4077,97 +4276,73 @@ function ProfilePanel({ onClose }: { onClose: () => void }) {
         </div>
         <button onClick={onClose} className="rounded p-1 text-[#858585] hover:bg-white/[0.06] hover:text-[#cccccc]" title="Close"><X size={14} /></button>
       </div>
-      <div className="alpha-scroll-thin flex-1 overflow-y-auto p-3">
-        <div className="rounded-lg border border-[#3c3c3c] bg-[#252526] p-3">
-          <div className="flex items-center gap-3">
-            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full text-[16px] font-bold text-white" style={{ backgroundColor: active.color }}>
-              {active.avatar}
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-[14px] font-semibold text-[#ffffff]">{active.name}</div>
-              <div className="truncate text-[11px] text-[#858585]">{active.email}</div>
-              <div className="mt-1 inline-flex items-center gap-1 rounded-sm bg-[#10b981]/15 px-1.5 py-0.5 text-[10px] font-semibold text-[#10b981]">
-                <Sparkles size={9} /> {active.plan}
+      <div className="alpha-scroll-thin flex-1 overflow-y-auto p-4">
+        <div className="grid gap-3 md:grid-cols-[1.2fr_0.8fr]">
+          <div className="rounded-lg border border-[#3c3c3c] bg-[#252526] p-4">
+            <div className="flex items-start gap-3">
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-[#10b981]/15 text-[16px] font-bold text-[#10b981] ring-1 ring-[#10b981]/30">
+                A
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-[15px] font-semibold text-[#ffffff]">ALPHA Builder</div>
+                <div className="truncate text-[11px] text-[#858585]">Current workspace: {workspaceName}</div>
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px]">
+                  <span className="inline-flex items-center gap-1 rounded-sm bg-[#10b981]/15 px-1.5 py-0.5 font-semibold text-[#10b981]">
+                    <Sparkles size={10} /> {selectedModelName}
+                  </span>
+                  <span className="inline-flex items-center gap-1 rounded-sm bg-[#007acc]/15 px-1.5 py-0.5 text-[#4daafc]">
+                    <Shield size={10} /> {workspacePath ? "Workspace loaded" : "No workspace open"}
+                  </span>
+                </div>
               </div>
             </div>
-          </div>
-          <div className="mt-3 grid grid-cols-2 gap-1.5">
-            <button className="rounded-md border border-[#3c3c3c] bg-[#1e1e1e] px-2 py-1.5 text-[11px] text-[#cccccc] hover:bg-[#2a2d2e]">Manage profile</button>
-            <button className="rounded-md border border-[#3c3c3c] bg-[#1e1e1e] px-2 py-1.5 text-[11px] text-[#cccccc] hover:bg-[#2a2d2e]">Sign out</button>
-          </div>
-        </div>
-        <div className="mt-4">
-          <div className="mb-1.5 text-[10px] uppercase tracking-wider text-[#6a6a6a]">Switch profile</div>
-          <div className="space-y-1">
-            {profiles.map((p) => {
-              const isActive = p.id === activeId;
-              return (
+            <div className="mt-4 grid gap-2 sm:grid-cols-2">
+              {actionButtons.map(({ label, description, Icon, onClick, tone }) => (
                 <button
-                  key={p.id}
-                  onClick={() => setActiveId(p.id)}
+                  key={label}
+                  onClick={onClick}
+                  disabled={tone === "disabled"}
                   className={cn(
-                    "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors",
-                    isActive ? "bg-[#37373d]" : "hover:bg-white/[0.04]",
+                    "rounded-md border px-3 py-2 text-left transition-colors",
+                    tone === "danger"
+                      ? "border-[#5a1d1d] bg-[#2a1616] text-[#fca5a5] hover:bg-[#371b1b] hover:text-white"
+                      : tone === "disabled"
+                        ? "cursor-not-allowed border-[#2b2b2b] bg-[#1e1e1e] text-[#6a6a6a]"
+                        : "border-[#3c3c3c] bg-[#1e1e1e] text-[#cccccc] hover:bg-[#2a2d2e] hover:text-white"
                   )}
                 >
-                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white" style={{ backgroundColor: p.color }}>
-                    {p.avatar}
+                  <div className="flex items-center gap-2">
+                    <Icon size={13} className={tone === "danger" ? "text-[#fca5a5]" : "text-[#858585]"} />
+                    <span className="text-[12px] font-medium">{label}</span>
                   </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-[12.5px] text-[#cccccc]">{p.name}</div>
-                    <div className="truncate text-[10px] text-[#6a6a6a]">{p.email}</div>
-                  </div>
-                  {isActive && <Check size={13} className="shrink-0 text-[#10b981]" />}
+                  <div className="mt-1 text-[11px] leading-relaxed text-[#858585]">{description}</div>
                 </button>
-              );
-            })}
-            <button className="flex w-full items-center gap-2 rounded-md border border-dashed border-[#3c3c3c] px-2 py-1.5 text-left text-[12px] text-[#858585] hover:border-[#4daafc]/40 hover:text-[#4daafc]">
-              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#252526] ring-1 ring-[#3c3c3c]"><Plus size={13} /></div>
-              Add a new profile
-            </button>
-          </div>
-        </div>
-        <div className="mt-4 space-y-0.5">
-          {profileMenu.map((m) => {
-            const Icon = m.Icon;
-            return (
-              <button key={m.id} className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-[12.5px] text-[#cccccc] hover:bg-white/[0.04]">
-                <Icon size={13} className="text-[#858585]" /> {m.label}
-                <ChevronRight size={12} className="ml-auto text-[#6a6a6a]" />
-              </button>
-            );
-          })}
-        </div>
-        <div className="mt-4 rounded-md border border-[#3c3c3c] bg-[#252526] p-3">
-          <div className="mb-2 flex items-center justify-between">
-            <div className="flex items-center gap-1.5">
-              <Shield size={12} className="text-[#10b981]" />
-              <span className="text-[11px] font-semibold text-[#cccccc]">Usage this month</span>
+              ))}
             </div>
-            <span className="text-[10px] text-[#6a6a6a]">Resets in 12 days</span>
           </div>
-          <div className="space-y-2">
-            <UsageBar label="Agent requests" used={342} total={1000} />
-            <UsageBar label="Inline completions" used={1820} total={5000} />
-            <UsageBar label="Vision calls" used={48} total={200} />
+          <div className="space-y-3">
+            <div className="rounded-lg border border-[#3c3c3c] bg-[#252526] p-4">
+              <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-[#858585]">Workspace</div>
+              <div className="text-[13px] font-medium text-[#ffffff]">{workspaceName}</div>
+              <div className="mt-1 break-all text-[11px] leading-relaxed text-[#858585]">
+                {workspacePath || "Open a folder to work with files, search, run, and preview."}
+              </div>
+            </div>
+            <div className="rounded-lg border border-[#3c3c3c] bg-[#252526] p-4">
+              <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-[#858585]">Application</div>
+              <div className="flex items-center justify-between text-[12px] text-[#cccccc]">
+                <span>Version</span>
+                <span className="font-mono text-[#ffffff]">{appVersion}</span>
+              </div>
+              <div className="mt-2 text-[11px] leading-relaxed text-[#858585]">
+                {dataPath || "App data folder path unavailable."}
+              </div>
+            </div>
+            <div className="rounded-lg border border-[#3c3c3c] bg-[#252526] p-4 text-[12px] leading-relaxed text-[#858585]">
+              Settings aur profile actions yahin se open honge, taki workspace layout stable aur resize-friendly rahe.
+            </div>
           </div>
         </div>
-      </div>
-    </div>
-  );
-}
-
-function UsageBar({ label, used, total }: { label: string; used: number; total: number }) {
-  const pct = Math.min(100, Math.round((used / total) * 100));
-  const color = pct > 80 ? "#f48771" : pct > 50 ? "#e2c08d" : "#10b981";
-  return (
-    <div>
-      <div className="mb-1 flex items-center justify-between text-[11px]">
-        <span className="text-[#cccccc]">{label}</span>
-        <span className="font-mono text-[#858585]">{used.toLocaleString()} / {total.toLocaleString()}</span>
-      </div>
-      <div className="h-1.5 overflow-hidden rounded-full bg-[#1e1e1e]">
-        <div className="h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: color }} />
       </div>
     </div>
   );
@@ -4591,6 +4766,48 @@ function QuickOpenOverlay({
   );
 }
 
+function CenteredModal({
+  open,
+  onClose,
+  widthClassName,
+  children,
+}: {
+  open: boolean
+  onClose: () => void
+  widthClassName?: string
+  children: React.ReactNode
+}) {
+  useEffect(() => {
+    if (!open) return;
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  return (
+    <div
+      className="absolute inset-0 z-[220] flex items-center justify-center bg-black/55 px-6 py-8 backdrop-blur-[2px]"
+      onMouseDown={onClose}
+    >
+      <div
+        className={cn(
+          "flex max-h-[min(86vh,820px)] w-full overflow-hidden rounded-xl border border-[#3c3c3c] bg-[#1e1e1e] shadow-[0_28px_80px_rgba(0,0,0,0.52)]",
+          widthClassName || "max-w-[980px]"
+        )}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
 /* ============================================================
    BuilderWindow — main component that wires everything together
    ============================================================ */
@@ -4602,10 +4819,11 @@ export function BuilderWindow() {
   const [activeTab, setActiveTab] = useState<string>("");
   const [mode, setMode] = useState<EditorMode>("code");
   const [terminalOpen, setTerminalOpen] = useState(false);
-  const [terminalHeight] = useState(260);
   const [folderOpen, setFolderOpen] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
+  const [settingsCategory, setSettingsCategory] = useState("common");
+  const [builderMeta, setBuilderMeta] = useState<BuilderWindowMeta | null>(null);
   const [selectedExplorerPath, setSelectedExplorerPath] = useState<string | null>(null);
   const [selectedExplorerType, setSelectedExplorerType] = useState<"file" | "folder" | null>(null);
   const [cursor, setCursor] = useState<CursorState>({ line: 1, col: 1 });
@@ -4827,6 +5045,16 @@ export function BuilderWindow() {
   useEffect(() => {
     void refreshModelStatuses();
   }, [refreshModelStatuses]);
+
+  useEffect(() => {
+    void getBuilderWindowMeta().then((response) => {
+      if (!response.success) return;
+      setBuilderMeta({
+        version: response.version || "",
+        dataPath: response.dataPath || "",
+      });
+    });
+  }, []);
 
   useEffect(() => {
     if (!selectedModelId) return;
@@ -5103,8 +5331,20 @@ export function BuilderWindow() {
     setShowSettings(false);
   }, []);
 
+  const openSettingsModal = useCallback((category = "common") => {
+    setSettingsCategory(category);
+    setShowProfile(false);
+    setShowSettings(true);
+  }, []);
+
   const handleSettingsClick = useCallback(() => {
-    setShowSettings((s) => !s);
+    setShowSettings((visible) => {
+      if (visible) {
+        return false;
+      }
+      setSettingsCategory("common");
+      return true;
+    });
     setShowProfile(false);
   }, []);
 
@@ -5128,6 +5368,25 @@ export function BuilderWindow() {
     }
     await refreshModelStatuses();
   }, [refreshModelStatuses]);
+
+  const handleSaveProvider = useCallback(
+    async (group: keyof BuilderModelStatuses, slot: number, draft: ProviderSlotDraft) => {
+      const response = await saveBuilderModelSlot({
+        group: group as any,
+        slot,
+        key: draft.key.trim(),
+        baseUrl: draft.baseUrl.trim(),
+        modelId: draft.modelId.trim(),
+        providerMode: draft.providerMode.trim(),
+      });
+      if (!response?.success) {
+        window.alert(response?.error || "Provider slot save failed.");
+        return;
+      }
+      await refreshModelStatuses();
+    },
+    [refreshModelStatuses]
+  );
 
   const handleRunActiveFile = useCallback(() => {
     if (!activeTabObj?.path) {
@@ -5240,6 +5499,62 @@ export function BuilderWindow() {
       window.alert(response.error);
     }
   }, [activeTabObj?.path, selectedExplorerPath]);
+
+  const getActiveEditorElement = useCallback(() => {
+    const activeElement = document.activeElement;
+    if (activeElement instanceof HTMLTextAreaElement && activeElement.dataset.fileName) {
+      return activeElement;
+    }
+    return document.querySelector('textarea[data-file-name]') as HTMLTextAreaElement | null;
+  }, []);
+
+  const focusActiveEditor = useCallback(() => {
+    const editor = getActiveEditorElement();
+    editor?.focus();
+    return editor;
+  }, [getActiveEditorElement]);
+
+  const insertClipboardText = useCallback(async () => {
+    const editor = focusActiveEditor();
+    if (!editor) {
+      window.alert("Open a file editor first.");
+      return;
+    }
+    try {
+      const clipboardText = await navigator.clipboard.readText();
+      const start = editor.selectionStart;
+      const end = editor.selectionEnd;
+      const next = `${editor.value.slice(0, start)}${clipboardText}${editor.value.slice(end)}`;
+      handleEditorChange(next);
+      requestAnimationFrame(() => {
+        editor.focus();
+        const nextCursor = start + clipboardText.length;
+        editor.setSelectionRange(nextCursor, nextCursor);
+      });
+    } catch {
+      window.alert("Clipboard access blocked. Use keyboard paste inside the editor.");
+    }
+  }, [focusActiveEditor, handleEditorChange]);
+
+  const handleOpenWorkspaceFolder = useCallback(async () => {
+    if (!workspace?.path) {
+      window.alert("Open a workspace folder first.");
+      return;
+    }
+    await handleRevealSelected(workspace.path);
+  }, [handleRevealSelected, workspace?.path]);
+
+  const handleOpenDataDirectory = useCallback(async () => {
+    const response = await openBuilderDataFolder();
+    if (!response.success && response.error) {
+      window.alert(response.error);
+    }
+  }, []);
+
+  const handleCopyVersion = useCallback(async () => {
+    if (!builderMeta?.version) return;
+    await navigator.clipboard.writeText(builderMeta.version);
+  }, [builderMeta?.version]);
 
   const handleNewChat = useCallback(() => {
     archiveChatSession(chatScopePath, agentMessages);
@@ -5360,13 +5675,13 @@ export function BuilderWindow() {
       { id: "cmd:open-folder", kind: "command", label: "> Open Folder", description: "Open a workspace folder", run: () => void handleOpenFolder() },
       { id: "cmd:new-file", kind: "command", label: "> New File", description: "Create a new file in the workspace", run: () => void handleCreateFile() },
       { id: "cmd:new-folder", kind: "command", label: "> New Folder", description: "Create a new folder in the workspace", run: () => void handleCreateFolder() },
-      { id: "cmd:settings", kind: "command", label: "> Settings", description: "Open Builder settings", run: () => { setShowSettings(true); setShowProfile(false); } },
+      { id: "cmd:settings", kind: "command", label: "> Settings", description: "Open Builder settings", run: () => openSettingsModal("common") },
       { id: "cmd:terminal", kind: "command", label: "> Toggle Terminal", description: "Show or hide terminal", run: () => setTerminalOpen((value) => !value) },
       { id: "cmd:run", kind: "command", label: "> Run Active File", description: "Run the active file using terminal/preview", run: () => handleRunActiveFile() },
     ];
 
     return [...commandEntries, ...fileEntries];
-  }, [workspace, handleCreateFile, handleCreateFolder, handleOpenFolder, handleRunActiveFile]);
+  }, [workspace, handleCreateFile, handleCreateFolder, handleOpenFolder, handleRunActiveFile, openSettingsModal]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -5407,8 +5722,7 @@ export function BuilderWindow() {
 
       if (primary && key === ",") {
         event.preventDefault();
-        setShowSettings(true);
-        setShowProfile(false);
+        openSettingsModal("common");
         return;
       }
 
@@ -5425,7 +5739,7 @@ export function BuilderWindow() {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [canDeleteSelected, handleCreateFile, handleDeleteSelected, handleRunActiveFile, handleSaveCurrent]);
+  }, [canDeleteSelected, handleCreateFile, handleDeleteSelected, handleRunActiveFile, handleSaveCurrent, openSettingsModal]);
 
   const handleWindowAction = useCallback((action: "minimize" | "maximize" | "close") => {
     void window.electron.ipcRenderer.invoke(`builder-window-${action === "maximize" ? "maximize-toggle" : action}`);
@@ -5443,8 +5757,7 @@ export function BuilderWindow() {
       return;
     }
     if (actionId === "open-settings") {
-      setShowSettings(true);
-      setShowProfile(false);
+      openSettingsModal("common");
       return;
     }
     if (actionId === "open-search") {
@@ -5461,9 +5774,71 @@ export function BuilderWindow() {
       handleRunActiveFile();
       return;
     }
-    if (menuId === "terminal") { setTerminalOpen(true); return; }
+    if (menuId === "edit") {
+      const editor = focusActiveEditor();
+      if (l === "undo" || l === "redo" || l === "cut" || l === "copy") {
+        if (!editor) {
+          window.alert("Open a file editor first.");
+          return;
+        }
+        editor.focus();
+        document.execCommand(l);
+        return;
+      }
+      if (l === "paste") {
+        await insertClipboardText();
+        return;
+      }
+      if (l === "find" || l === "replace" || l === "find in files") {
+        setView("search");
+        return;
+      }
+    }
+    if (menuId === "selection") {
+      const editor = focusActiveEditor();
+      if (!editor) {
+        window.alert("Open a file editor first.");
+        return;
+      }
+      if (l === "select all") {
+        editor.setSelectionRange(0, editor.value.length);
+        return;
+      }
+      window.alert(`${label} is not wired yet in Builder.`);
+      return;
+    }
+    if (menuId === "go") {
+      if (l.includes("go to file") || l.includes("symbol")) {
+        setQuickOpenVisible(true);
+        return;
+      }
+      if (l.includes("line")) {
+        const editor = focusActiveEditor();
+        if (!editor) {
+          window.alert("Open a file editor first.");
+          return;
+        }
+        const requestedLine = window.prompt("Go to line", String(cursor.line));
+        const parsedLine = Number.parseInt(requestedLine || "", 10);
+        if (!Number.isFinite(parsedLine) || parsedLine < 1) return;
+        const linesBefore = editor.value.split("\n").slice(0, parsedLine - 1);
+        const offset = linesBefore.length ? linesBefore.join("\n").length + 1 : 0;
+        editor.focus();
+        editor.setSelectionRange(offset, offset);
+        return;
+      }
+      window.alert(`${label} is not wired yet in Builder.`);
+      return;
+    }
+    if (menuId === "terminal") {
+      setTerminalOpen(true);
+      if (l.includes("run active file")) {
+        handleRunActiveFile();
+      }
+      return;
+    }
     if (menuId === "more") {
-      if (l.includes("settings")) { setShowSettings(true); setShowProfile(false); return; }
+      if (l.includes("settings")) { openSettingsModal("common"); return; }
       if (l.includes("welcome")) {
         setFolderOpen(false);
         setWorkspace(null);
@@ -5497,16 +5872,62 @@ export function BuilderWindow() {
       if (l.includes("open folder")) { void handleOpenFolder(); return; }
       if (l.includes("open file")) { void handleOpenLooseFile(); return; }
       if (l === "save") { void handleSaveCurrent(); return; }
+      if (l.includes("save all")) { void handleSaveCurrent(); return; }
       if (l.includes("new folder")) { void handleCreateFolder(); return; }
       if (l.includes("new text file") || l.includes("new file")) {
         void handleCreateFile();
+        return;
+      }
+      if (l.includes("close editor")) {
+        if (activeTab) handleCloseTab(activeTab);
+        return;
+      }
+      if (l.includes("close window") || l === "exit") {
+        handleWindowAction("close");
+        return;
+      }
+    }
+    if (menuId === "help") {
+      if (l.includes("about")) {
+        setShowProfile(true);
+        setShowSettings(false);
+        return;
+      }
+      if (l.includes("welcome")) {
+        setFolderOpen(false);
+        setWorkspace(null);
+        setTabs([]);
+        setActiveTab("");
+        return;
+      }
+      if (l.includes("keyboard shortcuts")) {
+        openSettingsModal("keyboard");
+        return;
+      }
+      if (l.includes("documentation") || l.includes("report issue")) {
+        window.alert(`${label} is not wired yet in Builder.`);
         return;
       }
     }
     if (menuId === "run" || (menuId === "terminal" && l.includes("run active file"))) {
       handleRunActiveFile();
     }
-  }, [handleCreateFile, handleCreateFolder, handleOpenFolder, handleOpenLooseFile, handleOpenRecentWorkspace, handleRunActiveFile, handleSaveCurrent]);
+  }, [
+    activeTab,
+    cursor.line,
+    focusActiveEditor,
+    handleCloseTab,
+    handleCreateFile,
+    handleCreateFolder,
+    handleOpenFolder,
+    handleOpenLooseFile,
+    handleOpenRecentWorkspace,
+    handleRunActiveFile,
+    handleSaveCurrent,
+    handleWindowAction,
+    insertClipboardText,
+    openSettingsModal,
+  ]);
 
   const handleAgentStop = useCallback(async () => {
     if (!activeRequestId) return;
@@ -5799,122 +6220,23 @@ export function BuilderWindow() {
     syncWorkspaceState,
   ]);
 
-  return (
-    <div className="flex h-screen w-screen flex-col overflow-hidden bg-[#1e1e1e] text-[#cccccc]">
-      <TitleBar
-        workspaceLabel={workspaceLabel}
-        menus={dynamicMenus}
-        onMenuAction={handleMenuAction}
-        onWindowAction={handleWindowAction}
-        onQuickOpen={() => setQuickOpenVisible(true)}
+  const contentPane = (
+    <>
+      <TabBar
+        tabs={tabs}
+        activeTab={activeTab}
+        mode={mode}
+        onSelect={setActiveTab}
+        onClose={handleCloseTab}
+        onModeChange={setMode}
+        onMoreAction={handleTabMoreAction}
       />
-      <div className="flex min-h-0 flex-1">
-        <ActivityBar
-          active={showSettings ? "explorer" : showProfile ? "account" : view}
-          onSelect={handleActivitySelect}
-          onSettingsClick={handleSettingsClick}
-        />
-
-        {showSettings ? (
-          <aside className="w-[420px] shrink-0 border-r border-[#2b2b2b]">
-            <SettingsPanel
-              onClose={() => setShowSettings(false)}
-              preferences={preferences}
-              onPreferencesChange={handlePreferencePatch}
-              modelOptions={modelOptions}
-              selectedModelId={selectedModelId}
-              onSelectedModelIdChange={setSelectedModelId}
-              access={access}
-              onAccessChange={setAccess}
-              modelStatuses={modelStatuses}
-              onTestProvider={handleTestProvider}
-              onToggleProvider={handleToggleProvider}
-            />
-          </aside>
-        ) : showProfile ? (
-          <aside className="w-[320px] shrink-0 border-r border-[#2b2b2b]">
-            <ProfilePanel onClose={() => setShowProfile(false)} />
-          </aside>
-        ) : view === "agent" ? (
-          <aside className="w-[320px] shrink-0 border-r border-[#2b2b2b]">
-            <CodingAgent
-              messages={agentMessages}
-              input={agentInput}
-              onInputChange={setAgentInput}
-              onSend={() => void runAgentPrompt()}
-              onStop={() => void handleAgentStop()}
-              running={!!activeRequestId}
-              selectedModelId={selectedModelOption?.id ?? selectedModelId}
-              modelOptions={modelOptions}
-              onModelChange={setSelectedModelId}
-              access={access}
-              onAccessChange={setAccess}
-              workspaceName={workspaceLabel}
-              activeFileName={activeTabObj?.name}
-              onNewChat={handleNewChat}
-              onClearCurrentChat={handleClearCurrentChat}
-              onDeleteWorkspaceHistory={handleDeleteWorkspaceHistory}
-              onClearAllHistory={handleClearAllHistory}
-              onExportChat={handleExportChat}
-              onCopyLastResponse={handleCopyLastResponse}
-              onCopyLastPrompt={handleCopyLastPrompt}
-              onResetAgentState={() => void handleResetAgentState()}
-              showProviderTrace={showProviderTrace}
-              onToggleProviderTrace={() => setShowProviderTrace((value) => !value)}
-            />
-          </aside>
-        ) : view === "search" ? (
-          <aside className="w-[280px] shrink-0 border-r border-[#2b2b2b]">
-            <SearchPanel workspacePath={workspace?.path} onOpenResult={(filePath) => void handleOpenExplorerFile("", filePath)} />
-          </aside>
-        ) : view === "scm" ? (
-          <aside className="w-[280px] shrink-0 border-r border-[#2b2b2b]"><SourceControlPanel /></aside>
-        ) : view === "extensions" ? (
-          <aside className="w-[300px] shrink-0 border-r border-[#2b2b2b]"><ExtensionsPanel /></aside>
-        ) : view === "debug" ? (
-          <aside className="w-[280px] shrink-0 border-r border-[#2b2b2b]">
-            <DebugPanel activeFilePath={activeTabObj?.path} onRunActiveFile={handleRunActiveFile} />
-          </aside>
-        ) : folderOpen ? (
-          <aside className="w-[280px] shrink-0 border-r border-[#2b2b2b]">
-            <FileExplorer
-              workspaceName={workspaceLabel}
-              tree={workspaceTree}
-              activePath={activeTab}
-              selectedPath={selectedExplorerPath}
-              onOpenFile={handleOpenFile}
-              onSelectPath={(path, type) => {
-                setSelectedExplorerPath(path);
-                setSelectedExplorerType(type);
-              }}
-              onCreateFile={handleCreateFile}
-              onCreateFolder={handleCreateFolder}
-              onRefresh={() => void reloadWorkspace()}
-              onDeleteSelected={handleDeleteSelected}
-              onRevealSelected={() => void handleRevealSelected()}
-              canDeleteSelected={canDeleteSelected}
-            />
-          </aside>
-        ) : null}
-
-        <main className="relative flex min-w-0 flex-1 flex-col">
-          {showWelcome ? (
-            <WelcomePage
-              recentWorkspaces={recentWorkspaces}
-              onOpenFolder={() => void handleOpenFolder()}
-              onOpenFile={() => void handleOpenLooseFile()}
-              onNewFile={() => void handleCreateFile()}
-              onOpenRecent={(workspacePath) => void handleOpenRecentWorkspace(workspacePath)}
-            />
-          ) : (
-            <>
-              <TabBar
-                tabs={tabs} activeTab={activeTab} mode={mode}
-                onSelect={setActiveTab} onClose={handleCloseTab} onModeChange={setMode}
-                onMoreAction={handleTabMoreAction}
-              />
-              <Breadcrumbs path={breadcrumbPath} modified={activeTabObj?.dirty} />
-              <div className="relative min-h-0 flex-1">
+      <Breadcrumbs path={breadcrumbPath} modified={activeTabObj?.dirty} />
+      <div className="min-h-0 flex-1">
+        {terminalOpen ? (
+          <PanelGroup orientation="vertical" className="h-full w-full">
+            <Panel defaultSize={72} minSize={26}>
+              <div className="relative h-full">
                 {mode === "code" && (
                   <div className="h-full w-full">
                     {activeTabObj ? (
@@ -5936,7 +6258,7 @@ export function BuilderWindow() {
                 {mode === "preview" && <div className="h-full w-full"><LivePreview previewPath={previewPath} previewVersion={previewVersion} /></div>}
                 {mode === "split" && (
                   <PanelGroup orientation="horizontal" className="h-full w-full">
-                    <Panel defaultSize={50} minSize={25}>
+                    <Panel defaultSize={50} minSize={24}>
                       {activeTabObj ? (
                         <FunctionalCodeEditor
                           fileName={fileName}
@@ -5953,22 +6275,238 @@ export function BuilderWindow() {
                       )}
                     </Panel>
                     <PanelResizeHandle className="w-[3px] bg-[#1e1e1e] transition-colors hover:bg-[#007acc]" />
-                    <Panel defaultSize={50} minSize={25}><LivePreview previewPath={previewPath} previewVersion={previewVersion} /></Panel>
+                    <Panel defaultSize={50} minSize={24}>
+                      <LivePreview previewPath={previewPath} previewVersion={previewVersion} />
+                    </Panel>
                   </PanelGroup>
                 )}
               </div>
-              {terminalOpen && (
-                <TerminalPanel
-                  height={terminalHeight}
-                  onClose={() => setTerminalOpen(false)}
-                  onMinimize={() => setTerminalOpen(false)}
-                  workspacePath={workspace?.path}
-                  queuedCommand={queuedTerminalCommand}
-                  onQueuedCommandHandled={() => setQueuedTerminalCommand(null)}
+            </Panel>
+            <PanelResizeHandle className="h-[3px] bg-[#1e1e1e] transition-colors hover:bg-[#007acc]" />
+            <Panel defaultSize={28} minSize={16}>
+              <TerminalPanel
+                onClose={() => setTerminalOpen(false)}
+                onMinimize={() => setTerminalOpen(false)}
+                workspacePath={workspace?.path}
+                queuedCommand={queuedTerminalCommand}
+                onQueuedCommandHandled={() => setQueuedTerminalCommand(null)}
+              />
+            </Panel>
+          </PanelGroup>
+        ) : (
+          <div className="relative h-full">
+            {mode === "code" && (
+              <div className="h-full w-full">
+                {activeTabObj ? (
+                  <FunctionalCodeEditor
+                    fileName={fileName}
+                    code={activeTabObj.content}
+                    onChange={handleEditorChange}
+                    onCursorChange={setCursor}
+                    fontSize={preferences.fontSize}
+                    fontFamily={preferences.fontFamily}
+                    wordWrap={preferences.wordWrap}
+                    tabSize={preferences.tabSize}
+                  />
+                ) : (
+                  <div className="flex h-full items-center justify-center text-[13px] text-[#858585]">Select a file to edit.</div>
+                )}
+              </div>
+            )}
+            {mode === "preview" && <div className="h-full w-full"><LivePreview previewPath={previewPath} previewVersion={previewVersion} /></div>}
+            {mode === "split" && (
+              <PanelGroup orientation="horizontal" className="h-full w-full">
+                <Panel defaultSize={50} minSize={24}>
+                  {activeTabObj ? (
+                    <FunctionalCodeEditor
+                      fileName={fileName}
+                      code={activeTabObj.content}
+                      onChange={handleEditorChange}
+                      onCursorChange={setCursor}
+                      fontSize={preferences.fontSize}
+                      fontFamily={preferences.fontFamily}
+                      wordWrap={preferences.wordWrap}
+                      tabSize={preferences.tabSize}
+                    />
+                  ) : (
+                    <div className="flex h-full items-center justify-center text-[13px] text-[#858585]">Select a file to edit.</div>
+                  )}
+                </Panel>
+                <PanelResizeHandle className="w-[3px] bg-[#1e1e1e] transition-colors hover:bg-[#007acc]" />
+                <Panel defaultSize={50} minSize={24}>
+                  <LivePreview previewPath={previewPath} previewVersion={previewVersion} />
+                </Panel>
+              </PanelGroup>
+            )}
+          </div>
+        )}
+      </div>
+    </>
+  );
+
+  const sidebarKey =
+    view === "agent"
+      ? "agent"
+      : view === "search"
+        ? "search"
+        : view === "scm"
+          ? "scm"
+          : view === "extensions"
+            ? "extensions"
+            : view === "debug"
+              ? "debug"
+              : folderOpen
+                ? "explorer"
+                : null;
+
+  const sidebarDefaultSize =
+    sidebarKey === "agent"
+      ? 24
+      : sidebarKey === "extensions"
+        ? 22
+        : sidebarKey
+          ? 20
+          : 0;
+
+  return (
+    <div className="flex h-screen w-screen flex-col overflow-hidden bg-[#1e1e1e] text-[#cccccc]">
+      <TitleBar
+        workspaceLabel={workspaceLabel}
+        menus={dynamicMenus}
+        onMenuAction={handleMenuAction}
+        onWindowAction={handleWindowAction}
+        onQuickOpen={() => setQuickOpenVisible(true)}
+      />
+      <div className="relative flex min-h-0 flex-1">
+        <ActivityBar
+          active={showProfile ? "account" : view}
+          onSelect={handleActivitySelect}
+          onSettingsClick={handleSettingsClick}
+        />
+        <div className="relative flex min-w-0 flex-1 flex-col">
+        {sidebarKey ? (
+          <PanelGroup orientation="horizontal" className="min-h-0 flex-1">
+            <Panel defaultSize={sidebarDefaultSize} minSize={16} maxSize={36}>
+              {view === "agent" ? (
+                <CodingAgent
+                  messages={agentMessages}
+                  input={agentInput}
+                  onInputChange={setAgentInput}
+                  onSend={() => void runAgentPrompt()}
+                  onStop={() => void handleAgentStop()}
+                  running={!!activeRequestId}
+                  selectedModelId={selectedModelOption?.id ?? selectedModelId}
+                  modelOptions={modelOptions}
+                  onModelChange={setSelectedModelId}
+                  access={access}
+                  onAccessChange={setAccess}
+                  workspaceName={workspaceLabel}
+                  activeFileName={activeTabObj?.name}
+                  onNewChat={handleNewChat}
+                  onClearCurrentChat={handleClearCurrentChat}
+                  onDeleteWorkspaceHistory={handleDeleteWorkspaceHistory}
+                  onClearAllHistory={handleClearAllHistory}
+                  onExportChat={handleExportChat}
+                  onCopyLastResponse={handleCopyLastResponse}
+                  onCopyLastPrompt={handleCopyLastPrompt}
+                  onResetAgentState={() => void handleResetAgentState()}
+                  showProviderTrace={showProviderTrace}
+                  onToggleProviderTrace={() => setShowProviderTrace((value) => !value)}
+                />
+              ) : view === "search" ? (
+                <SearchPanel workspacePath={workspace?.path} onOpenResult={(filePath) => void handleOpenExplorerFile("", filePath)} />
+              ) : view === "scm" ? (
+                <SourceControlPanel />
+              ) : view === "extensions" ? (
+                <ExtensionsPanel />
+              ) : view === "debug" ? (
+                <DebugPanel activeFilePath={activeTabObj?.path} onRunActiveFile={handleRunActiveFile} />
+              ) : (
+                <FileExplorer
+                  workspaceName={workspaceLabel}
+                  tree={workspaceTree}
+                  activePath={activeTab}
+                  selectedPath={selectedExplorerPath}
+                  onOpenFile={handleOpenFile}
+                  onSelectPath={(path, type) => {
+                    setSelectedExplorerPath(path);
+                    setSelectedExplorerType(type);
+                  }}
+                  onCreateFile={handleCreateFile}
+                  onCreateFolder={handleCreateFolder}
+                  onRefresh={() => void reloadWorkspace()}
+                  onDeleteSelected={handleDeleteSelected}
+                  onRevealSelected={() => void handleRevealSelected()}
+                  canDeleteSelected={canDeleteSelected}
                 />
               )}
-            </>
-          )}
+            </Panel>
+            <PanelResizeHandle className="w-[3px] bg-[#1e1e1e] transition-colors hover:bg-[#007acc]" />
+            <Panel defaultSize={100 - sidebarDefaultSize} minSize={40}>
+              <main className="relative flex h-full min-w-0 flex-1 flex-col">
+                {showWelcome ? (
+                  <WelcomePage
+                    recentWorkspaces={recentWorkspaces}
+                    onOpenFolder={() => void handleOpenFolder()}
+                    onOpenFile={() => void handleOpenLooseFile()}
+                    onNewFile={() => void handleCreateFile()}
+                    onOpenRecent={(workspacePath) => void handleOpenRecentWorkspace(workspacePath)}
+                  />
+                ) : (
+                  contentPane
+                )}
+              </main>
+            </Panel>
+          </PanelGroup>
+        ) : (
+          <main className="relative flex h-full min-w-0 flex-1 flex-col">
+            {showWelcome ? (
+              <WelcomePage
+                recentWorkspaces={recentWorkspaces}
+                onOpenFolder={() => void handleOpenFolder()}
+                onOpenFile={() => void handleOpenLooseFile()}
+                onNewFile={() => void handleCreateFile()}
+                onOpenRecent={(workspacePath) => void handleOpenRecentWorkspace(workspacePath)}
+              />
+            ) : (
+              contentPane
+            )}
+          </main>
+        )}
+        <CenteredModal open={showSettings} onClose={() => setShowSettings(false)} widthClassName="max-w-[1040px]">
+          <SettingsPanel
+            onClose={() => setShowSettings(false)}
+            initialCategory={settingsCategory}
+            preferences={preferences}
+            onPreferencesChange={handlePreferencePatch}
+            modelOptions={modelOptions}
+            selectedModelId={selectedModelId}
+            onSelectedModelIdChange={setSelectedModelId}
+            access={access}
+            onAccessChange={setAccess}
+            modelStatuses={modelStatuses}
+            onTestProvider={handleTestProvider}
+            onToggleProvider={handleToggleProvider}
+            onSaveProvider={handleSaveProvider}
+          />
+        </CenteredModal>
+        <CenteredModal open={showProfile} onClose={() => setShowProfile(false)} widthClassName="max-w-[760px]">
+          <ProfilePanel
+            onClose={() => setShowProfile(false)}
+            workspaceName={workspaceLabel}
+            workspacePath={workspace?.path}
+            selectedModelName={selectedModelOption?.name || "No model selected"}
+            appVersion={builderMeta?.version || "unknown"}
+            dataPath={builderMeta?.dataPath}
+            onOpenSettings={() => openSettingsModal("common")}
+            onOpenProviderSettings={() => openSettingsModal("ai")}
+            onOpenDataFolder={() => void handleOpenDataDirectory()}
+            onOpenWorkspaceFolder={() => void handleOpenWorkspaceFolder()}
+            onClearChat={handleClearCurrentChat}
+            onCopyVersion={() => void handleCopyVersion()}
+          />
+        </CenteredModal>
+        <div className="contents">
           {pendingCreate && (
             <CreateEntryDialog
               target={pendingCreate}
@@ -5990,15 +6528,16 @@ export function BuilderWindow() {
               onConfirm={() => void handleConfirmDelete()}
             />
           ) : null}
-          <StatusBar
-            fileName={fileName}
-            ln={cursor.line}
-            col={cursor.col}
-            branch={workspace?.branch}
-            language={currentLanguage}
-            hasWorkspace={!!workspace}
-          />
-        </main>
+        </div>
+        <StatusBar
+          fileName={fileName}
+          ln={cursor.line}
+          col={cursor.col}
+          branch={workspace?.branch}
+          language={currentLanguage}
+          hasWorkspace={!!workspace}
+        />
+        </div>
       </div>
     </div>
   );

@@ -194,11 +194,18 @@ const defaultRoutewayConfig = {
   providerMode: 'openai-compatible'
 }
 
+const defaultGeminiBrainConfig = {
+  baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+  modelId: 'gemini-2.5-flash',
+  providerMode: 'gemini-native'
+}
+
 const defaultProviderConfigs: Partial<
   Record<ApiKeyGroup, { baseUrl: string; modelId: string; providerMode: string }>
 > = {
   glm: defaultGlmConfig,
   zai: defaultZaiConfig,
+  geminiBrain: defaultGeminiBrainConfig,
   openrouter: defaultOpenRouterConfig,
   kiloGateway: defaultKiloGatewayConfig,
   routeway: defaultRoutewayConfig
@@ -906,8 +913,11 @@ app.whenReady().then(async () => {
       if (!target || !key) return { success: false, error: 'No key saved in this slot.' }
 
       if (group === 'geminiBrain' || group === 'geminiAgent') {
+        const defaults = getDefaultProviderConfig('geminiBrain')
+        const modelId = target.modelId || defaults.modelId || 'gemini-2.5-flash'
+        const baseUrl = (target.baseUrl || defaults.baseUrl || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/+$/, '')
         const response = await fetch(
-          'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' +
+          `${baseUrl}/models/${encodeURIComponent(modelId)}:generateContent?key=` +
             encodeURIComponent(key),
           {
             method: 'POST',
@@ -922,7 +932,7 @@ app.whenReady().then(async () => {
         if (!response.ok) {
           const body = await response.text()
           target.status = response.status === 429 ? 'rate-limited' : 'failed'
-          target.lastFailureReason = normalizeProviderErrorMessage('Gemini', response.status, body, 'gemini-2.5-flash')
+          target.lastFailureReason = normalizeProviderErrorMessage('Gemini', response.status, body, modelId)
           writeSecureVault(secureData)
           return { success: false, error: target.lastFailureReason, statuses: getKeyStatuses(secureData) }
         }

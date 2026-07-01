@@ -1111,44 +1111,59 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
     return { success: true, payload: parsed, providerLabel }
   }
 
+  const resolveGeminiSelection = (selection?: ProviderSelection) => {
+    const secureData = readSecureVault()
+    const slots = secureData.keySlots?.geminiBrain || []
+    const selectedSlot =
+      selection?.slot != null
+        ? slots.find((slot: KeySlot) => slot.slot === selection.slot && slot.enabled && decryptVaultValue(slot?.key))
+        : slots.find((slot: KeySlot) => slot?.enabled && decryptVaultValue(slot?.key))
+
+    const defaults = getProviderDefaults('gemini')
+    return {
+      secureData,
+      selectedSlot,
+      geminiKey: selection?.apiKey?.trim() || decryptVaultValue(selectedSlot?.key) || decryptVaultValue(secureData.gemini),
+      modelId: selection?.modelId?.trim() || selectedSlot?.modelId?.trim() || defaults.modelId,
+      baseUrl: (selection?.baseUrl?.trim() || selectedSlot?.baseUrl?.trim() || defaults.baseUrl || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/+$/, ''),
+      providerLabel: selection?.label || `Gemini / ${selection?.modelId?.trim() || selectedSlot?.modelId?.trim() || defaults.modelId}`
+    }
+  }
+
   const callGeminiProjectProvider = async (
     prompt: string,
     currentFiles?: ProjectFile[],
+    selection?: ProviderSelection,
     signal?: AbortSignal
   ): Promise<ProviderResult> => {
-    const secureData = readSecureVault()
-    const geminiSlot = secureData.keySlots?.geminiBrain?.find((slot: KeySlot) => {
-      const key = decryptVaultValue(slot?.key)
-      return slot?.enabled && key
-    })
-    const geminiKey = decryptVaultValue(geminiSlot?.key) || decryptVaultValue(secureData.gemini)
+    const { geminiKey, modelId, baseUrl, providerLabel } = resolveGeminiSelection(selection)
     if (!geminiKey) {
       return {
         success: false,
         code: 'GEMINI_MISSING_KEY',
         message: 'Gemini key missing hai. Gemini key/settings check karo ya OpenRouter/Kimi choose karo.',
-        providerLabel: 'Gemini'
+        providerLabel
       }
     }
 
     const projectType = detectProjectType(prompt)
     debugBuilder('provider-call', {
       provider: 'gemini',
-      selectedModel: 'gemini-2.5-flash',
+      selectedModel: modelId,
       promptLength: prompt.length,
       projectType,
       existingFiles: currentFiles?.length || 0
     })
     try {
       const response = await fetch(
-        'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' +
+        `${baseUrl}/models/${encodeURIComponent(modelId)}:generateContent?key=` +
           encodeURIComponent(geminiKey),
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           signal,
           body: JSON.stringify({
-            systemInstruction: { parts: [{ text: buildProjectSystemPrompt('Gemini 2.5 Flash', prompt, projectType, currentFiles) }] },
+            systemInstruction: { parts: [{ text: buildProjectSystemPrompt(providerLabel, prompt, projectType, currentFiles) }] },
             contents: [{ role: 'user', parts: [{ text: buildProjectUserPrompt(prompt, projectType, currentFiles) }] }],
             generationConfig: { temperature: 0.35, maxOutputTokens: 4096 }
           })
@@ -1163,18 +1178,18 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
             : response.status === 429
               ? 'Gemini rate limit/quota hit hua. Dusra fallback choose karo.'
               : `Gemini provider error ${response.status}: ${errorBody.slice(0, 180)}`
-        return { success: false, code: `GEMINI_${response.status}`, message: exactMessage, providerLabel: 'Gemini' }
+        return { success: false, code: `GEMINI_${response.status}`, message: exactMessage, providerLabel }
       }
 
       const data = await response.json()
-      return parseProviderPayload(normalizeGeminiText(data), 'Gemini')
+      return parseProviderPayload(normalizeGeminiText(data), providerLabel)
     } catch (error: any) {
       if (error?.name === 'AbortError') {
         return {
           success: false,
           code: 'REQUEST_CANCELLED',
           message: 'Builder request cancelled.',
-          providerLabel: 'Gemini',
+          providerLabel,
           cancelled: true
         }
       }
@@ -1182,7 +1197,7 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
         success: false,
         code: 'GEMINI_NETWORK_ERROR',
         message: error?.message || 'Gemini request failed.',
-        providerLabel: 'Gemini'
+        providerLabel
       }
     }
   }
@@ -1624,7 +1639,7 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
 
     if (selection.provider === 'glm') return callGlm(prompt, currentFiles, selection, signal)
     if (selection.provider === 'zai') return callZai(prompt, currentFiles, selection, signal)
-    if (selection.provider === 'gemini') return callGeminiProjectProvider(prompt, currentFiles, signal)
+    if (selection.provider === 'gemini') return callGeminiProjectProvider(prompt, currentFiles, selection, signal)
 
     const resolved = resolveSelectedCompatibleConfig(selection)
     if ('error' in resolved) return resolved.error
@@ -1664,33 +1679,29 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
   const callGeminiChatProvider = async (
     prompt: string,
     currentFiles?: ProjectFile[],
+    selection?: ProviderSelection,
     signal?: AbortSignal
   ): Promise<ProviderChatResult> => {
-    const secureData = readSecureVault()
-    const geminiSlot = secureData.keySlots?.geminiBrain?.find((slot: KeySlot) => {
-      const key = decryptVaultValue(slot?.key)
-      return slot?.enabled && key
-    })
-    const geminiKey = decryptVaultValue(geminiSlot?.key) || decryptVaultValue(secureData.gemini)
+    const { geminiKey, modelId, baseUrl, providerLabel } = resolveGeminiSelection(selection)
     if (!geminiKey) {
       return {
         success: false,
         code: 'GEMINI_MISSING_KEY',
         message: 'Selected provider API key missing hai.',
-        providerLabel: 'Gemini'
+        providerLabel
       }
     }
 
     try {
       const response = await fetch(
-        'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' +
+        `${baseUrl}/models/${encodeURIComponent(modelId)}:generateContent?key=` +
           encodeURIComponent(geminiKey),
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           signal,
           body: JSON.stringify({
-            systemInstruction: { parts: [{ text: buildChatSystemPrompt('Gemini 2.5 Flash', prompt, currentFiles) }] },
+            systemInstruction: { parts: [{ text: buildChatSystemPrompt(providerLabel, prompt, currentFiles) }] },
             contents: [{ role: 'user', parts: [{ text: buildChatUserPrompt(prompt, currentFiles) }] }],
             generationConfig: { temperature: 0.4, maxOutputTokens: 1536 }
           })
@@ -1705,19 +1716,19 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
             : response.status === 429
               ? 'Gemini rate limit/quota hit hua.'
               : `Gemini provider error ${response.status}: ${errorBody.slice(0, 180)}`
-        return { success: false, code: `GEMINI_${response.status}`, message, providerLabel: 'Gemini' }
+        return { success: false, code: `GEMINI_${response.status}`, message, providerLabel }
       }
 
       const data = await response.json()
       const content = normalizeGeminiText(data)
-      return { success: true, content: content || 'Main yahan hoon. Batao kya build ya explain karna hai.', providerLabel: 'Gemini' }
+      return { success: true, content: content || 'Main yahan hoon. Batao kya build ya explain karna hai.', providerLabel }
     } catch (error: any) {
       if (error?.name === 'AbortError') {
         return {
           success: false,
           code: 'REQUEST_CANCELLED',
           message: 'Builder request cancelled.',
-          providerLabel: 'Gemini',
+          providerLabel,
           cancelled: true
         }
       }
@@ -1725,7 +1736,7 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
         success: false,
         code: 'GEMINI_NETWORK_ERROR',
         message: error?.message || 'Gemini request failed.',
-        providerLabel: 'Gemini'
+        providerLabel
       }
     }
   }
@@ -1804,7 +1815,7 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
     const selection = parseProviderSelection(providerInput)
 
     if (selection.provider === 'gemini') {
-      return callGeminiChatProvider(prompt, currentFiles, signal)
+      return callGeminiChatProvider(prompt, currentFiles, selection, signal)
     }
 
     if (selection.provider === 'glm') {
