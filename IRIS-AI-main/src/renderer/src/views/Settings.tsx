@@ -81,7 +81,7 @@ type KiloSettings = {
 }
 type GlmProviderMode = 'zenmux' | 'openai-compatible' | 'custom-compatible' | 'direct-zai'
 type ZaiProviderMode = 'zai-chat' | 'zai-coding' | 'zai-compatible'
-type ConfigurableProviderGroup = 'glm' | 'zai' | 'openrouter' | 'kiloGateway' | 'routeway'
+type ConfigurableProviderGroup = 'geminiBrain' | 'geminiAgent' | 'groq' | 'glm' | 'zai' | 'kimi' | 'openrouter' | 'kiloGateway' | 'routeway'
 type KeySlotStatus = {
   slot: number
   enabled: boolean
@@ -196,14 +196,33 @@ const keyGroupSlotCounts: Record<KeyGroup, number> = {
 }
 
 const configurableProviderGroups: ConfigurableProviderGroup[] = [
+  'geminiBrain',
+  'geminiAgent',
+  'groq',
   'glm',
   'zai',
+  'kimi',
   'openrouter',
   'kiloGateway',
   'routeway'
 ]
 
 const providerSlotDefaults: Record<ConfigurableProviderGroup, ProviderSlotConfig> = {
+  geminiBrain: {
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+    modelId: 'gemini-2.5-flash',
+    providerMode: 'gemini-native'
+  },
+  geminiAgent: {
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+    modelId: 'gemini-2.5-flash',
+    providerMode: 'gemini-native'
+  },
+  groq: {
+    baseUrl: 'https://api.groq.com/openai/v1',
+    modelId: 'llama-3.1-8b-instant',
+    providerMode: 'openai-compatible'
+  },
   glm: {
     baseUrl: 'https://zenmux.ai/api/v1',
     modelId: 'z-ai/glm-5.2-free',
@@ -213,6 +232,11 @@ const providerSlotDefaults: Record<ConfigurableProviderGroup, ProviderSlotConfig
     baseUrl: 'https://api.z.ai/api/coding/paas/v4',
     modelId: 'glm-4.5v',
     providerMode: 'zai-coding'
+  },
+  kimi: {
+    baseUrl: 'https://api.moonshot.ai/v1',
+    modelId: 'moonshot-v1-8k',
+    providerMode: 'openai-compatible'
   },
   openrouter: {
     baseUrl: 'https://openrouter.ai/api/v1',
@@ -286,8 +310,12 @@ const emptySlotStatuses = (): Record<KeyGroup, KeySlotStatus[]> => ({
 })
 
 const defaultProviderSlotConfigs = (): Record<ConfigurableProviderGroup, ProviderSlotConfig[]> => ({
+  geminiBrain: Array.from({ length: keyGroupSlotCounts.geminiBrain }, () => ({ ...providerSlotDefaults.geminiBrain })),
+  geminiAgent: Array.from({ length: keyGroupSlotCounts.geminiAgent }, () => ({ ...providerSlotDefaults.geminiAgent })),
+  groq: Array.from({ length: keyGroupSlotCounts.groq }, () => ({ ...providerSlotDefaults.groq })),
   glm: Array.from({ length: keyGroupSlotCounts.glm }, () => ({ ...providerSlotDefaults.glm })),
   zai: Array.from({ length: keyGroupSlotCounts.zai }, () => ({ ...providerSlotDefaults.zai })),
+  kimi: Array.from({ length: keyGroupSlotCounts.kimi }, () => ({ ...providerSlotDefaults.kimi })),
   openrouter: Array.from({ length: keyGroupSlotCounts.openrouter }, () => ({ ...providerSlotDefaults.openrouter })),
   kiloGateway: Array.from({ length: keyGroupSlotCounts.kiloGateway }, () => ({ ...providerSlotDefaults.kiloGateway })),
   routeway: Array.from({ length: keyGroupSlotCounts.routeway }, () => ({ ...providerSlotDefaults.routeway }))

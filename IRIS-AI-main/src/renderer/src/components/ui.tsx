@@ -74,10 +74,50 @@ function PopoverAnchor({
 /* ============================================================
    Resizable
    ============================================================ */
+type ResizablePanelGroupProps = React.ComponentProps<typeof ResizablePanelGroupPrimitive> & {
+  autoSaveId?: string;
+};
+
 function ResizablePanelGroup({
   className,
+  autoSaveId,
+  defaultLayout,
+  onLayoutChanged,
   ...props
-}: React.ComponentProps<typeof ResizablePanelGroupPrimitive>) {
+}: ResizablePanelGroupProps) {
+  const resolvedDefaultLayout = React.useMemo(() => {
+    if (!autoSaveId || typeof window === "undefined") return defaultLayout;
+    try {
+      const stored = window.localStorage.getItem(`alpha-resizable:${autoSaveId}`);
+      if (!stored) return defaultLayout;
+      const parsed = JSON.parse(stored);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : defaultLayout;
+    } catch {
+      return defaultLayout;
+    }
+  }, [autoSaveId, defaultLayout]);
+
+  const handleLayoutChanged = React.useCallback(
+    (
+      layout: NonNullable<React.ComponentProps<typeof ResizablePanelGroupPrimitive>["defaultLayout"]>,
+      meta?: Parameters<NonNullable<React.ComponentProps<typeof ResizablePanelGroupPrimitive>["onLayoutChanged"]>>[1]
+    ) => {
+      if (autoSaveId && typeof window !== "undefined") {
+        try {
+          window.localStorage.setItem(`alpha-resizable:${autoSaveId}`, JSON.stringify(layout));
+        } catch {
+          // Ignore persistence failures and keep resize functional.
+        }
+      }
+      if (meta) {
+        onLayoutChanged?.(layout, meta);
+      } else {
+        onLayoutChanged?.(layout, { isUserInteraction: false });
+      }
+    },
+    [autoSaveId, onLayoutChanged]
+  );
+
   return (
     <ResizablePanelGroupPrimitive
       data-slot="resizable-panel-group"
@@ -85,6 +125,8 @@ function ResizablePanelGroup({
         "flex h-full w-full data-[panel-group-direction=vertical]:flex-col",
         className
       )}
+      defaultLayout={resolvedDefaultLayout}
+      onLayoutChanged={handleLayoutChanged}
       {...props}
     />
   );

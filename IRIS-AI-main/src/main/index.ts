@@ -200,12 +200,27 @@ const defaultGeminiBrainConfig = {
   providerMode: 'gemini-native'
 }
 
+const defaultKimiConfig = {
+  baseUrl: 'https://api.moonshot.ai/v1',
+  modelId: 'moonshot-v1-8k',
+  providerMode: 'openai-compatible'
+}
+
+const defaultGroqConfig = {
+  baseUrl: 'https://api.groq.com/openai/v1',
+  modelId: 'llama-3.1-8b-instant',
+  providerMode: 'openai-compatible'
+}
+
 const defaultProviderConfigs: Partial<
   Record<ApiKeyGroup, { baseUrl: string; modelId: string; providerMode: string }>
 > = {
   glm: defaultGlmConfig,
   zai: defaultZaiConfig,
   geminiBrain: defaultGeminiBrainConfig,
+  geminiAgent: defaultGeminiBrainConfig,
+  groq: defaultGroqConfig,
+  kimi: defaultKimiConfig,
   openrouter: defaultOpenRouterConfig,
   kiloGateway: defaultKiloGatewayConfig,
   routeway: defaultRoutewayConfig
@@ -974,8 +989,9 @@ app.whenReady().then(async () => {
           return { success: false, error: target.lastFailureReason, statuses: getKeyStatuses(secureData) }
         }
       } else if (group === 'groq' || group === 'kimi') {
-        const endpoint = group === 'groq' ? 'https://api.groq.com/openai/v1' : 'https://api.moonshot.ai/v1'
-        const modelId = group === 'groq' ? 'llama-3.1-8b-instant' : 'moonshot-v1-8k'
+        const defaults = getDefaultProviderConfig(group)
+        const endpoint = target.baseUrl || defaults.baseUrl
+        const modelId = target.modelId || defaults.modelId
         const response = await testOpenAiCompatibleSlot({
           providerName: group === 'groq' ? 'Groq' : 'Kimi',
           key,

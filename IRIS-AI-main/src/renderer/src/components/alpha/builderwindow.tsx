@@ -67,6 +67,7 @@ import {
   openBuilderDataFolder,
   type BuilderModelStatuses,
   type BuilderProviderTrace,
+  restoreBuilderProjectLastBackup,
   saveBuilderModelSlot,
   setBuilderModelEnabled,
   type BuilderProjectState,
@@ -834,23 +835,35 @@ function clearAllStoredBuilderChats() {
 
 function formatProviderProof(trace?: BuilderProviderTrace | null) {
   if (!trace) return null;
-  const normalizedProvider = trace.providerUsed.trim().toLowerCase();
-  const normalizedModel = trace.modelUsed.trim().toLowerCase();
+  const providerLabel = trace.actualProviderCalled || trace.providerUsed;
+  const modelLabel = trace.actualModelCalled || trace.modelUsed;
+  const normalizedProvider = providerLabel.trim().toLowerCase();
+  const normalizedModel = modelLabel.trim().toLowerCase();
   if (normalizedProvider.includes(normalizedModel)) {
-    return `Used: ${trace.providerUsed}`;
+    return `Used: ${providerLabel}`;
   }
-  return `Used: ${trace.providerUsed} / ${trace.modelUsed}`;
+  return `Used: ${providerLabel} / ${modelLabel}`;
 }
 
 function formatProviderTrace(trace?: BuilderProviderTrace | null) {
   if (!trace) return null;
   const parts = [
+    trace.selectedProvider ? `selected: ${trace.selectedProvider}` : "",
+    trace.selectedModelId ? `selected model: ${trace.selectedModelId}` : "",
+    trace.actualProviderCalled ? `actual: ${trace.actualProviderCalled}` : "",
+    trace.actualModelCalled ? `actual model: ${trace.actualModelCalled}` : "",
     `mode: ${trace.mode}`,
     `status: ${trace.responseStatus}`,
     `fallback: ${trace.fallbackUsed ? "yes" : "no"}`,
-  ];
+  ].filter(Boolean);
   if (typeof trace.parsedFilesCount === "number") {
     parts.push(`files: ${trace.parsedFilesCount}`);
+  }
+  if (typeof trace.filesApplied === "number") {
+    parts.push(`applied: ${trace.filesApplied}`);
+  }
+  if (trace.parserResult) {
+    parts.push(`parser: ${trace.parserResult}`);
   }
   if (trace.error) {
     parts.push(`error: ${trace.error}`);
@@ -1107,6 +1120,7 @@ function buildMenus(recentWorkspaces: BuilderWorkspaceSummary[]): MenuDef[] {
       { type: "item", label: "Save", shortcut: "Ctrl+S" },
       { type: "item", label: "Save As...", shortcut: "Ctrl+Shift+S" },
       { type: "item", label: "Save All", shortcut: "Ctrl+K S" },
+      { type: "item", label: "Restore Last Clean Preview Files", actionId: "restore-clean-preview-files" },
       { type: "separator" },
       {
         type: "item", label: "Auto Save",
@@ -3868,8 +3882,8 @@ function SettingsPanel({
         </div>
         <button onClick={onClose} className="rounded p-1 text-[#858585] hover:bg-white/[0.06] hover:text-[#cccccc]" title="Close"><X size={14} /></button>
       </div>
-      <PanelGroup orientation="horizontal" className="min-h-0 flex-1">
-        <Panel defaultSize={26} minSize={18} maxSize={34}>
+      <PanelGroup autoSaveId="builder-settings-layout" orientation="horizontal" className="min-h-0 flex-1">
+        <Panel defaultSize={24} minSize={20} maxSize={38}>
         <div className="alpha-scroll-thin h-full overflow-y-auto border-r border-[#2b2b2b] py-2">
           {settingsCategories.map((c) => {
             const Icon = c.Icon;
@@ -3890,7 +3904,7 @@ function SettingsPanel({
         </div>
         </Panel>
         <PanelResizeHandle className="w-[3px] bg-[#1f1f1f] hover:bg-[#007acc]" />
-        <Panel defaultSize={74} minSize={56}>
+        <Panel defaultSize={76} minSize={48}>
         <div className="alpha-scroll-thin h-full overflow-y-auto p-4">
           <div className="mx-auto max-w-[680px]">
             {category === "common" && (
@@ -3956,7 +3970,7 @@ function SettingsPanel({
                               modelId: row.modelId || "",
                               providerMode: row.providerMode || "",
                             };
-                            const isGemini = String(group) === "geminiBrain";
+                            const isGemini = String(group) === "geminiBrain" || String(group) === "geminiAgent";
                             return (
                             <div key={`${group}-${row.slot}`} className="space-y-3 px-3 py-3 text-[12px]">
                               <div className="flex items-center gap-3">
@@ -4770,11 +4784,13 @@ function CenteredModal({
   open,
   onClose,
   widthClassName,
+  contentStyle,
   children,
 }: {
   open: boolean
   onClose: () => void
   widthClassName?: string
+  contentStyle?: React.CSSProperties
   children: React.ReactNode
 }) {
   useEffect(() => {
@@ -4797,9 +4813,10 @@ function CenteredModal({
     >
       <div
         className={cn(
-          "flex max-h-[min(86vh,820px)] w-full overflow-hidden rounded-xl border border-[#3c3c3c] bg-[#1e1e1e] shadow-[0_28px_80px_rgba(0,0,0,0.52)]",
+          "flex w-full overflow-hidden rounded-xl border border-[#3c3c3c] bg-[#1e1e1e] shadow-[0_28px_80px_rgba(0,0,0,0.52)]",
           widthClassName || "max-w-[980px]"
         )}
+        style={contentStyle}
         onMouseDown={(event) => event.stopPropagation()}
       >
         {children}
@@ -5272,6 +5289,30 @@ export function BuilderWindow() {
       void reloadWorkspace();
     }
   }, [activeTabObj, currentProjectId, reloadWorkspace, workspace?.path]);
+
+  const handleRestoreLastCleanPreviewFiles = useCallback(async () => {
+    if (!currentProjectId) {
+      window.alert("No Builder project backup is available for the current workspace.");
+      return;
+    }
+    const response = await restoreBuilderProjectLastBackup(currentProjectId);
+    if (!response.success || !response.state) {
+      window.alert(response.error || "No clean backup found for this project.");
+      return;
+    }
+    setCurrentProjectId(response.state.metadata.id);
+    syncTabsFromProjectState(response.state);
+    setPreviewVersion((prev) => prev + 1);
+    if (workspace?.path) {
+      void reloadWorkspace();
+    }
+    appendAgentMessage({
+      role: "status",
+      content: response.message || "Last clean preview files restored.",
+      providerLabel: response.state.metadata.providerUsed,
+      tone: "success",
+    });
+  }, [appendAgentMessage, currentProjectId, reloadWorkspace, syncTabsFromProjectState, workspace?.path]);
 
   useEffect(() => {
     if (!preferences.autoSave || !activeTabObj?.dirty) return;
@@ -5760,6 +5801,10 @@ export function BuilderWindow() {
       openSettingsModal("common");
       return;
     }
+    if (actionId === "restore-clean-preview-files") {
+      await handleRestoreLastCleanPreviewFiles();
+      return;
+    }
     if (actionId === "open-search") {
       setView("search");
       setShowProfile(false);
@@ -5873,6 +5918,7 @@ export function BuilderWindow() {
       if (l.includes("open file")) { void handleOpenLooseFile(); return; }
       if (l === "save") { void handleSaveCurrent(); return; }
       if (l.includes("save all")) { void handleSaveCurrent(); return; }
+      if (l.includes("restore last clean preview files")) { await handleRestoreLastCleanPreviewFiles(); return; }
       if (l.includes("new folder")) { void handleCreateFolder(); return; }
       if (l.includes("new text file") || l.includes("new file")) {
         void handleCreateFile();
@@ -5923,6 +5969,7 @@ export function BuilderWindow() {
     handleOpenLooseFile,
     handleOpenRecentWorkspace,
     handleRunActiveFile,
+    handleRestoreLastCleanPreviewFiles,
     handleSaveCurrent,
     handleWindowAction,
     insertClipboardText,
@@ -5984,32 +6031,17 @@ export function BuilderWindow() {
           ? "CODING_EDIT"
           : "CODING_GENERATE"
         : inferredIntent;
-    const workspaceContext =
-      workspace?.path || activeTabObj?.path
-        ? [
-            workspace?.path ? `Current workspace: ${workspace.path}` : "",
-            workspaceFileHints.length ? `Workspace file tree:\n${workspaceFileHints.join("\n")}` : "",
-            activeTabObj?.path ? `Current open file: ${activeTabObj.path}` : "",
-            activeTabObj?.content
-              ? `Current open file content:\n\`\`\`\n${activeTabObj.content.slice(0, 12000)}\n\`\`\``
-              : "",
-            "The Builder UI is already open. Do not ask which builder interface or framework to use when the current files already imply the stack.",
-            "Return concrete file edits only."
-          ]
-              .filter(Boolean)
-              .join("\n\n")
-        : "";
     const effectivePrompt =
       isCodingFollowUp && lastCodingContext
         ? `Continue the previous coding task.\nOriginal task: ${lastCodingContext.originalPrompt}\nFollow-up clarification/preference: ${prompt}\n\n${
             currentProjectId || workspace?.path
               ? "Use the current workspace files and apply concrete edits."
               : "Generate concrete project files directly. Do not answer like general chat."
-          }\n\n${workspaceContext}`.trim()
+          }`.trim()
         : intent === "CODING_EDIT" && !currentProjectId && activeTabObj?.path
-          ? `${prompt}\n\n${workspaceContext}`.trim()
+          ? `${prompt}\n\nUse the current open file as the edit target.`.trim()
           : intent === "CODING_EDIT" || intent === "CODING_GENERATE"
-            ? `${prompt}\n\n${workspaceContext}`.trim()
+            ? prompt
             : prompt;
     setActiveRequestId(requestId);
     setLastAgentIntent(intent);
@@ -6234,8 +6266,8 @@ export function BuilderWindow() {
       <Breadcrumbs path={breadcrumbPath} modified={activeTabObj?.dirty} />
       <div className="min-h-0 flex-1">
         {terminalOpen ? (
-          <PanelGroup orientation="vertical" className="h-full w-full">
-            <Panel defaultSize={72} minSize={26}>
+          <PanelGroup autoSaveId="builder-content-terminal-layout" orientation="vertical" className="h-full w-full">
+            <Panel defaultSize={72} minSize={40}>
               <div className="relative h-full">
                 {mode === "code" && (
                   <div className="h-full w-full">
@@ -6257,8 +6289,8 @@ export function BuilderWindow() {
                 )}
                 {mode === "preview" && <div className="h-full w-full"><LivePreview previewPath={previewPath} previewVersion={previewVersion} /></div>}
                 {mode === "split" && (
-                  <PanelGroup orientation="horizontal" className="h-full w-full">
-                    <Panel defaultSize={50} minSize={24}>
+                  <PanelGroup autoSaveId="builder-split-layout-with-terminal" orientation="horizontal" className="h-full w-full">
+                    <Panel defaultSize={50} minSize={22}>
                       {activeTabObj ? (
                         <FunctionalCodeEditor
                           fileName={fileName}
@@ -6275,7 +6307,7 @@ export function BuilderWindow() {
                       )}
                     </Panel>
                     <PanelResizeHandle className="w-[3px] bg-[#1e1e1e] transition-colors hover:bg-[#007acc]" />
-                    <Panel defaultSize={50} minSize={24}>
+                    <Panel defaultSize={50} minSize={22}>
                       <LivePreview previewPath={previewPath} previewVersion={previewVersion} />
                     </Panel>
                   </PanelGroup>
@@ -6283,7 +6315,7 @@ export function BuilderWindow() {
               </div>
             </Panel>
             <PanelResizeHandle className="h-[3px] bg-[#1e1e1e] transition-colors hover:bg-[#007acc]" />
-            <Panel defaultSize={28} minSize={16}>
+            <Panel defaultSize={28} minSize={14} maxSize={60}>
               <TerminalPanel
                 onClose={() => setTerminalOpen(false)}
                 onMinimize={() => setTerminalOpen(false)}
@@ -6315,8 +6347,8 @@ export function BuilderWindow() {
             )}
             {mode === "preview" && <div className="h-full w-full"><LivePreview previewPath={previewPath} previewVersion={previewVersion} /></div>}
             {mode === "split" && (
-              <PanelGroup orientation="horizontal" className="h-full w-full">
-                <Panel defaultSize={50} minSize={24}>
+              <PanelGroup autoSaveId="builder-split-layout" orientation="horizontal" className="h-full w-full">
+                <Panel defaultSize={50} minSize={22}>
                   {activeTabObj ? (
                     <FunctionalCodeEditor
                       fileName={fileName}
@@ -6333,7 +6365,7 @@ export function BuilderWindow() {
                   )}
                 </Panel>
                 <PanelResizeHandle className="w-[3px] bg-[#1e1e1e] transition-colors hover:bg-[#007acc]" />
-                <Panel defaultSize={50} minSize={24}>
+                <Panel defaultSize={50} minSize={22}>
                   <LivePreview previewPath={previewPath} previewVersion={previewVersion} />
                 </Panel>
               </PanelGroup>
@@ -6385,8 +6417,8 @@ export function BuilderWindow() {
         />
         <div className="relative flex min-w-0 flex-1 flex-col">
         {sidebarKey ? (
-          <PanelGroup orientation="horizontal" className="min-h-0 flex-1">
-            <Panel defaultSize={sidebarDefaultSize} minSize={16} maxSize={36}>
+          <PanelGroup autoSaveId={`builder-sidebar-layout-${sidebarKey}`} orientation="horizontal" className="min-h-0 flex-1">
+            <Panel defaultSize={sidebarDefaultSize} minSize={18} maxSize={55}>
               {view === "agent" ? (
                 <CodingAgent
                   messages={agentMessages}
@@ -6442,7 +6474,7 @@ export function BuilderWindow() {
               )}
             </Panel>
             <PanelResizeHandle className="w-[3px] bg-[#1e1e1e] transition-colors hover:bg-[#007acc]" />
-            <Panel defaultSize={100 - sidebarDefaultSize} minSize={40}>
+            <Panel defaultSize={100 - sidebarDefaultSize} minSize={30}>
               <main className="relative flex h-full min-w-0 flex-1 flex-col">
                 {showWelcome ? (
                   <WelcomePage
@@ -6473,7 +6505,12 @@ export function BuilderWindow() {
             )}
           </main>
         )}
-        <CenteredModal open={showSettings} onClose={() => setShowSettings(false)} widthClassName="max-w-[1040px]">
+        <CenteredModal
+          open={showSettings}
+          onClose={() => setShowSettings(false)}
+          widthClassName="max-w-none"
+          contentStyle={{ width: "min(1000px, 88vw)", height: "min(720px, 82vh)" }}
+        >
           <SettingsPanel
             onClose={() => setShowSettings(false)}
             initialCategory={settingsCategory}
@@ -6490,7 +6527,12 @@ export function BuilderWindow() {
             onSaveProvider={handleSaveProvider}
           />
         </CenteredModal>
-        <CenteredModal open={showProfile} onClose={() => setShowProfile(false)} widthClassName="max-w-[760px]">
+        <CenteredModal
+          open={showProfile}
+          onClose={() => setShowProfile(false)}
+          widthClassName="max-w-none"
+          contentStyle={{ width: "min(760px, 82vw)", maxHeight: "min(680px, 78vh)" }}
+        >
           <ProfilePanel
             onClose={() => setShowProfile(false)}
             workspaceName={workspaceLabel}

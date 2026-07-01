@@ -62,20 +62,26 @@ type ProviderSelection = {
 }
 
 type ProviderResult =
-  | { success: true; payload: any; providerLabel: string }
-  | { success: false; code: string; message: string; providerLabel: string; cancelled?: boolean }
+  | { success: true; payload: any; providerLabel: string; actualProvider: ProviderName; actualModel: string }
+  | { success: false; code: string; message: string; providerLabel: string; actualProvider: ProviderName; actualModel: string; cancelled?: boolean }
 
 type ProviderChatResult =
-  | { success: true; content: string; providerLabel: string }
-  | { success: false; code: string; message: string; providerLabel: string; cancelled?: boolean }
+  | { success: true; content: string; providerLabel: string; actualProvider: ProviderName; actualModel: string }
+  | { success: false; code: string; message: string; providerLabel: string; actualProvider: ProviderName; actualModel: string; cancelled?: boolean }
 
 type ProviderTrace = {
+  selectedProvider?: string
+  selectedModelId?: string
+  actualProviderCalled?: string
+  actualModelCalled?: string
   providerUsed: string
   modelUsed: string
   mode: 'chat' | 'coding' | 'edit'
   fallbackUsed: boolean
   responseStatus: 'success' | 'failed' | 'cancelled'
   parsedFilesCount?: number
+  filesApplied?: number
+  parserResult?: string
   error?: string
 }
 
@@ -88,7 +94,9 @@ type BuilderPromptIntent =
 
 type FileExtractionResult = {
   files: ProjectFile[]
-  source: 'structured' | 'codeblocks' | 'fallback'
+  source: 'structured' | 'codeblocks' | 'named-sections' | 'fallback' | 'invalid'
+  parserResult: string
+  reason?: string
 }
 
 const execFileAsync = promisify(execFile)
@@ -105,6 +113,20 @@ const OPENROUTER_DEFAULT_MODEL_ID = 'openai/gpt-4.1-mini'
 const KILO_GATEWAY_DEFAULT_BASE_URL = 'https://api.kilo.ai/api/gateway'
 const KILO_GATEWAY_DEFAULT_MODEL_ID = 'laguna-m.1:free'
 const ROUTEWAY_DEFAULT_BASE_URL = 'https://api.routeway.ai/v1'
+const BACKUP_DIR_NAME = '.alpha-backups'
+const PROMPT_LEAKAGE_PATTERNS: RegExp[] = [
+  /\bCurrent workspace:/i,
+  /\bWorkspace file tree:/i,
+  /\bCurrent open file:/i,
+  /\bCurrent open file content:/i,
+  /\bThe Builder UI is already open\b/i,
+  /\bReturn concrete file edits only\b/i,
+  /\bYou are ALPHA Builder coding agent\b/i,
+  /\bDo not ask which builder\b/i,
+  /\bOriginal request:/i,
+  /\bReturn strict JSON only\b/i,
+  /\bSchema:\s*\{/i
+]
 
 const projectTypeRules: Array<{ type: string; pattern: RegExp }> = [
   { type: 'website', pattern: /\b(discord|youtube|chrome|browser ui|video platform|community app|chat app)\b/i },
@@ -321,6 +343,25 @@ const extractCodeBlockFiles = (raw: string): ProjectFile[] => {
   return files
 }
 
+const extractNamedSectionFiles = (raw: string): ProjectFile[] => {
+  const files: ProjectFile[] = []
+  const pattern =
+    /(?:^|\n)(?:FILE|File|###)\s*:?\s*([A-Za-z0-9_./\\-]+\.[A-Za-z0-9]+)\s*\n```[a-zA-Z0-9+#.-]*\s*([\s\S]*?)```/g
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(raw))) {
+    const filePath = match[1]?.trim().replace(/\\/g, '/').replace(/^\/+/, '')
+    const content = match[2]?.trim()
+    if (!filePath || !content) continue
+    files.push({ path: filePath, content })
+  }
+  return files
+}
+
+const detectPromptLeakage = (text: string) => PROMPT_LEAKAGE_PATTERNS.some((pattern) => pattern.test(text))
+
+const findLeakedFile = (files: ProjectFile[]) =>
+  files.find((file) => detectPromptLeakage(file.content))
+
 const createFallbackWebsiteFiles = (prompt: string): ProjectFile[] => {
   const lower = prompt.toLowerCase()
   const escapedPrompt = prompt.replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -522,23 +563,71 @@ const extractProviderFiles = (payload: any, prompt: string, projectType: string)
     }))
 
   if (files.length) {
+    const leakedFile = findLeakedFile(files)
+    if (leakedFile) {
+      debugBuilder('provider-parse', {
+        projectType,
+        promptLength: prompt.length,
+        structuredFiles: files.length,
+        parserResult: 'prompt-leakage',
+        leakedFile: leakedFile.path
+      })
+      return {
+        files: [],
+        source: 'invalid',
+        parserResult: 'prompt-leakage',
+        reason: `Internal prompt/context leakage detected in ${leakedFile.path}.`
+      }
+    }
     debugBuilder('provider-parse', {
       projectType,
       promptLength: prompt.length,
       structuredFiles: files.length,
-      fallbackUsed: false
+      fallbackUsed: false,
+      parserResult: 'structured'
     })
-    return { files, source: 'structured' }
+    return { files, source: 'structured', parserResult: 'structured' }
   }
 
   if (typeof payload?.rawText === 'string') {
+    const namedSectionFiles = extractNamedSectionFiles(payload.rawText)
+    if (namedSectionFiles.length) {
+      const leakedFile = findLeakedFile(namedSectionFiles)
+      if (leakedFile) {
+        return {
+          files: [],
+          source: 'invalid',
+          parserResult: 'prompt-leakage',
+          reason: `Internal prompt/context leakage detected in ${leakedFile.path}.`
+        }
+      }
+      debugBuilder('provider-parse', {
+        projectType,
+        promptLength: prompt.length,
+        namedSectionFiles: namedSectionFiles.length,
+        fallbackUsed: false,
+        parserResult: 'named-sections'
+      })
+      return { files: namedSectionFiles, source: 'named-sections', parserResult: 'named-sections' }
+    }
+
     const codeBlockFiles = extractCodeBlockFiles(payload.rawText)
     if (codeBlockFiles.length) {
+      const leakedFile = findLeakedFile(codeBlockFiles)
+      if (leakedFile) {
+        return {
+          files: [],
+          source: 'invalid',
+          parserResult: 'prompt-leakage',
+          reason: `Internal prompt/context leakage detected in ${leakedFile.path}.`
+        }
+      }
       debugBuilder('provider-parse', {
         projectType,
         promptLength: prompt.length,
         codeBlockFiles: codeBlockFiles.length,
-        fallbackUsed: false
+        fallbackUsed: false,
+        parserResult: 'codeblocks'
       })
       const hasReadme = codeBlockFiles.some((file) => file.path.toLowerCase() === 'readme.md')
       return {
@@ -551,7 +640,8 @@ const extractProviderFiles = (payload: any, prompt: string, projectType: string)
                 content: `# ALPHA generated project\n\nPrompt: ${prompt}\n`
               }
             ],
-        source: 'codeblocks'
+        source: 'codeblocks',
+        parserResult: 'codeblocks'
       }
     }
   }
@@ -561,9 +651,10 @@ const extractProviderFiles = (payload: any, prompt: string, projectType: string)
     promptLength: prompt.length,
     codeBlockFiles: 0,
     fallbackUsed: false,
-    usableFiles: false
+    usableFiles: false,
+    parserResult: 'no-usable-files'
   })
-  return { files: [], source: 'fallback' }
+  return { files: [], source: 'fallback', parserResult: 'no-usable-files', reason: 'Provider did not return a usable file map.' }
 }
 
 const createPromptAwareFallbackFiles = (prompt: string, projectType: string): ProjectFile[] => {
@@ -1087,7 +1178,12 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
     return ''
   }
 
-  const parseProviderPayload = (content: string, providerLabel: string): ProviderResult => {
+  const parseProviderPayload = (
+    content: string,
+    providerLabel: string,
+    actualProvider: ProviderName,
+    actualModel: string
+  ): ProviderResult => {
     debugBuilder('provider-response', {
       providerLabel,
       responseLength: content.length,
@@ -1105,10 +1201,12 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
           rawText: content,
           files: extractCodeBlockFiles(content)
         },
-        providerLabel
+        providerLabel,
+        actualProvider,
+        actualModel
       }
     }
-    return { success: true, payload: parsed, providerLabel }
+    return { success: true, payload: parsed, providerLabel, actualProvider, actualModel }
   }
 
   const resolveGeminiSelection = (selection?: ProviderSelection) => {
@@ -1142,7 +1240,9 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
         success: false,
         code: 'GEMINI_MISSING_KEY',
         message: 'Gemini key missing hai. Gemini key/settings check karo ya OpenRouter/Kimi choose karo.',
-        providerLabel
+        providerLabel,
+        actualProvider: 'gemini',
+        actualModel: modelId
       }
     }
 
@@ -1178,11 +1278,11 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
             : response.status === 429
               ? 'Gemini rate limit/quota hit hua. Dusra fallback choose karo.'
               : `Gemini provider error ${response.status}: ${errorBody.slice(0, 180)}`
-        return { success: false, code: `GEMINI_${response.status}`, message: exactMessage, providerLabel }
+        return { success: false, code: `GEMINI_${response.status}`, message: exactMessage, providerLabel, actualProvider: 'gemini', actualModel: modelId }
       }
 
       const data = await response.json()
-      return parseProviderPayload(normalizeGeminiText(data), providerLabel)
+      return parseProviderPayload(normalizeGeminiText(data), providerLabel, 'gemini', modelId)
     } catch (error: any) {
       if (error?.name === 'AbortError') {
         return {
@@ -1190,6 +1290,8 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
           code: 'REQUEST_CANCELLED',
           message: 'Builder request cancelled.',
           providerLabel,
+          actualProvider: 'gemini',
+          actualModel: modelId,
           cancelled: true
         }
       }
@@ -1197,7 +1299,9 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
         success: false,
         code: 'GEMINI_NETWORK_ERROR',
         message: error?.message || 'Gemini request failed.',
-        providerLabel
+        providerLabel,
+        actualProvider: 'gemini',
+        actualModel: modelId
       }
     }
   }
@@ -1210,6 +1314,7 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
       key: string
       model: string
       providerLabel: string
+      actualProvider: ProviderName
       headers?: Record<string, string>
     },
     signal?: AbortSignal
@@ -1251,11 +1356,18 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
         } else if (response.status === 429) {
           message = `${config.providerLabel} rate limit/quota hit hua.`
         }
-        return { success: false, code: `${config.providerLabel.toUpperCase()}_${response.status}`, message, providerLabel: config.providerLabel }
+        return {
+          success: false,
+          code: `${config.providerLabel.toUpperCase()}_${response.status}`,
+          message,
+          providerLabel: config.providerLabel,
+          actualProvider: config.actualProvider,
+          actualModel: config.model
+        }
       }
 
       const data = await response.json()
-      return parseProviderPayload(extractCompatibleResponseText(data), config.providerLabel)
+      return parseProviderPayload(extractCompatibleResponseText(data), config.providerLabel, config.actualProvider, config.model)
     } catch (error: any) {
       if (error?.name === 'AbortError') {
         return {
@@ -1263,6 +1375,8 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
           code: 'REQUEST_CANCELLED',
           message: 'Builder request cancelled.',
           providerLabel: config.providerLabel,
+          actualProvider: config.actualProvider,
+          actualModel: config.model,
           cancelled: true
         }
       }
@@ -1270,7 +1384,9 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
         success: false,
         code: `${config.providerLabel.toUpperCase()}_NETWORK_ERROR`,
         message: error?.message || `${config.providerLabel} request failed.`,
-        providerLabel: config.providerLabel
+        providerLabel: config.providerLabel,
+        actualProvider: config.actualProvider,
+        actualModel: config.model
       }
     }
   }
@@ -1300,7 +1416,9 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
         success: false,
         code: 'MISSING_GLM_KEY',
         message: buildSelectedProviderMissingMessage(selection || { provider: 'glm' }),
-        providerLabel: selection?.label || 'GLM 5.2'
+        providerLabel: selection?.label || 'GLM 5.2',
+        actualProvider: 'glm',
+        actualModel: selection?.modelId || ZENMUX_DEFAULT_MODEL_ID
       }
     }
 
@@ -1370,13 +1488,15 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
           success: false,
           code: response.status === 404 ? 'GLM_MODEL_INVALID' : response.status === 401 || response.status === 403 ? 'GLM_AUTH_FAILED' : 'GLM_REQUEST_FAILED',
           message: errorMessage,
-          providerLabel
+          providerLabel,
+          actualProvider: 'glm',
+          actualModel: modelId
         }
       }
 
       const data = await response.json()
       const content = extractCompatibleResponseText(data)
-      const parsed = parseProviderPayload(content, providerLabel)
+      const parsed = parseProviderPayload(content, providerLabel, 'glm', modelId)
       if (!parsed.success) return parsed
 
       if (selectedSlot) {
@@ -1392,6 +1512,8 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
           code: 'REQUEST_CANCELLED',
           message: 'Builder request cancelled.',
           providerLabel,
+          actualProvider: 'glm',
+          actualModel: modelId,
           cancelled: true
         }
       }
@@ -1404,7 +1526,9 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
         success: false,
         code: 'GLM_NETWORK_ERROR',
         message: error?.message || 'GLM network request failed.',
-        providerLabel
+        providerLabel,
+        actualProvider: 'glm',
+        actualModel: modelId
       }
     }
   }
@@ -1434,7 +1558,9 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
         success: false,
         code: 'MISSING_ZAI_KEY',
         message: buildSelectedProviderMissingMessage(selection || { provider: 'zai' }),
-        providerLabel: selection?.label || 'Z.AI'
+        providerLabel: selection?.label || 'Z.AI',
+        actualProvider: 'zai',
+        actualModel: selection?.modelId || ZAI_DEFAULT_MODEL_ID
       }
     }
 
@@ -1494,13 +1620,15 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
           success: false,
           code: response.status === 404 ? 'ZAI_MODEL_INVALID' : response.status === 401 || response.status === 403 ? 'ZAI_AUTH_FAILED' : 'ZAI_REQUEST_FAILED',
           message: errorMessage,
-          providerLabel
+          providerLabel,
+          actualProvider: 'zai',
+          actualModel: modelId
         }
       }
 
       const data = await response.json()
       const content = extractCompatibleResponseText(data)
-      const parsed = parseProviderPayload(content, providerLabel)
+      const parsed = parseProviderPayload(content, providerLabel, 'zai', modelId)
       if (selectedSlot) {
         const secureDataOnSuccess = readSecureVault()
         markActiveZaiSlot(secureDataOnSuccess, selectedSlot.slot)
@@ -1514,6 +1642,8 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
           code: 'REQUEST_CANCELLED',
           message: 'Builder request cancelled.',
           providerLabel,
+          actualProvider: 'zai',
+          actualModel: modelId,
           cancelled: true
         }
       }
@@ -1526,7 +1656,9 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
         success: false,
         code: 'ZAI_NETWORK_ERROR',
         message: error?.message || 'Z.AI network request failed.',
-        providerLabel
+        providerLabel,
+        actualProvider: 'zai',
+        actualModel: modelId
       }
     }
   }
@@ -1536,6 +1668,7 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
   ):
     | {
         providerLabel: string
+        actualProvider: ProviderName
         endpoint: string
         key: string
         model: string
@@ -1567,7 +1700,9 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
             success: false,
             code: `${selection.provider.toUpperCase()}_MISSING_KEY`,
             message: buildSelectedProviderMissingMessage(selection),
-            providerLabel: selection.label || selection.provider
+            providerLabel: selection.label || selection.provider,
+            actualProvider: selection.provider,
+            actualModel: model
           }
         }
       }
@@ -1577,12 +1712,15 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
             success: false,
             code: `${selection.provider.toUpperCase()}_MISSING_MODEL`,
             message: 'Selected model configured nahi hai. Model settings check karo ya doosra model select karo.',
-            providerLabel: selection.label || selection.provider
+            providerLabel: selection.label || selection.provider,
+            actualProvider: selection.provider,
+            actualModel: model
           }
         }
       }
       return {
         providerLabel: selection.label || `${selection.provider}`,
+        actualProvider: selection.provider,
         endpoint: normalizeCompatibleBaseUrl(baseUrl),
         key,
         model,
@@ -1606,12 +1744,15 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
             success: false,
             code: `${selection.provider.toUpperCase()}_MISSING_KEY`,
             message: buildSelectedProviderMissingMessage(selection),
-            providerLabel: selection.label || selection.provider
+            providerLabel: selection.label || selection.provider,
+            actualProvider: selection.provider,
+            actualModel: model
           }
         }
       }
       return {
         providerLabel: selection.label || (selection.provider === 'groq' ? 'Groq' : 'Kimi'),
+        actualProvider: selection.provider,
         endpoint: normalizeCompatibleBaseUrl(baseUrl),
         key,
         model,
@@ -1624,7 +1765,9 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
         success: false,
         code: 'UNSUPPORTED_PROVIDER',
         message: `${selection.provider} provider currently unsupported.`,
-        providerLabel: selection.label || selection.provider
+        providerLabel: selection.label || selection.provider,
+        actualProvider: selection.provider,
+        actualModel: selection.modelId || ''
       }
     }
   }
@@ -1649,6 +1792,7 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
       key: resolved.key,
       model: resolved.model,
       providerLabel: resolved.providerLabel,
+      actualProvider: resolved.actualProvider,
       headers: resolved.headers
     }, signal)
 
@@ -1688,7 +1832,9 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
         success: false,
         code: 'GEMINI_MISSING_KEY',
         message: 'Selected provider API key missing hai.',
-        providerLabel
+        providerLabel,
+        actualProvider: 'gemini',
+        actualModel: modelId
       }
     }
 
@@ -1716,12 +1862,25 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
             : response.status === 429
               ? 'Gemini rate limit/quota hit hua.'
               : `Gemini provider error ${response.status}: ${errorBody.slice(0, 180)}`
-        return { success: false, code: `GEMINI_${response.status}`, message, providerLabel }
+        return {
+          success: false,
+          code: `GEMINI_${response.status}`,
+          message,
+          providerLabel,
+          actualProvider: 'gemini',
+          actualModel: modelId
+        }
       }
 
       const data = await response.json()
       const content = normalizeGeminiText(data)
-      return { success: true, content: content || 'Main yahan hoon. Batao kya build ya explain karna hai.', providerLabel }
+      return {
+        success: true,
+        content: content || 'Main yahan hoon. Batao kya build ya explain karna hai.',
+        providerLabel,
+        actualProvider: 'gemini',
+        actualModel: modelId
+      }
     } catch (error: any) {
       if (error?.name === 'AbortError') {
         return {
@@ -1729,6 +1888,8 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
           code: 'REQUEST_CANCELLED',
           message: 'Builder request cancelled.',
           providerLabel,
+          actualProvider: 'gemini',
+          actualModel: modelId,
           cancelled: true
         }
       }
@@ -1736,7 +1897,9 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
         success: false,
         code: 'GEMINI_NETWORK_ERROR',
         message: error?.message || 'Gemini request failed.',
-        providerLabel
+        providerLabel,
+        actualProvider: 'gemini',
+        actualModel: modelId
       }
     }
   }
@@ -1749,6 +1912,7 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
       key: string
       model: string
       providerLabel: string
+      actualProvider: ProviderName
       headers?: Record<string, string>
     },
     signal?: AbortSignal
@@ -1778,14 +1942,23 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
         if (response.status === 401 || response.status === 403) message = `${config.providerLabel} auth failed. API key/settings check karo.`
         else if (response.status === 404) message = `${config.providerLabel} model invalid lag raha hai. Model/settings check karo.`
         else if (response.status === 429) message = `${config.providerLabel} rate limit/quota hit hua.`
-        return { success: false, code: `${config.providerLabel.toUpperCase()}_${response.status}`, message, providerLabel: config.providerLabel }
+        return {
+          success: false,
+          code: `${config.providerLabel.toUpperCase()}_${response.status}`,
+          message,
+          providerLabel: config.providerLabel,
+          actualProvider: config.actualProvider,
+          actualModel: config.model
+        }
       }
 
       const data = await response.json()
       return {
         success: true,
         content: extractCompatibleResponseText(data) || 'Main yahan hoon. Batao kya build ya explain karna hai.',
-        providerLabel: config.providerLabel
+        providerLabel: config.providerLabel,
+        actualProvider: config.actualProvider,
+        actualModel: config.model
       }
     } catch (error: any) {
       if (error?.name === 'AbortError') {
@@ -1794,6 +1967,8 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
           code: 'REQUEST_CANCELLED',
           message: 'Builder request cancelled.',
           providerLabel: config.providerLabel,
+          actualProvider: config.actualProvider,
+          actualModel: config.model,
           cancelled: true
         }
       }
@@ -1801,7 +1976,9 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
         success: false,
         code: `${config.providerLabel.toUpperCase()}_NETWORK_ERROR`,
         message: error?.message || `${config.providerLabel} request failed.`,
-        providerLabel: config.providerLabel
+        providerLabel: config.providerLabel,
+        actualProvider: config.actualProvider,
+        actualModel: config.model
       }
     }
   }
@@ -1831,7 +2008,9 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
           success: false,
           code: 'MISSING_GLM_KEY',
           message: 'Selected provider API key missing hai.',
-          providerLabel: selection.label || 'GLM 5.2'
+          providerLabel: selection.label || 'GLM 5.2',
+          actualProvider: 'glm',
+          actualModel: selection.modelId || ZENMUX_DEFAULT_MODEL_ID
         }
       }
       const key = directKey || decryptVaultValue(selectedSlot?.key).trim()
@@ -1851,6 +2030,7 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
           key,
           model: modelId,
           providerLabel,
+          actualProvider: 'glm',
           headers:
             providerMode === 'direct-zai'
               ? {
@@ -1876,7 +2056,9 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
           success: false,
           code: 'MISSING_ZAI_KEY',
           message: 'Selected provider API key missing hai.',
-          providerLabel: selection.label || 'Z.AI'
+          providerLabel: selection.label || 'Z.AI',
+          actualProvider: 'zai',
+          actualModel: selection.modelId || ZAI_DEFAULT_MODEL_ID
         }
       }
       const key = directKey || decryptVaultValue(selectedSlot?.key).trim()
@@ -1894,7 +2076,8 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
           endpoint,
           key,
           model: modelId,
-          providerLabel: selection.label || 'Z.AI'
+          providerLabel: selection.label || 'Z.AI',
+          actualProvider: 'zai'
         },
         signal
       )
@@ -1908,6 +2091,8 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
         code: errorResult.code,
         message: errorResult.message,
         providerLabel: errorResult.providerLabel,
+        actualProvider: errorResult.actualProvider,
+        actualModel: errorResult.actualModel,
         cancelled: errorResult.cancelled
       }
     }
@@ -1919,6 +2104,7 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
         key: resolved.key,
         model: resolved.model,
         providerLabel: resolved.providerLabel,
+        actualProvider: resolved.actualProvider,
         headers: resolved.headers
       },
       signal
@@ -1927,6 +2113,27 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
 
   const buildStructuredRetryPrompt = (prompt: string) =>
     `Original request: ${prompt}\n\nYou are inside ALPHA Builder with an active workspace. Your previous response was not in usable file format. Return strict JSON only using this schema: {"projectName":"string","projectType":"string","summary":"string","files":[{"path":"relative/path","content":"file contents"}]}. Do not include markdown or explanation.`
+
+  const createProjectBackup = (projectPath: string, previousFiles: ProjectFile[], nextFiles: ProjectFile[]) => {
+    if (!previousFiles.length) return null
+    const previousMap = new Map(previousFiles.map((file) => [file.path, file.content]))
+    const changedFiles = nextFiles.filter((file) => previousMap.has(file.path) && previousMap.get(file.path) !== file.content)
+    if (!changedFiles.length) return null
+
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const backupRoot = path.join(projectPath, BACKUP_DIR_NAME, stamp)
+    ensureDir(backupRoot)
+
+    for (const file of changedFiles) {
+      const previousContent = previousMap.get(file.path)
+      if (typeof previousContent !== 'string') continue
+      const backupFile = safeProjectFilePath(backupRoot, file.path)
+      ensureDir(path.dirname(backupFile))
+      fs.writeFileSync(backupFile, previousContent, 'utf8')
+    }
+
+    return backupRoot
+  }
 
   const runAbortableBuilderRequest = async <T>(
     requestId: string | undefined,
@@ -1953,13 +2160,15 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
     currentFiles?: ProjectFile[],
     signal?: AbortSignal
   ): Promise<{
+    success: boolean
     files: ProjectFile[]
     usedFallback: boolean
     providerNotice?: string
+    parserResult: string
   }> => {
     const initial = extractProviderFiles(generated.payload || {}, prompt, projectType)
-    if (initial.source !== 'fallback') {
-      return { files: initial.files, usedFallback: false }
+    if (initial.source !== 'fallback' && initial.source !== 'invalid') {
+      return { success: true, files: initial.files, usedFallback: false, parserResult: initial.parserResult }
     }
 
     const retry = await callProvider(
@@ -1971,11 +2180,13 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
 
     if (retry.success) {
       const retried = extractProviderFiles(retry.payload || {}, prompt, projectType)
-      if (retried.source !== 'fallback') {
+      if (retried.source !== 'fallback' && retried.source !== 'invalid') {
         return {
+          success: true,
           files: retried.files,
           usedFallback: false,
-          providerNotice: 'Provider ko strict file retry bheja gaya aur usable files mil gayi.'
+          providerNotice: 'Provider ko strict file retry bheja gaya aur usable files mil gayi.',
+          parserResult: retried.parserResult
         }
       }
     } else if (retry.cancelled) {
@@ -1983,9 +2194,13 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
     }
 
     return {
-      files: createPromptAwareFallbackFiles(prompt, projectType),
-      usedFallback: true,
-      providerNotice: 'Provider response usable file format me nahi tha, local prompt-aware scaffold use kiya.'
+      success: false,
+      files: [],
+      usedFallback: false,
+      providerNotice:
+        initial.reason ||
+        'Selected provider did not return usable file edits. No files were changed.',
+      parserResult: initial.parserResult || 'no-usable-files'
     }
   }
 
@@ -1995,11 +2210,15 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
     prompt: string,
     files: ProjectFile[],
     providerUsed: string,
-    modelUsed: string = PROJECT_MODEL
+    modelUsed: string = PROJECT_MODEL,
+    previousFiles: ProjectFile[] = []
   ) => {
     const projectPath = path.join(projectsRoot, projectId)
     ensureDir(projectPath)
     ensureDir(path.join(projectPath, 'exports'))
+    ensureDir(path.join(projectPath, BACKUP_DIR_NAME))
+
+    createProjectBackup(projectPath, previousFiles, files)
 
     for (const file of files) {
       const targetFile = safeProjectFilePath(projectPath, file.path)
@@ -2056,6 +2275,57 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
     return { metadata, files }
   }
 
+  const restoreLatestProjectBackup = (projectId: string): ProjectState | null => {
+    const existing = readProjectState(projectId)
+    const backupRoot = path.join(existing.metadata.projectPath, BACKUP_DIR_NAME)
+    if (!fs.existsSync(backupRoot)) return null
+
+    const latest = fs
+      .readdirSync(backupRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort()
+      .pop()
+
+    if (!latest) return null
+
+    const latestRoot = path.join(backupRoot, latest)
+    const restoredFiles: ProjectFile[] = []
+    const walk = (dirPath: string) => {
+      for (const entry of fs.readdirSync(dirPath, { withFileTypes: true })) {
+        const fullPath = path.join(dirPath, entry.name)
+        if (entry.isDirectory()) {
+          walk(fullPath)
+          continue
+        }
+        if (!entry.isFile()) continue
+        const relativePath = path.relative(latestRoot, fullPath).replace(/\\/g, '/')
+        const restoredContent = fs.readFileSync(fullPath, 'utf8')
+        const targetPath = safeProjectFilePath(existing.metadata.projectPath, relativePath)
+        ensureDir(path.dirname(targetPath))
+        fs.writeFileSync(targetPath, restoredContent, 'utf8')
+        restoredFiles.push({ path: relativePath, content: restoredContent })
+      }
+    }
+
+    walk(latestRoot)
+    if (!restoredFiles.length) return null
+
+    const mergedFiles = [
+      ...existing.files.filter((file) => !restoredFiles.some((restored) => restored.path === file.path)),
+      ...restoredFiles
+    ]
+
+    return writeProjectState(
+      projectId,
+      existing.metadata.name,
+      existing.metadata.lastPrompt,
+      mergedFiles,
+      existing.metadata.providerUsed,
+      existing.metadata.modelUsed || PROJECT_MODEL
+    )
+  }
+
   const emitTerminalEvent = (payload: Record<string, any>) => {
     BrowserWindow.getAllWindows().forEach((window) => {
       window.webContents.send('builder-terminal-event', payload)
@@ -2079,6 +2349,8 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
     const providerSelection = parseProviderSelection(provider)
     const selectedModelId = providerSelection.modelId || getProviderDefaults(providerSelection.provider).modelId
     const providerTraceBase: Omit<ProviderTrace, 'responseStatus' | 'fallbackUsed'> = {
+      selectedProvider: providerSelection.provider,
+      selectedModelId: selectedModelId || PROJECT_MODEL,
       providerUsed: providerSelection.label || providerSelection.provider,
       modelUsed: selectedModelId || PROJECT_MODEL,
       mode: intent === 'CODING_EDIT' ? 'edit' : 'coding'
@@ -2120,10 +2392,43 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
       }
 
       const payload = generated.payload || {}
+      const actualProviderCalled = resolveProviderName(undefined, generated.providerLabel)
+      if (actualProviderCalled !== providerSelection.provider) {
+        return {
+          success: false,
+          error: 'Provider mismatch detected. No files changed.',
+          providerError: 'Provider mismatch detected. No files changed.',
+          providerTrace: {
+            ...providerTraceBase,
+            actualProviderCalled,
+            actualModelCalled: generated.actualModel,
+            responseStatus: 'failed',
+            fallbackUsed: false,
+            parserResult: 'provider-mismatch',
+            error: 'Provider mismatch detected. No files changed.'
+          }
+        }
+      }
       const projectName = slugify(payload.projectName || guessProjectName(prompt || '', projectType))
       const resolved = await runAbortableBuilderRequest(requestId, (signal) =>
         resolveGeneratedProjectFiles(providerSelection, prompt || '', projectType, generated, undefined, signal)
       )
+      if (!resolved.success) {
+        return {
+          success: false,
+          error: resolved.providerNotice || 'Selected provider did not return usable file edits. No files were changed.',
+          providerError: resolved.providerNotice || 'Selected provider did not return usable file edits. No files were changed.',
+          providerTrace: {
+            ...providerTraceBase,
+            actualProviderCalled,
+            actualModelCalled: generated.actualModel,
+            responseStatus: 'failed',
+            fallbackUsed: false,
+            parserResult: resolved.parserResult,
+            error: resolved.providerNotice || 'Selected provider did not return usable file edits. No files were changed.'
+          }
+        }
+      }
       debugBuilder('create-result', {
         provider: providerSelection.provider,
         success: true,
@@ -2146,6 +2451,9 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
         previewHtml: inlinePreviewHtml(state.files),
         ...(resolved.providerNotice ? { providerError: resolved.providerNotice, usedFallback: resolved.usedFallback } : {}),
         providerTrace: {
+          ...providerTraceBase,
+          actualProviderCalled,
+          actualModelCalled: generated.actualModel,
           providerUsed: generated.providerLabel,
           modelUsed:
             providerSelection.modelId || payload.modelId || payload.projectModel || selectedModelId || PROJECT_MODEL,
@@ -2153,6 +2461,8 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
           responseStatus: 'success',
           fallbackUsed: resolved.usedFallback,
           parsedFilesCount: resolved.files.length,
+          filesApplied: resolved.files.length,
+          parserResult: resolved.parserResult,
           ...(resolved.providerNotice ? { error: resolved.providerNotice } : {})
         }
       }
@@ -2181,6 +2491,8 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
     const providerSelection = parseProviderSelection(provider, existing.metadata.providerUsed)
     const selectedModelId = providerSelection.modelId || existing.metadata.modelUsed || getProviderDefaults(providerSelection.provider).modelId
     const providerTraceBase: Omit<ProviderTrace, 'responseStatus' | 'fallbackUsed'> = {
+      selectedProvider: providerSelection.provider,
+      selectedModelId: selectedModelId || PROJECT_MODEL,
       providerUsed: providerSelection.label || providerSelection.provider,
       modelUsed: selectedModelId || PROJECT_MODEL,
       mode: intent === 'CODING_EDIT' ? 'edit' : 'coding'
@@ -2277,6 +2589,23 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
     }
 
     const payload = generated.payload || {}
+    const actualProviderCalled = resolveProviderName(undefined, generated.providerLabel)
+    if (actualProviderCalled !== providerSelection.provider) {
+      return {
+        success: false,
+        error: 'Provider mismatch detected. No files changed.',
+        providerError: 'Provider mismatch detected. No files changed.',
+        providerTrace: {
+          ...providerTraceBase,
+          actualProviderCalled,
+          actualModelCalled: generated.actualModel,
+          responseStatus: 'failed',
+          fallbackUsed: false,
+          parserResult: 'provider-mismatch',
+          error: 'Provider mismatch detected. No files changed.'
+        }
+      }
+    }
     const resolved = await runAbortableBuilderRequest(requestId, (signal) =>
       resolveGeneratedProjectFiles(
         providerSelection,
@@ -2287,6 +2616,26 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
         signal
       )
     )
+    if (!resolved.success) {
+      return {
+        success: false,
+        error: kiloDisabledMessage
+          ? `${kiloDisabledMessage}\n\n${resolved.providerNotice || 'Selected provider did not return usable file edits. No files were changed.'}`
+          : resolved.providerNotice || 'Selected provider did not return usable file edits. No files were changed.',
+        providerError: kiloDisabledMessage
+          ? `${kiloDisabledMessage}\n\n${resolved.providerNotice || 'Selected provider did not return usable file edits. No files were changed.'}`
+          : resolved.providerNotice || 'Selected provider did not return usable file edits. No files were changed.',
+        providerTrace: {
+          ...providerTraceBase,
+          actualProviderCalled,
+          actualModelCalled: generated.actualModel,
+          responseStatus: 'failed',
+          fallbackUsed: false,
+          parserResult: resolved.parserResult,
+          error: resolved.providerNotice || 'Selected provider did not return usable file edits. No files were changed.'
+        }
+      }
+    }
     debugBuilder('update-result', {
       provider: providerSelection.provider,
       success: true,
@@ -2300,7 +2649,8 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
       prompt || '',
       resolved.files,
       generated.providerLabel,
-      providerSelection.modelId || payload.modelId || payload.projectModel || existing.metadata.modelUsed || PROJECT_MODEL
+      providerSelection.modelId || payload.modelId || payload.projectModel || existing.metadata.modelUsed || PROJECT_MODEL,
+      existing.files
     )
 
     return {
@@ -2310,6 +2660,9 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
       ...(kiloDisabledMessage ? { message: kiloDisabledMessage } : {}),
       ...(resolved.providerNotice ? { providerError: resolved.providerNotice, usedFallback: resolved.usedFallback } : {}),
       providerTrace: {
+        ...providerTraceBase,
+        actualProviderCalled,
+        actualModelCalled: generated.actualModel,
         providerUsed: generated.providerLabel,
         modelUsed:
           providerSelection.modelId || payload.modelId || payload.projectModel || existing.metadata.modelUsed || PROJECT_MODEL,
@@ -2317,6 +2670,8 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
         responseStatus: 'success',
         fallbackUsed: resolved.usedFallback,
         parsedFilesCount: resolved.files.length,
+        filesApplied: resolved.files.length,
+        parserResult: resolved.parserResult,
         ...(resolved.providerNotice ? { error: resolved.providerNotice } : {})
       }
     }
@@ -2421,6 +2776,23 @@ export default function registerProjectBuilder({ ipcMain }: { ipcMain: IpcMain }
       return { success: true, state, previewHtml: inlinePreviewHtml(state.files) }
     } catch (error: any) {
       return { success: false, error: error?.message || 'Project not found.' }
+    }
+  })
+
+  ipcMain.handle('project-builder-restore-last-backup', async (_, { projectId }) => {
+    try {
+      const state = restoreLatestProjectBackup(projectId)
+      if (!state) {
+        return { success: false, error: 'No clean backup found for this project.' }
+      }
+      return {
+        success: true,
+        state,
+        previewHtml: inlinePreviewHtml(state.files),
+        message: 'Last clean preview files restored.'
+      }
+    } catch (error: any) {
+      return { success: false, error: error?.message || 'Backup restore failed.' }
     }
   })
 

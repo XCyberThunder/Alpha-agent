@@ -48,12 +48,18 @@ export type BuilderChatResponse = {
 }
 
 export type BuilderProviderTrace = {
+  selectedProvider?: string
+  selectedModelId?: string
+  actualProviderCalled?: string
+  actualModelCalled?: string
   providerUsed: string
   modelUsed: string
   mode: 'chat' | 'coding' | 'edit'
   fallbackUsed: boolean
   responseStatus: 'success' | 'failed' | 'cancelled'
   parsedFilesCount?: number
+  filesApplied?: number
+  parserResult?: string
   error?: string
 }
 
@@ -201,6 +207,12 @@ export const saveBuilderProjectFile = async (
   return window.electron.ipcRenderer.invoke('project-builder-save-file', { projectId, filePath, content })
 }
 
+export const restoreBuilderProjectLastBackup = async (
+  projectId: string
+): Promise<BuilderProjectResponse> => {
+  return window.electron.ipcRenderer.invoke('project-builder-restore-last-backup', { projectId })
+}
+
 export const openBuilderWindow = async (payload: {
   state?: BuilderProjectState
   previewHtml?: string
@@ -269,7 +281,7 @@ export const getBuilderModelStatuses = async (): Promise<{
 }
 
 export const saveBuilderModelSlot = async (payload: {
-  group: 'glm' | 'zai' | 'geminiBrain' | 'kimi' | 'openrouter' | 'groq' | 'kiloGateway' | 'routeway'
+  group: 'glm' | 'zai' | 'geminiBrain' | 'geminiAgent' | 'kimi' | 'openrouter' | 'groq' | 'kiloGateway' | 'routeway'
   slot: number
   key: string
   baseUrl: string
@@ -280,7 +292,7 @@ export const saveBuilderModelSlot = async (payload: {
 }
 
 export const setBuilderModelEnabled = async (payload: {
-  group: 'glm' | 'zai' | 'geminiBrain' | 'kimi' | 'openrouter' | 'groq' | 'kiloGateway' | 'routeway'
+  group: 'glm' | 'zai' | 'geminiBrain' | 'geminiAgent' | 'kimi' | 'openrouter' | 'groq' | 'kiloGateway' | 'routeway'
   slot: number
   enabled: boolean
 }) => {
@@ -288,7 +300,7 @@ export const setBuilderModelEnabled = async (payload: {
 }
 
 export const testBuilderModelSlot = async (payload: {
-  group: 'glm' | 'zai' | 'geminiBrain' | 'kimi' | 'openrouter' | 'groq' | 'kiloGateway' | 'routeway'
+  group: 'glm' | 'zai' | 'geminiBrain' | 'geminiAgent' | 'kimi' | 'openrouter' | 'groq' | 'kiloGateway' | 'routeway'
   slot: number
 }) => {
   return window.electron.ipcRenderer.invoke('key-manager-test-key', payload)

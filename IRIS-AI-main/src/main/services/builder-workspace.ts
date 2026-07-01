@@ -49,7 +49,7 @@ const execFileAsync = promisify(execFile)
 const STORE_FILE = path.join(app.getPath('userData'), 'builder-workspace.json')
 const MAX_RECENT = 12
 const terminalSessions = new Map<string, TerminalSession>()
-const SEARCH_IGNORES = new Set(['node_modules', '.git', 'dist', 'build'])
+const SEARCH_IGNORES = new Set(['node_modules', '.git', 'dist', 'build', '.alpha-backups'])
 
 const makeId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
@@ -140,6 +140,7 @@ const readWorkspaceTree = async (rootPath: string): Promise<WorkspaceNode[]> => 
       if (entry.isSymbolicLink()) continue
 
       if (entry.isDirectory()) {
+        if (SEARCH_IGNORES.has(entry.name)) continue
         const children = await readDirRecursive(fullPath)
         nodes.push({
           name: entry.name,
